@@ -1,0 +1,9 @@
+# 网关独立配置；Group = MANUFACTURING
+spring:
+  cloud:
+    gateway:
+      server:
+        webflux:
+          httpclient:
+            connect-timeout: 2000
+            response-timeout: 5s

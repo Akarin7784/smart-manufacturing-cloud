@@ -1,0 +1,15 @@
+<!-- 根工程统一管理兼容版本与模块依赖，升级时核对 Boot、Cloud、Alibaba 版本组合。 -->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.5.0</version><relativePath/></parent>
+  <groupId>com.smartmanufacturing</groupId><artifactId>manufacturing-cloud</artifactId><version>1.0.0-SNAPSHOT</version><packaging>pom</packaging>
+  <name>Smart Manufacturing Cloud</name>
+  <modules><module>cloud-common</module><module>cloud-api</module><module>cloud-gateway</module><module>device-service</module><module>workorder-service</module></modules>
+  <properties><java.version>21</java.version><spring-cloud.version>2025.0.0</spring-cloud.version><spring-cloud-alibaba.version>2025.0.0.0</spring-cloud-alibaba.version></properties>
+  <dependencyManagement><dependencies>
+    <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-dependencies</artifactId><version>${spring-cloud.version}</version><type>pom</type><scope>import</scope></dependency>
+    <dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-alibaba-dependencies</artifactId><version>${spring-cloud-alibaba.version}</version><type>pom</type><scope>import</scope></dependency>
+    <dependency><groupId>com.smartmanufacturing</groupId><artifactId>cloud-common</artifactId><version>${project.version}</version></dependency>
+    <dependency><groupId>com.smartmanufacturing</groupId><artifactId>cloud-api</artifactId><version>${project.version}</version></dependency>
+  </dependencies></dependencyManagement>
+</project>

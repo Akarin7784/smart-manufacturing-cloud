@@ -1,0 +1,100 @@
+# 本机开发编排：基础设施默认启动，添加 app profile 后同时运行业务服务。
+name: manufacturing-cloud
+services:
+  nacos:
+    image: nacos/nacos-server:v3.0.3
+    environment:
+      MODE: standalone
+      PREFER_HOST_MODE: hostname
+      NACOS_AUTH_ENABLE: "false"
+      NACOS_AUTH_ADMIN_ENABLE: "false"
+      NACOS_AUTH_CONSOLE_ENABLE: "false"
+      NACOS_AUTH_IDENTITY_KEY: localIdentity
+      NACOS_AUTH_IDENTITY_VALUE: localIdentityValue
+      NACOS_AUTH_TOKEN: VGhpc0lzTXlDdXN0b21TZWNyZXRLZXkwMTIzNDU2Nzg=
+    ports:
+      - "127.0.0.1:8848:8848"
+      - "127.0.0.1:9848:9848"
+      - "127.0.0.1:8849:8080"
+    volumes:
+      - nacos-data:/home/nacos/data
+      - nacos-logs:/home/nacos/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8848/nacos/v3/admin/core/state/readiness || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: local-root-password
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./infra/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  sentinel:
+    build: ./infra/sentinel
+    ports:
+      - "127.0.0.1:8858:8858"
+  gateway:
+    profiles: ["app"]
+    build:
+      context: .
+      args:
+        MODULE: cloud-gateway
+    environment:
+      SPRING_PROFILES_ACTIVE: cloud
+      NACOS_ADDR: nacos:8848
+      SENTINEL_DASHBOARD: sentinel:8858
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      nacos:
+        condition: service_healthy
+      device:
+        condition: service_started
+      workorder:
+        condition: service_started
+  device:
+    profiles: ["app"]
+    build:
+      context: .
+      args:
+        MODULE: device-service
+    environment:
+      SPRING_PROFILES_ACTIVE: cloud
+      NACOS_ADDR: nacos:8848
+      SENTINEL_DASHBOARD: sentinel:8858
+      MYSQL_HOST: mysql
+    depends_on:
+      nacos:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+  workorder:
+    profiles: ["app"]
+    build:
+      context: .
+      args:
+        MODULE: workorder-service
+    environment:
+      SPRING_PROFILES_ACTIVE: cloud
+      NACOS_ADDR: nacos:8848
+      SENTINEL_DASHBOARD: sentinel:8858
+      MYSQL_HOST: mysql
+    depends_on:
+      nacos:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+volumes:
+  nacos-data:
+  nacos-logs:
+  mysql-data:

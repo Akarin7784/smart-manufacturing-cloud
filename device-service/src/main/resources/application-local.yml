@@ -1,0 +1,20 @@
+# 独立本地开发环境：不连接 Nacos，业务服务使用 H2，调用目标使用固定地址。
+spring:
+  cloud:
+    nacos:
+      discovery:
+        enabled: false
+      config:
+        enabled: false
+        import-check:
+          enabled: false
+    sentinel:
+      enabled: false
+  datasource:
+    url: jdbc:h2:file:./data/device-service;MODE=MySQL;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always

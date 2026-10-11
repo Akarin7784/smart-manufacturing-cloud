@@ -1,0 +1,4 @@
+# 工单服务独立配置；Group = MANUFACTURING
+logging:
+  level:
+    com.smartmanufacturing.workorder: INFO

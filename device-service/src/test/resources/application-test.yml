@@ -1,0 +1,17 @@
+# 自动测试隔离配置：不依赖外部注册中心，业务数据存放在 H2 内存数据库。
+spring:
+  config:
+    import: ""
+  cloud:
+    nacos:
+      config:
+        enabled: false
+        import-check.enabled: false
+      discovery.enabled: false
+    sentinel.enabled: false
+  datasource:
+    url: jdbc:h2:mem:device-service;MODE=MySQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql.init.mode: always

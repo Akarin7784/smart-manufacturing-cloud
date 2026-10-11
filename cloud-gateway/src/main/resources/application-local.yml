@@ -1,0 +1,28 @@
+# 独立本地开发环境：不连接 Nacos，业务服务使用 H2，调用目标使用固定地址。
+spring:
+  cloud:
+    nacos:
+      discovery:
+        enabled: false
+      config:
+        enabled: false
+        import-check:
+          enabled: false
+    sentinel:
+      enabled: false
+    gateway:
+      server:
+        webflux:
+          routes:
+            - id: device-service
+              uri: ${DEVICE_SERVICE_URL:http://localhost:8081}
+              predicates:
+                - Path=/api/devices,/api/devices/**
+              filters:
+                - StripPrefix=1
+            - id: workorder-service
+              uri: ${WORKORDER_SERVICE_URL:http://localhost:8082}
+              predicates:
+                - Path=/api/workorders,/api/workorders/**
+              filters:
+                - StripPrefix=1

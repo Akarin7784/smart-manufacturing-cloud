@@ -1,0 +1,12 @@
+# 多服务共享配置；应用配置按导入顺序覆盖同名参数。
+logging:
+  level:
+    com.smartmanufacturing: INFO
+spring:
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 2000
+            readTimeout: 3000

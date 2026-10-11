@@ -1,0 +1,161 @@
+# 智能制造微服务框架
+
+[![Build and test](https://github.com/Akarin7784/smart-manufacturing-cloud/actions/workflows/build.yml/badge.svg)](https://github.com/Akarin7784/smart-manufacturing-cloud/actions/workflows/build.yml)
+
+项目长期开发约定见 [AGENTS.md](AGENTS.md)：后续新增或修改的代码必须添加并维护中文注释。
+
+基于 Spring Cloud Alibaba 的 Maven 多模块项目，提供可运行的网关、设备服务、工单服务及基础设施。核心功能已实现；这是业务开发起点，不是完整的 MES 产品。
+
+## 技术与模块
+
+| 组件 | 版本 / 用途 |
+| --- | --- |
+| Java | 21 |
+| Spring Boot | 3.5.0 |
+| Spring Cloud | 2025.0.0 |
+| Spring Cloud Alibaba | 2025.0.0.0 |
+| Nacos | 3.0.3，注册发现、配置刷新 |
+| Sentinel | 1.8.9，网关限流、Feign 降级 |
+| Spring Cloud Gateway | WebFlux 网关，服务名负载均衡 |
+| OpenFeign + LoadBalancer | 工单服务调用设备服务 |
+| JDBC + MySQL | 各服务独立数据库与账号 |
+| H2 | 无中间件本地开发，数据保存于 data/ |
+| Actuator + Prometheus | 健康检查与指标 |
+
+版本依据：[阿里巴巴官方兼容表](https://sca.aliyun.com/docs/2025.x/overview/version-explain/)。版本集中在根 pom.xml；升级时必须一起核对 Boot / Cloud / Alibaba 兼容性。
+
+```mermaid
+flowchart LR
+    Client[客户端] --> Gateway[网关 :8080]
+    Gateway --> Device[设备服务 :8081]
+    Gateway --> Order[工单服务 :8082]
+    Order -->|OpenFeign| Device
+    Device --> DeviceDB[(设备数据库)]
+    Order --> OrderDB[(工单数据库)]
+    Nacos[Nacos 注册与配置] -.-> Gateway
+    Nacos -.-> Device
+    Nacos -.-> Order
+    Sentinel[Sentinel 治理] -.-> Gateway
+    Sentinel -.-> Device
+    Sentinel -.-> Order
+```
+
+- cloud-api：公共响应、DTO 与服务契约，不依赖 Web 框架。
+- cloud-common：Servlet 服务的异常处理、请求 ID、Sentinel HTTP 429 响应。网关不引用此模块。
+- cloud-gateway：显式路由 /api/devices/**、/api/workorders/**，移除 /api 前缀。
+- device-service：设备查询、持久化、Nacos 动态配置示例。
+- workorder-service：工单校验、Feign 调用、持久化与降级。
+- infra：Nacos 配置样例、MySQL 初始化、Sentinel 控制台镜像。
+- scripts：Windows 启停、配置导入、冒烟检查。
+- docs：部署与扩展说明。
+
+## 1. 不依赖 Docker 的本地启动
+
+需要 JDK 21；Maven Wrapper 首次运行会下载 Maven 3.9.9。以下命令在项目根目录 PowerShell 执行：
+
+```powershell
+.\mvnw.cmd -B -ntp verify
+powershell -ExecutionPolicy Bypass -File .\scripts\start-local.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
+```
+
+默认 local profile 使用 H2 文件数据库、固定服务地址，关闭 Nacos 和 Sentinel。日志位于 .runtime/。脚本启动后台 Java 进程，停止方式：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-local.ps1
+```
+
+也可以分别运行：
+```powershell
+java -jar device-service/target/device-service-1.0.0-SNAPSHOT.jar
+java -jar workorder-service/target/workorder-service-1.0.0-SNAPSHOT.jar
+java -jar cloud-gateway/target/cloud-gateway-1.0.0-SNAPSHOT.jar
+```
+
+## 2. Alibaba 完整开发环境
+
+需要运行中的 Docker Desktop，端口 3306、8848、9848、8849、8858 空闲。先停止 local 服务。
+
+```powershell
+docker compose up -d --build nacos mysql sentinel
+docker compose ps
+# 等待 Nacos 和 MySQL 显示 healthy
+powershell -ExecutionPolicy Bypass -File .\scripts\import-nacos.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\start-local.ps1 -Profile cloud -SkipBuild
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
+```
+
+本机运行服务有利于 IDE 调试。cloud profile 的网关用 lb:// 服务名路由，Feign 不指定 URL，从 Nacos 获取实例。
+
+| 地址 | 说明 |
+| --- | --- |
+| http://localhost:8080/api/devices | 设备列表 |
+| http://localhost:8080/api/workorders | 工单列表 / 创建 |
+| http://localhost:8080/actuator/health | 网关健康 |
+| http://localhost:8081/actuator/prometheus | 设备指标 |
+| http://localhost:8849 | Nacos 3 控制台 |
+| http://localhost:8858 | Sentinel 控制台，sentinel / sentinel |
+
+### 全部容器化
+
+```powershell
+docker compose --profile app up -d --build
+powershell -ExecutionPolicy Bypass -File .\scripts\import-nacos.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
+docker compose --profile app logs -f gateway device workorder
+```
+
+容器模式只暴露网关与开发基础设施端口；业务服务使用容器内部端口。本机 Java 服务与 app profile 不要同时运行，以免 Nacos 出现两套实例。停止容器但保留数据：
+
+```powershell
+docker compose --profile app down
+```
+
+## 3. 验证业务链路
+
+种子设备 D001 在线，D002 离线。
+
+```powershell
+Invoke-RestMethod http://localhost:8080/api/devices/D001
+Invoke-RestMethod http://localhost:8080/api/workorders -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
+Invoke-RestMethod http://localhost:8080/api/workorders
+```
+
+创建成功返回 HTTP 201，响应格式：
+```json
+{"code":"OK","message":"success","data":{"id":"uuid","deviceId":"D001","product":"bearing","quantity":10,"status":"CREATED"}}
+```
+
+无效数量返回 400；设备不存在返回 404；设备离线返回 409；设备服务故障返回 503，且不插入工单。网关生成 X-Request-Id，跨 Feign 调用传播，服务日志可按 ID 关联。它是请求关联 ID，尚未接入完整分布式 tracing。
+
+工单只写本服务数据库，因此不使用分布式事务。设备查询与工单插入之间不保证设备状态原子性；未来若要占用设备或扣库存，应采用资源预留、幂等处理及明确的补偿/事务方案。
+
+## 4. Nacos 动态配置与 Sentinel
+
+Nacos namespace 默认 public（namespace ID 留空），配置 Group 为 MANUFACTURING。使用 application-cloud.yml 中 spring.config.import 加载配置，无 bootstrap.yml。
+
+导入后访问：
+```powershell
+Invoke-RestMethod http://localhost:8080/api/devices/config
+```
+在 Nacos 修改 device-service.yml 的 demo.welcome 后，无需重启服务，接口会读到新值。
+
+Sentinel 控制台展示 cloud 服务；先请求接口产生资源。可为网关路由 device-service / workorder-service 添加 QPS 规则，或为业务 HTTP 资源添加限流规则。阻断返回 HTTP 429 与 RATE_LIMITED。Feign 启用 Sentinel fallbackFactory，设备服务异常时拒绝创建工单。
+
+**控制台规则默认在内存中，重启会丢失。** 若需要持久化规则，见 docs/architecture.md；本骨架没有把控制台规则自动同步到 Nacos。
+
+## 5. 测试与后续开发
+
+GitHub Actions 在每次推送、PR 和手动触发时执行 Linux / Windows 的 Java 21 全模块构建与测试，并保留测试报告和三个可执行服务 JAR。配置见 [.github/workflows/build.yml](.github/workflows/build.yml)。
+
+```powershell
+.\mvnw.cmd -B -ntp verify
+```
+
+自动测试覆盖网关转发与前缀移除、请求 ID、设备 404、工单持久化、离线拒绝、参数校验、服务不可用以及降级映射。单元/集成测试不要求运行 Nacos、MySQL；冒烟脚本验证真实进程之间的 HTTP 和 Feign 链路。
+
+添加新服务时复制业务服务结构，设置唯一 application.name / 端口 / 数据库，新增网关显式路由与 Nacos Data ID；API 契约放 cloud-api，避免共享各服务数据库。
+
+## 使用边界
+
+Compose 使用仅限本机的端口绑定，Nacos 关闭鉴权、MySQL 使用开发密码，当前业务 API 未配置登录与权限控制。上线前完成身份认证、租户/数据权限、TLS、密钥配置、数据库迁移、监控告警、备份以及 Nacos 高可用。详情见 docs/architecture.md。RocketMQ 与 Seata 在扩展说明中给出设计接入位置，当前没有启用这两个组件。

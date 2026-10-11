@@ -1,0 +1,12 @@
+# 跨平台统一文本换行，保证 Linux CI 可以运行 Maven Wrapper。
+* text=auto eol=lf
+*.java text eol=lf
+*.xml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.sql text eol=lf
+*.ps1 text eol=lf
+Dockerfile text eol=lf
+mvnw text eol=lf
+*.cmd text eol=crlf

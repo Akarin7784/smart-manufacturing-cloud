@@ -1,0 +1,8 @@
+**
+!pom.xml
+!cloud-api/**
+!cloud-common/**
+!cloud-gateway/**
+!device-service/**
+!workorder-service/**
+**/target

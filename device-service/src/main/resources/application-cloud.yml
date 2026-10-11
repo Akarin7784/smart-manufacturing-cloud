@@ -1,0 +1,30 @@
+# Alibaba 开发环境：从 Nacos 加载配置并注册服务，容器地址通过环境变量覆盖。
+spring:
+  config:
+    import:
+      - "optional:nacos:common.yml?group=MANUFACTURING&refreshEnabled=true"
+      - "optional:nacos:${spring.application.name}.yml?group=MANUFACTURING&refreshEnabled=true"
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: MANUFACTURING
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+      config:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: MANUFACTURING
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/manufacturing_device?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: ${MYSQL_USERNAME:device_app}
+    password: ${MYSQL_PASSWORD:local-demo-password}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+  sql:
+    init:
+      mode: always

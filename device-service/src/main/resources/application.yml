@@ -1,0 +1,31 @@
+# 服务基础配置：统一定义端口、默认开发环境、健康探针与日志关联格式。
+server:
+  port: ${SERVER_PORT:8081}
+spring:
+  application:
+    name: device-service
+  profiles:
+    default: local
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+logging:
+  pattern:
+    level: "%5p [requestId=%X{requestId:-}]"
+feign:
+  sentinel:
+    enabled: true
+spring.cloud.openfeign.client.config.default:
+  connectTimeout: 2000
+  readTimeout: 3000
+spring.cloud.sentinel:
+  transport:
+    dashboard: ${SENTINEL_DASHBOARD:localhost:8858}
+    port: ${SENTINEL_CLIENT_PORT:9081}
+  eager: true
