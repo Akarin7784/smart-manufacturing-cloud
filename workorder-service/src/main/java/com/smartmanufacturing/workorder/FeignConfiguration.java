@@ -10,6 +10,10 @@ public class FeignConfiguration {
         return template -> {
             String id = MDC.get("requestId");
             if (id != null) template.header("X-Request-Id", id);
+            // 仅传递安全上下文中已校验的令牌，不信任任意外部身份请求头。
+            var authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+            if (authentication instanceof org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken jwt)
+                template.header("Authorization", "Bearer " + jwt.getToken().getTokenValue());
         };
     }
 }

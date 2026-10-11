@@ -29,3 +29,10 @@ spring.cloud.sentinel:
     dashboard: ${SENTINEL_DASHBOARD:localhost:8858}
     port: ${SENTINEL_CLIENT_PORT:9081}
   eager: true
+
+# 三层使用相同签发者和受众，公钥地址允许在容器环境中指向内部认证服务。
+manufacturing:
+  security:
+    issuer: ${AUTH_ISSUER:http://localhost:8080}
+    audience: ${AUTH_AUDIENCE:manufacturing-api}
+    jwk-set-uri: ${AUTH_JWK_SET_URI:http://localhost:8083/auth/jwks}

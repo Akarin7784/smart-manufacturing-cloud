@@ -14,6 +14,11 @@ public class DeviceFallbackFactory implements FallbackFactory<DeviceClient> {
         return id -> {
             if (cause instanceof FeignException.NotFound)
                 throw new BusinessException("DEVICE_NOT_FOUND", "设备不存在", HttpStatus.NOT_FOUND);
+            // 保留下游认证失败语义，不能将权限拒绝包装成普通业务成功。
+            if (cause instanceof FeignException.Unauthorized)
+                throw new BusinessException("AUTHENTICATION_REQUIRED", "设备服务拒绝当前令牌", HttpStatus.UNAUTHORIZED);
+            if (cause instanceof FeignException.Forbidden)
+                throw new BusinessException("ACCESS_DENIED", "没有访问设备服务的权限", HttpStatus.FORBIDDEN);
             LOG.warn("Device service call failed: {}", cause.toString());
             throw new BusinessException("DEVICE_SERVICE_UNAVAILABLE", "设备服务暂时不可用，工单未创建", HttpStatus.SERVICE_UNAVAILABLE);
         };

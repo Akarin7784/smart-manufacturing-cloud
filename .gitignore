@@ -2,7 +2,12 @@
 .tools/
 .runtime/
 .env
+.env.*
+!.env.example
 .idea/
 *.iml
 *.log
 data/
+security/
+*.pem
+*.key

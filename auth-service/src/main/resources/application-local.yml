@@ -1,0 +1,15 @@
+# 本地认证数据保存在独立 H2 文件中，签名密钥保持在项目运行目录。
+spring:
+  cloud:
+    nacos:
+      discovery.enabled: false
+      config:
+        enabled: false
+        import-check.enabled: false
+    sentinel.enabled: false
+  datasource:
+    url: jdbc:h2:file:./data/auth-service;MODE=MySQL;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql.init.mode: always

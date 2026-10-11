@@ -1,0 +1,11 @@
+<!-- 跨技术栈共享 JWT 权限映射与校验规则，不引入 Servlet 或 WebFlux 运行时。 -->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+<modelVersion>4.0.0</modelVersion>
+<parent><groupId>com.smartmanufacturing</groupId><artifactId>manufacturing-cloud</artifactId><version>1.0.0-SNAPSHOT</version></parent>
+<artifactId>cloud-security</artifactId>
+<dependencies>
+<dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-oauth2-resource-server</artifactId></dependency>
+<dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-oauth2-jose</artifactId></dependency>
+<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+</dependencies>
+</project>

@@ -17,6 +17,11 @@
 
 - 技术栈为 Java 21、Spring Boot 3.5.0、Spring Cloud 2025.0.0、Spring Cloud Alibaba 2025.0.0.0。
 - cloud-api 管理公共契约；cloud-common 管理 Servlet 公共组件；网关采用 WebFlux，不引用 Servlet 公共模块。
+- cloud-security 共享 JWT 校验与权限映射；auth-service 使用独立认证库、BCrypt 密码散列和持久化 RSA 私钥。
+- 网关及业务服务必须分别校验 JWT；接口通过明确权限授权，禁止信任外部用户/角色请求头。
+- Feign 只传播已验证安全上下文中的 Bearer 令牌，不能伪造内部用户身份。
+- ADMIN、OPERATOR、VIEWER 权限映射位于认证服务；新增接口须同步维护网关和方法权限规则及越权测试。
+- 初始管理员密码只从环境或被忽略的 .env 注入；RSA 私钥不得提交到 Git。已有短期令牌不即时吊销，角色变更在新令牌中生效。
 - 设备和工单服务使用独立数据库；服务间通过 OpenFeign 和 Nacos 服务发现调用。
 - local 环境用于无中间件开发；cloud 环境启用 Nacos、Sentinel 和 MySQL；test 环境隔离外部依赖。
 - 设备状态无法确认或设备离线时，不允许创建工单；降级不得伪造设备状态或业务成功。

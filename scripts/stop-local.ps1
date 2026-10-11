@@ -1,7 +1,7 @@
-# 仅停止本项目记录且命令行匹配的 Java 进程，避免进程编号被复用后误停其他程序。
+﻿# 仅停止本项目记录且命令行匹配的 Java 进程，避免进程编号被复用后误停其他程序。
 $ErrorActionPreference = 'Stop'
 $runtime = Join-Path (Split-Path -Parent $PSScriptRoot) '.runtime'
-foreach ($module in @('cloud-gateway','workorder-service','device-service')) {
+foreach ($module in @('cloud-gateway','workorder-service','device-service','auth-service')) {
     $pidFile = Join-Path $runtime "$module.pid"
     if (Test-Path -LiteralPath $pidFile) {
         $processId = [int](Get-Content -LiteralPath $pidFile)

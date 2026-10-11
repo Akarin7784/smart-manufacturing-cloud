@@ -1,0 +1,28 @@
+# Alibaba 环境使用独立认证库及 Nacos 配置，私钥只挂载到认证服务。
+spring:
+  config:
+    import:
+      - "optional:nacos:common.yml?group=MANUFACTURING&refreshEnabled=true"
+      - "optional:nacos:auth-service.yml?group=MANUFACTURING&refreshEnabled=true"
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: MANUFACTURING
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+      config:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: MANUFACTURING
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/manufacturing_auth?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: ${MYSQL_USERNAME:auth_app}
+    password: ${MYSQL_PASSWORD:local-demo-password}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+  sql.init.mode: always

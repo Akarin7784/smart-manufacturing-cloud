@@ -1,4 +1,4 @@
-# 等待 Nacos 就绪后导入项目配置；使用 Nacos 3 运维接口和统一配置分组。
+﻿# 等待 Nacos 就绪后导入项目配置；使用 Nacos 3 运维接口和统一配置分组。
 param([string]$NacosUrl = 'http://localhost:8848', [string]$Namespace = '')
 $ErrorActionPreference = 'Stop'
 $ready = $false

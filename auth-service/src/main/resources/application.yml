@@ -1,0 +1,28 @@
+# 认证服务使用独立数据源和安全链，避免被公共资源服务配置覆盖。
+server:
+  port: ${SERVER_PORT:8083}
+spring:
+  application:
+    name: auth-service
+  profiles:
+    default: local
+management:
+  endpoints.web.exposure.include: health,info,prometheus
+  endpoint.health.probes.enabled: true
+logging.pattern.level: "%5p [requestId=%X{requestId:-}]"
+manufacturing:
+  security:
+    resource-server: false
+    issuer: ${AUTH_ISSUER:http://localhost:8080}
+    audience: ${AUTH_AUDIENCE:manufacturing-api}
+auth:
+  private-key-path: ${AUTH_PRIVATE_KEY_PATH:.runtime/auth/signing-key.json}
+  token-ttl-seconds: ${AUTH_TOKEN_TTL_SECONDS:900}
+  bootstrap:
+    username: ${AUTH_BOOTSTRAP_USERNAME:admin}
+    password: ${AUTH_BOOTSTRAP_PASSWORD:}
+spring.cloud.sentinel:
+  eager: true
+  transport:
+    dashboard: ${SENTINEL_DASHBOARD:localhost:8858}
+    port: ${SENTINEL_CLIENT_PORT:9083}

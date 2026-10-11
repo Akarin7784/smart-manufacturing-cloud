@@ -12,3 +12,6 @@ indent_size = 2
 
 [*.cmd]
 end_of_line = crlf
+
+[*.ps1]
+charset = utf-8-bom
