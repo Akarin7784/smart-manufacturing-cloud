@@ -44,6 +44,8 @@ public class GatewaySecurityConfiguration {
                 .pathMatchers(HttpMethod.GET, "/api/events/workorders").hasAuthority("workorder:read")
                 .pathMatchers(HttpMethod.GET, "/api/devices", "/api/devices/**").hasAuthority("device:read")
                 .pathMatchers(HttpMethod.GET, "/api/workorders", "/api/workorders/**").hasAuthority("workorder:read")
+                .pathMatchers(HttpMethod.POST, "/api/workorders/reservations").hasAuthority("workorder:write")
+                .pathMatchers(HttpMethod.DELETE, "/api/workorders/reservations/*").hasAuthority("workorder:write")
                 .pathMatchers(HttpMethod.POST, "/api/workorders").hasAuthority("workorder:write")
                 .anyExchange().denyAll())
             .exceptionHandling(errors -> errors

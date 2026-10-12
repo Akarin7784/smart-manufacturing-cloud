@@ -1,0 +1,32 @@
+# 开发 TC 使用独立 MySQL 数据库保存全局、分支和锁状态；内部直连避免注册中心配置耦合。
+server.port: 7091
+spring:
+  application.name: seata-server
+  main.web-application-type: none
+logging.config: classpath:logback-spring.xml
+# 官方启动器必须提供日志目录；容器日志由 Docker 同步收集。
+logging.file.path: /root/logs/seata
+seata:
+  config.type: file
+  registry.type: file
+  server:
+    service-port: 8091
+    enable-check-auth: false
+    max-commit-retry-timeout: -1
+    max-rollback-retry-timeout: -1
+  store:
+    mode: db
+    db:
+      datasource: hikari
+      db-type: mysql
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      url: jdbc:mysql://mysql:3306/manufacturing_seata?rewriteBatchedStatements=true
+      user: seata_app
+      password: local-demo-password
+      min-conn: 2
+      max-conn: 10
+      global-table: global_table
+      branch-table: branch_table
+      lock-table: lock_table
+      distributed-lock-table: distributed_lock
+      query-limit: 100

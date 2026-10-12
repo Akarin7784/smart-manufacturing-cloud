@@ -46,6 +46,8 @@ jobs:
         run: |
           docker compose --profile app config --quiet
           docker compose -f compose.yaml -f compose.rocketmq.yaml --profile app --profile mq config --quiet
+          # 检查跨库事务与消息叠加配置，CI 单元测试不依赖外部协调器。
+          docker compose -f compose.yaml -f compose.rocketmq.yaml -f compose.seata.yaml --profile app --profile mq --profile seata config --quiet
       # 即使测试失败也保留报告，便于查看断言、堆栈和具体失败用例。
       - name: Upload test reports
         if: always()

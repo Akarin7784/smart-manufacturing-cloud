@@ -145,7 +145,7 @@ Invoke-RestMethod http://localhost:8080/api/workorders -Headers $headers
 
 所有业务 API 先校验 Bearer JWT；未登录或令牌无效返回 401，权限不足返回 403。身份与权限通过后，无效数量返回 400；设备不存在返回 404；设备离线返回 409；设备服务故障返回 503，且不插入工单。网关生成 X-Request-Id，跨 Feign 调用传播，服务日志可按 ID 关联。它是请求关联 ID，尚未接入完整分布式 tracing。
 
-工单只写本服务数据库，因此不使用分布式事务。设备查询与工单插入之间不保证设备状态原子性；未来若要占用设备或扣库存，应采用资源预留、幂等处理及明确的补偿/事务方案。
+普通工单只写本服务数据库，使用本地事务。设备查询与工单插入之间不保证设备状态原子性；独立设备预留流程已使用 Seata AT 协调两个数据库，尚未自动绑定生产工单，详见 [docs/seata.md](docs/seata.md)。
 
 ## 4. Nacos 动态配置与 Sentinel
 
@@ -175,7 +175,7 @@ GitHub Actions 在每次推送、PR 和手动触发时执行 Linux / Windows 的
 
 ## 使用边界
 
-Compose 使用仅限本机的端口绑定，Nacos 关闭鉴权、MySQL 使用开发密码，业务 API 已实现账号认证和角色权限控制。上线前补充企业身份接入（按需）、租户/数据权限、TLS、密钥轮换、数据库迁移、监控告警、备份以及 Nacos 高可用。详情见 docs/architecture.md。RocketMQ 已接入工单事件链路，按需启用；Seata 尚未启用。
+Compose 使用仅限本机的端口绑定，Nacos 关闭鉴权、MySQL 使用开发密码，业务 API 已实现账号认证和角色权限控制。上线前补充企业身份接入（按需）、租户/数据权限、TLS、密钥轮换、数据库迁移、监控告警、备份以及 Nacos 高可用。详情见 docs/architecture.md。RocketMQ 工单事件与 Seata 设备预留均已接入，按需启用。
 
 ## 认证授权
 
@@ -192,3 +192,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\security-smoke-test.ps1
 工单与 Outbox 在本地事务中提交，后台可靠发送；event-service 在独立数据库中幂等消费。默认关闭 MQ，启用方式、查询接口和重试操作见 [docs/rocketmq.md](docs/rocketmq.md)。
 
 新增 cloud-messaging 共享组件与 event-service（端口 8084），事件查询路径为 /api/events/workorders。
+
+## Seata
+
+Seata 2.5.0 AT 协调设备库与工单库的资源预留，包含 TC 持久化、undo_log、自动数据源代理与 XID 传播。配置、接口、一致性边界见 [docs/seata.md](docs/seata.md)。
+
+```powershell
+docker compose -f compose.yaml -f compose.rocketmq.yaml -f compose.seata.yaml --profile app --profile mq --profile seata up -d --build
+powershell -ExecutionPolicy Bypass -File .\scripts\seata-smoke-test.ps1
+```

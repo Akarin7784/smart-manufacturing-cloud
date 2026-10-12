@@ -1,0 +1,49 @@
+# 叠加开启 Seata AT；可同时叠加 compose.rocketmq.yaml，普通工单消息流程仍使用本地事务。
+services:
+  seata-db-init:
+    profiles: ["seata"]
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: local-root-password
+    volumes:
+      - ./infra/seata/init.sql:/init.sql:ro
+    command: ["sh", "-c", "mysql -h mysql -uroot -p\"$$MYSQL_ROOT_PASSWORD\" < /init.sql"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+  seata:
+    profiles: ["seata"]
+    build: ./infra/seata
+    environment:
+      SEATA_PORT: 8091
+      # 官方镜像通过专用变量配置堆和直接内存，避免默认占用 2 GB 堆。
+      JVM_XMS: 128m
+      JVM_XMX: 256m
+      JVM_MaxDirectMemorySize: 128m
+    volumes:
+      - ./infra/seata/application.yml:/seata-server/resources/application.yml:ro
+    ports:
+      - "127.0.0.1:8091:8091"
+    depends_on:
+      seata-db-init:
+        condition: service_completed_successfully
+    healthcheck:
+      # 仅建立连接，不写入非 Seata 协议字节，避免健康检查污染错误日志。
+      test: ["CMD", "bash", "-c", ": > /dev/tcp/127.0.0.1/8091"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+  device:
+    environment:
+      SEATA_ENABLED: "true"
+      SEATA_SERVER: seata:8091
+    depends_on:
+      seata:
+        condition: service_healthy
+  workorder:
+    environment:
+      SEATA_ENABLED: "true"
+      SEATA_SERVER: seata:8091
+    depends_on:
+      seata:
+        condition: service_healthy

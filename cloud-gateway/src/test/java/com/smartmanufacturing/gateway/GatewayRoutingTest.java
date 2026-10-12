@@ -35,7 +35,8 @@ class GatewayRoutingTest {
             });
             upstream.createContext("/", exchange -> {
                 String body = exchange.getRequestURI().getPath() + "|" + exchange.getRequestHeaders().getFirst("X-Request-Id")
-                    + "|" + exchange.getRequestHeaders().getFirst("Authorization");
+                    + "|" + exchange.getRequestHeaders().getFirst("Authorization")
+                    + "|" + exchange.getRequestHeaders().getFirst("TX_XID");
                 byte[] bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
                 exchange.sendResponseHeaders(200, bytes.length);
                 try (var out = exchange.getResponseBody()) { out.write(bytes); }
@@ -66,16 +67,17 @@ class GatewayRoutingTest {
         return token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("device:read", "workorder:read"));
     }
 
-    /** 认证后仍保持前缀移除与请求标识替换，并传递 Bearer 令牌。 */
+    /** 认证后保持路由和 Bearer，替换请求标识并剥离外部伪造的全局事务身份。 */
     @Test void stripsPrefixAndReplacesUntrustedRequestId() {
         String access = reader();
-        client().get().uri("/api/devices/D001").header("X-Request-Id", "client-value")
+        client().get().uri("/api/devices/D001").header("X-Request-Id", "client-value").header("TX_XID", "forged-xid")
             .headers(headers -> headers.setBearerAuth(access)).exchange()
             .expectStatus().isOk().expectHeader().exists("X-Request-Id")
             .expectBody(String.class).value(body -> {
                 Assertions.assertTrue(body.startsWith("/devices/D001|"));
                 Assertions.assertFalse(body.contains("client-value"));
-                Assertions.assertTrue(body.endsWith("Bearer " + access));
+                Assertions.assertTrue(body.endsWith("Bearer " + access + "|null"));
+                Assertions.assertFalse(body.contains("forged-xid"));
             });
     }
 
@@ -95,6 +97,14 @@ class GatewayRoutingTest {
     @Test void readerCannotWriteOrders() {
         client().post().uri("/api/workorders").headers(h -> h.setBearerAuth(reader())).exchange()
             .expectStatus().isForbidden().expectBody().jsonPath("$.code").isEqualTo("ACCESS_DENIED");
+    }
+
+    /** 新增预留及释放入口必须继承写权限，查看者不能通过新路径越权。 */
+    @Test void readerCannotMutateReservations() {
+        client().post().uri("/api/workorders/reservations").headers(h -> h.setBearerAuth(reader()))
+            .exchange().expectStatus().isForbidden();
+        client().delete().uri("/api/workorders/reservations/test-id").headers(h -> h.setBearerAuth(reader()))
+            .exchange().expectStatus().isForbidden();
     }
 
     /** 验证过期、错误签发者和错误受众的令牌均被拒绝。 */

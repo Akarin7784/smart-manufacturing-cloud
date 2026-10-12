@@ -22,3 +22,6 @@ CREATE TABLE IF NOT EXISTS outbox_event (
   last_error VARCHAR(512) NULL,
   sent_at TIMESTAMP NULL
 );
+
+-- 预留单作为独立 AT 示例，不在全局事务一阶段创建可发布的 Outbox。
+CREATE TABLE IF NOT EXISTS work_order_reservation (reservation_id VARCHAR(36) PRIMARY KEY, device_id VARCHAR(64) NOT NULL);
