@@ -1,0 +1,17 @@
+# 独立本地开发环境：不连接 Nacos 与 Sentinel，使用 H2 文件库（MySQL 兼容模式）。
+spring:
+  cloud:
+    nacos:
+      discovery:
+        enabled: false
+      config:
+        enabled: false
+        import-check:
+          enabled: false
+    sentinel:
+      enabled: false
+  datasource:
+    url: jdbc:h2:file:./data/inventory-service;MODE=MySQL;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""

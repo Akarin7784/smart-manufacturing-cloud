@@ -63,6 +63,8 @@ servers:
 tags:
   - name: reservation
     description: 物料预留单
+  - name: stock
+    description: 库位、批次、现存量与出入库流水（面向用户令牌的基础接口）
 security:
   - serviceClient: [inventory:reserve]
 
@@ -263,8 +265,260 @@ paths:
               schema:
                 $ref: '#/components/schemas/UnprocessableProblem'
 
+  /api/inventory/locations:
+    get:
+      tags: [stock]
+      operationId: listLocations
+      summary: 查询库位
+      description: 按编码升序返回全部库位。需要 `inventory:read`。
+      security:
+        - userBearer: []
+      responses:
+        '200':
+          description: 库位列表。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Location'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [stock]
+      operationId: createLocation
+      summary: 新建库位
+      description: 库位按编码唯一，编码重复返回 400（type=validation-error）。库位只新增、不物理删除。需要 `inventory:write`。
+      security:
+        - userBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLocationRequest'
+      responses:
+        '201':
+          description: 已创建。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Location'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/inventory/lots:
+    get:
+      tags: [stock]
+      operationId: listLots
+      summary: 查询物料批次
+      description: 批次在首次入库时自动登记。需要 `inventory:read`。
+      security:
+        - userBearer: []
+      parameters:
+        - $ref: '#/components/parameters/MaterialCodeQuery'
+      responses:
+        '200':
+          description: 批次列表。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Lot'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/inventory/stock:
+    get:
+      tags: [stock]
+      operationId: listStock
+      summary: 查询现存量
+      description: 按（库位、批次）返回余额大于 0 的现存量行。需要 `inventory:read`。
+      security:
+        - userBearer: []
+      parameters:
+        - $ref: '#/components/parameters/MaterialCodeQuery'
+        - name: locationCode
+          in: query
+          required: false
+          description: 库位编码，缺省为全部库位。
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 现存量列表。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Stock'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/inventory/stock/availability:
+    get:
+      tags: [stock]
+      operationId: getAvailability
+      summary: 查询物料可用量
+      description: 可用量 = 现存量合计 − ACTIVE 预留单未扣减量。快照读，仅供展示；预留与出库以加锁后的计算为准。需要 `inventory:read`。
+      security:
+        - userBearer: []
+      parameters:
+        - $ref: '#/components/parameters/MaterialCodeQuery'
+      responses:
+        '200':
+          description: 可用量。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Availability'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/inventory/ledger:
+    get:
+      tags: [stock]
+      operationId: listLedger
+      summary: 查询出入库流水
+      description: 流水只追加不修改，按发生顺序倒序返回。需要 `inventory:read`。
+      security:
+        - userBearer: []
+      parameters:
+        - $ref: '#/components/parameters/MaterialCodeQuery'
+        - name: lotNo
+          in: query
+          required: false
+          description: 批次号，缺省为全部批次。
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: 返回条数上限，1–500。
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+      responses:
+        '200':
+          description: 流水列表。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StockTxn'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/inventory/inbound:
+    post:
+      tags: [stock]
+      operationId: inbound
+      summary: 入库
+      description: |
+        增加指定（物料、库位、批次）的现存量并写入流水。物料首次入库时登记计量单位，之后必须一致，否则 400。
+        需要 `inventory:write` 与 `Idempotency-Key`（作用域为用户 sub），重放语义同预留接口。
+      security:
+        - userBearer: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MovementRequest'
+      responses:
+        '201':
+          description: 已入库，返回流水。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockTxn'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+
+  /api/inventory/outbound:
+    post:
+      tags: [stock]
+      operationId: outbound
+      summary: 出库
+      description: |
+        减少指定（物料、库位、批次）的现存量并写入流水。出库量不得超过该库位批次余额，且出库后物料现存量合计不得低于 ACTIVE 预留量，
+        否则 409（type=insufficient-stock）。需要 `inventory:write` 与 `Idempotency-Key`。
+      security:
+        - userBearer: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MovementRequest'
+      responses:
+        '201':
+          description: 已出库，返回流水（qty 为负数）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockTxn'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 可出库量不足（type=insufficient-stock）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/OutboundShortageProblem'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+
 components:
   securitySchemes:
+    userBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 用户令牌（受众 manufacturing-api），按 permissions 声明授权：查询需 `inventory:read`，写入需 `inventory:write`。仅用于库位、批次、出入库等基础接口。
     serviceClient:
       type: oauth2
       description: |
@@ -281,6 +535,13 @@ components:
             inventory:reserve: 物料预留的创建、查询、续期、释放与扣减。
 
   parameters:
+    MaterialCodeQuery:
+      name: materialCode
+      in: query
+      required: true
+      description: 物料编码。
+      schema:
+        type: string
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -339,6 +600,211 @@ components:
             $ref: '#/components/schemas/IdempotencyConflictProblem'
 
   schemas:
+    CreateLocationRequest:
+      type: object
+      description: 新建库位请求。
+      required: [code, warehouseCode, name]
+      properties:
+        code:
+          type: string
+          maxLength: 64
+          pattern: '^[A-Za-z0-9._-]+$'
+          description: 库位编码。
+        warehouseCode:
+          type: string
+          maxLength: 64
+          description: 所属仓库编码。
+        name:
+          type: string
+          maxLength: 128
+          description: 库位名称。
+
+    Location:
+      type: object
+      description: 库位。
+      required: [code, warehouseCode, name, enabled]
+      properties:
+        code:
+          type: string
+          description: 库位编码。
+        warehouseCode:
+          type: string
+          description: 所属仓库编码。
+        name:
+          type: string
+          description: 库位名称。
+        enabled:
+          type: boolean
+          description: 是否启用；停用库位不可入库。
+
+    Lot:
+      type: object
+      description: 批次。
+      required: [materialCode, lotNo, createdAt]
+      properties:
+        materialCode:
+          type: string
+          description: 物料编码。
+        lotNo:
+          type: string
+          description: 批次号。
+        createdAt:
+          type: string
+          format: date-time
+          description: 首次登记时间。
+
+    Stock:
+      type: object
+      description: 现存量行（物料、库位、批次）。
+      required: [materialCode, uom, locationCode, lotNo, qty, version]
+      properties:
+        materialCode:
+          type: string
+          description: 物料编码。
+        uom:
+          type: string
+          description: 计量单位编码。
+        locationCode:
+          type: string
+          description: 库位编码。
+        lotNo:
+          type: string
+          description: 批次号。
+        qty:
+          $ref: '#/components/schemas/Quantity'
+        version:
+          type: integer
+          format: int64
+          description: 版本号，每次变更加一。
+
+    Availability:
+      type: object
+      description: 物料可用量。
+      required: [materialCode, uom, onHand, reserved, available]
+      properties:
+        materialCode:
+          type: string
+          description: 物料编码。
+        uom:
+          type: string
+          description: 计量单位编码。
+        onHand:
+          $ref: '#/components/schemas/Quantity'
+        reserved:
+          $ref: '#/components/schemas/Quantity'
+        available:
+          $ref: '#/components/schemas/SignedQuantity'
+
+    MovementRequest:
+      type: object
+      description: 入库/出库请求，一次针对一个（物料、库位、批次）。
+      required: [materialCode, uom, locationCode, lotNo, qty]
+      properties:
+        materialCode:
+          type: string
+          maxLength: 64
+          description: 物料编码。
+        uom:
+          type: string
+          maxLength: 16
+          description: 计量单位编码，必须与该物料首次入库登记的单位一致。
+        locationCode:
+          type: string
+          maxLength: 64
+          description: 库位编码，必须存在且启用。
+        lotNo:
+          type: string
+          maxLength: 64
+          description: 批次号。
+        qty:
+          $ref: '#/components/schemas/Quantity'
+        refNo:
+          type: string
+          maxLength: 128
+          description: 外部单据号（采购收货单、领料单等），仅用于追溯。
+
+    StockTxn:
+      type: object
+      description: 出入库流水（只追加不修改）。
+      required: [txnId, txnType, materialCode, uom, locationCode, lotNo, qty, balanceAfter, operator, occurredAt]
+      properties:
+        txnId:
+          type: integer
+          format: int64
+          description: 流水号。
+        txnType:
+          type: string
+          enum: [INBOUND, OUTBOUND, CONSUME]
+          description: 流水类型；CONSUME 为预留扣减。
+        materialCode:
+          type: string
+          description: 物料编码。
+        uom:
+          type: string
+          description: 计量单位编码。
+        locationCode:
+          type: string
+          description: 库位编码。
+        lotNo:
+          type: string
+          description: 批次号。
+        qty:
+          $ref: '#/components/schemas/SignedQuantity'
+        balanceAfter:
+          $ref: '#/components/schemas/Quantity'
+        refType:
+          type: [string, 'null']
+          description: 来源单据类型（EXTERNAL、RESERVATION 等）。
+        refNo:
+          type: [string, 'null']
+          description: 来源单据号。
+        operator:
+          type: string
+          description: 操作人（用户 sub 或服务 client_id）。
+        occurredAt:
+          type: string
+          format: date-time
+          description: 发生时间。
+
+    SignedQuantity:
+      type: string
+      pattern: '^-?\d{1,12}(\.\d{1,6})?$'
+      description: 带符号数量（流水中入库为正、出库与扣减为负），精度同 Quantity，对应 DECIMAL(18,6)。
+      examples: ['-3.25']
+
+    StockShortage:
+      type: object
+      description: 出库缺口（单个库位批次）。
+      required: [materialCode, uom, requested, available, shortage]
+      properties:
+        materialCode:
+          type: string
+          description: 物料编码。
+        uom:
+          type: string
+          description: 计量单位编码。
+        requested:
+          $ref: '#/components/schemas/Quantity'
+        available:
+          $ref: '#/components/schemas/Quantity'
+        shortage:
+          $ref: '#/components/schemas/Quantity'
+
+    OutboundShortageProblem:
+      description: 出库可用量不足的错误响应。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type, shortages]
+          properties:
+            type:
+              const: insufficient-stock
+            shortages:
+              type: array
+              description: 出库缺口。
+              items:
+                $ref: '#/components/schemas/StockShortage'
+
     Quantity:
       type: string
       pattern: '^\d{1,12}(\.\d{1,6})?$'

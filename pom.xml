@@ -4,7 +4,7 @@
   <parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.5.0</version><relativePath/></parent>
   <groupId>com.smartmanufacturing</groupId><artifactId>manufacturing-cloud</artifactId><version>1.0.0-SNAPSHOT</version><packaging>pom</packaging>
   <name>Smart Manufacturing Cloud</name>
-  <modules><module>cloud-common</module><module>cloud-api</module><module>cloud-security</module><module>auth-service</module><module>cloud-gateway</module><module>device-service</module><module>workorder-service</module><module>masterdata-service</module><module>coverage-report</module></modules>
+  <modules><module>cloud-common</module><module>cloud-api</module><module>cloud-security</module><module>auth-service</module><module>cloud-gateway</module><module>device-service</module><module>workorder-service</module><module>masterdata-service</module><module>inventory-service</module><module>coverage-report</module></modules>
   <properties><java.version>21</java.version><spring-cloud.version>2025.0.0</spring-cloud.version><spring-cloud-alibaba.version>2025.0.0.0</spring-cloud-alibaba.version>
     <!-- JaCoCo 版本及覆盖率门禁阈值；当前阶段只报告不阻断构建（haltOnFailure=false），待各模块补齐测试后改为阻断。 -->
     <jacoco.version>0.8.12</jacoco.version>

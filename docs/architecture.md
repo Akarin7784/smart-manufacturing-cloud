@@ -35,6 +35,14 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
   - 确认旧库结构与 V1 完全一致时，可设置 `FLYWAY_BASELINE_ON_MIGRATE=true`（compose 从 .env 读取），把现有库登记为版本 1，V1 不再执行。
 - 工单幂等记录保留 7 天，由 `IdempotencyRecordCleaner` 每天定时按 `created_at` 升序选出最旧的一批、按主键删除（避免无序 `DELETE ... LIMIT` 在 statement binlog 下不安全）；多实例并发执行结果幂等，暂未引入 ShedLock。
 
+### 库存服务（inventory-service）
+
+- 独立库 `manufacturing_inventory`（账号 `inventory_app`），端口 8085，Flyway 从自己的 `V1__init.sql` 开始。数量列统一 `DECIMAL(18,6)`，接口以十进制字符串传输。
+- 表：库位 `warehouse_location`、物料单位登记 `inventory_material`、批次 `lot`、现存量 `stock_on_hand`（物料+库位+批次唯一，带 version）、只追加流水 `stock_txn`、预留单 `reservation`/`reservation_line`、幂等记录 `idempotency_record`（按 client_id/sub 划分作用域，保存首次响应原文）、`outbox_event`。
+- 加锁约定：需要校验可用量的写操作对物料全部现存量行按 id 升序 `SELECT ... FOR UPDATE`，多物料按编码升序；可用量 = 现存量 − ACTIVE 预留未扣减量。死锁牺牲者整笔重试（最多 3 次）。
+- 安全：`/inventory/reservations/**` 只接受 aud=`inventory-service` 且 scope 含 `inventory:reserve` 的服务令牌；其他接口使用用户令牌（`inventory:read` / `inventory:write`）。错误统一为 RFC 7807。接口契约见 `docs/api/inventory-openapi.yaml`。
+- 镜像 JVM 参数来自 `inventory-service/jvm.options`（`-Xmx256m`），Dockerfile 对没有该文件的模块使用空参数文件。
+
 已实现账号登录、管理员用户管理及三种角色的接口授权。示例不提供完整业务 CRUD、分页、租户数据权限或 MES 生产排程。这些属于后续业务模块，而不是基础服务治理框架已经完成的功能。
 
 ## Sentinel 规则持久化

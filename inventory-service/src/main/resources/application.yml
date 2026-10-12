@@ -1,0 +1,51 @@
+# 库存服务基础配置：端口、默认开发环境、健康探针、日志关联格式与安全参数。
+server:
+  port: ${SERVER_PORT:8085}
+spring:
+  application:
+    name: inventory-service
+  profiles:
+    default: local
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+logging:
+  pattern:
+    level: "%5p [requestId=%X{requestId:-}]"
+spring.cloud.sentinel:
+  transport:
+    dashboard: ${SENTINEL_DASHBOARD:localhost:8858}
+    port: ${SENTINEL_CLIENT_PORT:9085}
+  eager: true
+
+manufacturing:
+  security:
+    # 关闭 cloud-common 的通用安全链：库存服务需要按路径区分两类令牌（见 InventorySecurityConfiguration）。
+    resource-server: false
+    issuer: ${AUTH_ISSUER:http://localhost:8080}
+    # 用户令牌的受众（与其他服务一致），用于库位、批次、出入库等人工操作接口。
+    audience: ${AUTH_AUDIENCE:manufacturing-api}
+    # 服务身份令牌的受众：预留接口只接受 aud=inventory-service 且 scope 含 inventory:reserve 的令牌。
+    service-audience: ${INVENTORY_SERVICE_AUDIENCE:inventory-service}
+    jwk-set-uri: ${AUTH_JWK_SET_URI:http://localhost:8083/auth/jwks}
+
+# 幂等记录保留 7 天（与 #9 一致），每天 03:27 分批清理（错开工单服务的 03:17）。
+inventory:
+  idempotency:
+    retention: P7D
+    cleanup:
+      cron: "0 27 3 * * *"
+
+# 表结构只由 Flyway 管理；默认关闭 baseline-on-migrate，库状态与迁移历史不一致时直接失败（与 #11 口径一致）。
+# 演示数据位置 db/demo 只由 demo profile 追加。
+spring.sql.init.mode: never
+spring.flyway:
+  locations: classpath:db/migration
+  baseline-on-migrate: ${FLYWAY_BASELINE_ON_MIGRATE:false}
+  baseline-version: "1"
