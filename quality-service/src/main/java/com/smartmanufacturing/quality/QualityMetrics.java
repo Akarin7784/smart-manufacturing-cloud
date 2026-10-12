@@ -34,6 +34,10 @@ public class QualityMetrics {
     public static final String WRITEBACK_RESOLVED_MANUALLY = "resolved_manually";
     public static final java.util.List<String> WRITEBACK_RESULTS = java.util.List.of(WRITEBACK_OK, WRITEBACK_REPLAY, WRITEBACK_RETRY,
         WRITEBACK_FAILED, WRITEBACK_CANCELLED, WRITEBACK_RESOLVED_MANUALLY);
+    /** 库存调用鉴权失败的 operation 取值（token 为向认证服务申请令牌被拒）。 */
+    public static final java.util.List<String> INVENTORY_AUTH_OPERATIONS = java.util.List.of("hold", "release", "scrap", "token");
+    /** 库存契约不一致的 operation 取值。 */
+    public static final java.util.List<String> INVENTORY_CONTRACT_OPERATIONS = java.util.List.of("hold", "release", "scrap");
     private final MeterRegistry registry;
     private final Counter pendingExpired;
 
@@ -62,14 +66,36 @@ public class QualityMetrics {
             .description("未关闭的 NCR 数").register(registry);
         // mes_quality_writeback_total{result}：6 个结果序列启动预注册为 0，告警（failed、resolved_manually 增量）从 0 开始可判定。
         for (String result : WRITEBACK_RESULTS) writebackCounter(result);
-        // mes_quality_writeback_pending：PENDING（含退避中、执行中）的回写任务数，抓取时查询（走 status, next_attempt_at 索引），启动即 0。
-        Gauge.builder("mes.quality.writeback.pending", jdbc, j -> count(j, "select count(*) from inventory_writeback where status = 'PENDING'"))
+        // mes_quality_inventory_auth_failure_total{operation} 与 mes_quality_inventory_contract_mismatch_total{operation}：启动预注册为 0。
+        for (String op : INVENTORY_AUTH_OPERATIONS) authFailureCounter(op);
+        for (String op : INVENTORY_CONTRACT_OPERATIONS) contractMismatchCounter(op);
+        // mes_quality_writeback_pending：PENDING（含退避中）与 RUNNING（执行中）的回写任务数，抓取时查询（走 status, next_attempt_at 索引），启动即 0。
+        Gauge.builder("mes.quality.writeback.pending", jdbc,
+                j -> count(j, "select count(*) from inventory_writeback where status in ('PENDING', 'RUNNING')"))
             .description("待执行的库存回写任务数").register(registry);
     }
 
     /** 库存回写结果计数（提交后计数：回写事务回滚不产生虚假计数）。 */
     public void writeback(String result) {
         afterCommit(() -> writebackCounter(result).increment());
+    }
+
+    /** 库存调用鉴权失败（401 刷新令牌后仍 401、403、令牌端点 4xx），提交后计数。 */
+    public void inventoryAuthFailure(String operation) {
+        afterCommit(() -> authFailureCounter(operation).increment());
+    }
+
+    /** 库存返回契约之外或说明请求构造有误的响应（400、422 idempotency-key-conflict、未约定状态、2xx 缺 txnId），提交后计数。 */
+    public void inventoryContractMismatch(String operation) {
+        afterCommit(() -> contractMismatchCounter(operation).increment());
+    }
+
+    private Counter authFailureCounter(String op) {
+        return Counter.builder("mes.quality.inventory.auth.failure").description("调用库存鉴权失败").tag("operation", op).register(registry);
+    }
+
+    private Counter contractMismatchCounter(String op) {
+        return Counter.builder("mes.quality.inventory.contract.mismatch").description("库存响应与契约不一致").tag("operation", op).register(registry);
     }
 
     private Counter writebackCounter(String result) {

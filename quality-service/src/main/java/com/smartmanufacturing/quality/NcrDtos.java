@@ -47,8 +47,11 @@ public final class NcrDtos {
     public record Conflict(String eventId, String type, String ncrNo, String reversedReportId, String reversalId,
                            String disposedQty, Instant recordedAt) {}
 
-    /** 库存回写任务状态（契约 WritebackTask.status）：DONE、CANCELLED、RESOLVED_MANUALLY 为终态。 */
-    public enum WritebackStatus { PENDING, DONE, FAILED, CANCELLED, RESOLVED_MANUALLY }
+    /**
+     * 库存回写任务状态（契约 WritebackTask.status）：RUNNING 为已被领取、正在调用库存（租约内）；
+     * DONE、CANCELLED、RESOLVED_MANUALLY 为终态；PENDING、RUNNING、FAILED 阻塞同一 NCR 的后续任务与关闭。
+     */
+    public enum WritebackStatus { PENDING, RUNNING, DONE, FAILED, CANCELLED, RESOLVED_MANUALLY }
 
     /** 库存回写任务（契约 WritebackTask）；dispositionId 为处置行在 NCR 内的编号，HOLD 与 VOID 为 null。 */
     public record WritebackTask(long id, String ncrNo, InventoryQcHoldClient.Action action, String reason, Long dispositionId,

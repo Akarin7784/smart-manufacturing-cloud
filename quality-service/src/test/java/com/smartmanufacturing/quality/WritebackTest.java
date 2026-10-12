@@ -311,10 +311,13 @@ class WritebackTest {
     @Test void uncertainRejectionKeepsVoidPending() {
         String r = rid();
         String ncr = open(r, "1");
-        inventory.script("qc:" + ncr + ":hold", new Rejected("HTTP 422 idempotency-key-conflict", false));
+        inventory.script("qc:" + ncr + ":hold", new Rejected("HTTP 422 idempotency-key-conflict", false, InventoryQcHoldClient.Signal.CONTRACT));
         inventory.during(c -> reverse(r));
+        double mismatch = registry.get("mes.quality.inventory.contract.mismatch").tag("operation", "hold").counter().count();
         worker.runBatch();
         assertThat(tasks(ncr)).extracting(WritebackTask::status).containsExactly(WritebackStatus.FAILED, WritebackStatus.PENDING);
+        // 422 idempotency-key-conflict：FAILED 不重试，计契约不一致（operation=hold）。
+        assertThat(registry.get("mes.quality.inventory.contract.mismatch").tag("operation", "hold").counter().count()).isEqualTo(mismatch + 1);
     }
 
     // ---------------- 人工重试、结案与关闭 ----------------
@@ -386,7 +389,36 @@ class WritebackTest {
         assertThat(jdbc.queryForObject("select count(*) from inventory_writeback where ncr_no = ?", Integer.class, ncr)).isZero();
     }
 
+    /** 执行中的任务状态为 RUNNING：阻塞关闭、不可重试 / 结案，作废时追加 VOID 而非取消 HOLD。 */
+    @Test void runningTaskIsVisibleAndBlocksClose() {
+        String ncr = open(rid(), "1");
+        java.util.concurrent.atomic.AtomicReference<WritebackStatus> seen = new java.util.concurrent.atomic.AtomicReference<>();
+        inventory.during(c -> seen.set(task(ncr, Action.HOLD).status()));
+        worker.runBatch();
+        assertThat(seen.get()).isEqualTo(WritebackStatus.RUNNING);
+        assertThat(task(ncr, Action.HOLD).status()).isEqualTo(WritebackStatus.DONE);
+    }
+
+    /** 鉴权失败（库存 403 / 刷新令牌后仍 401）：FAILED 不重试，计 auth_failure；VOID 走 releases，operation=release。 */
+    @Test void authFailureFailsAndIsCounted() {
+        String r = rid();
+        String ncr = open(r, "1");
+        worker.runBatch();
+        inventory.during(c -> { });
+        reverse(r);
+        inventory.script("qc:" + ncr + ":void", new Rejected("HTTP 403 access-denied", true, InventoryQcHoldClient.Signal.AUTH));
+        double before = registry.get("mes.quality.inventory.auth.failure").tag("operation", "release").counter().count();
+        worker.runBatch();
+        assertThat(task(ncr, Action.VOID).status()).isEqualTo(WritebackStatus.FAILED);
+        assertThat(task(ncr, Action.VOID).attempts()).isEqualTo(1);
+        assertThat(registry.get("mes.quality.inventory.auth.failure").tag("operation", "release").counter().count()).isEqualTo(before + 1);
+    }
+
     @Test void allResultSeriesArePreRegistered() {
+        for (String op : QualityMetrics.INVENTORY_AUTH_OPERATIONS)
+            assertThat(registry.find("mes.quality.inventory.auth.failure").tag("operation", op).counter()).as(op).isNotNull();
+        for (String op : QualityMetrics.INVENTORY_CONTRACT_OPERATIONS)
+            assertThat(registry.find("mes.quality.inventory.contract.mismatch").tag("operation", op).counter()).as(op).isNotNull();
         for (String result : QualityMetrics.WRITEBACK_RESULTS)
             assertThat(registry.find("mes.quality.writeback").tag("result", result).counter()).as(result).isNotNull();
         assertThat(registry.find("mes.quality.writeback.pending").gauge()).isNotNull();

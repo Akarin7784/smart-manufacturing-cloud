@@ -14,7 +14,7 @@ import java.nio.charset.StandardCharsets;
  *   <li>HOLD → receipts；SCRAP → scraps；RELEASE（REWORK/CONCESSION，带 dispositionId）与 VOID（NCR_VOIDED，不带 dispositionId）→ releases。</li>
  *   <li>请求体只放契约字段，不带库位（库存固定为 QC-HOLD，多余字段 400）；lotNo 为空时不发送，由库存按必填校验拒绝（400）。</li>
  *   <li>Idempotency-Key 为任务上固定的键，重试与人工重试都不变；库存按 client_id 作用域去重，保留 7 天。</li>
- *   <li>401：作废缓存令牌重取一次再调；仍 401 按可重试处理（令牌轮换期间偶发）。</li>
+ *   <li>401：作废缓存令牌重取一次再调；仍 401 直接 FAILED 并计鉴权失败。</li>
  *   <li>结果分类见 {@link #classify}：只有能证明库存未记账的拒绝才标 certain=true。</li>
  * </ul>
  */
@@ -44,7 +44,8 @@ class HttpInventoryQcHoldClient implements InventoryQcHoldClient {
             }
             return classify(raw);
         } catch (QcHoldTokenProvider.TokenException e) {
-            return new Retryable(truncate(e.getMessage()));
+            // 令牌端点 4xx：凭据配置问题，不重试；未调用库存，确定未记账。5xx / 不可达：退避重试。
+            return e.rejected ? new Rejected(truncate(e.getMessage()), true, Signal.TOKEN_AUTH) : new Retryable(truncate(e.getMessage()));
         } catch (RestClientException e) {
             // 连接失败、读超时等：请求可能已到达库存并记账，结果不确定，按可重试处理（同一幂等键重放安全）。
             return new Retryable(truncate("调用库存失败：" + e.getMessage()));
@@ -84,12 +85,16 @@ class HttpInventoryQcHoldClient implements InventoryQcHoldClient {
     }
 
     /**
-     * 结果分类（设计 §5）：
+     * 结果分类（设计 §5，#55 拍板）：
      * <ul>
-     *   <li>2xx → 已记账，取 txnId；响应头 Idempotent-Replayed=true 为重放。</li>
-     *   <li>400、422（除幂等键冲突）、409 insufficient-stock → 明确拒绝，库存确定未记账（certain）。</li>
-     *   <li>422 idempotency-key-conflict 及其他 4xx → 不可重试，但不能证明未记账（uncertain）。</li>
-     *   <li>401、403、404、408、429、5xx → 可重试（配置修复、服务恢复后可自愈）。</li>
+     *   <li>2xx → 已记账，取 txnId；响应头 Idempotent-Replayed=true 为重放；缺 txnId 仍算已记账，另计契约不一致。</li>
+     *   <li>429、503 及其他 5xx、408 → 退避重试（网络错误在 {@link #call} 中同样退避）。</li>
+     *   <li>401（已刷新令牌重试一次）、403 → FAILED，确定未记账，计鉴权失败。</li>
+     *   <li>404（库位 / 物料不存在）→ FAILED，确定未记账。</li>
+     *   <li>409 insufficient-stock、422 uom-mismatch → FAILED，确定未记账。</li>
+     *   <li>400 validation-error → FAILED，确定未记账；说明请求构造有误，计契约不一致（与 workorder 同名指标口径一致）。</li>
+     *   <li>422 idempotency-key-conflict → FAILED，<b>不能</b>证明未记账（首次请求可能已记账，VOID 不自动取消），计契约不一致。</li>
+     *   <li>其他未约定的状态或 type → FAILED（不确定），计契约不一致。</li>
      * </ul>
      */
     Outcome classify(Raw raw) {
@@ -98,19 +103,22 @@ class HttpInventoryQcHoldClient implements InventoryQcHoldClient {
             Long txnId = null;
             try {
                 JsonNode n = mapper.readTree(raw.body()).path("txnId");
-                if (n.canConvertToLong()) txnId = n.asLong();
+                if (n.isIntegralNumber()) txnId = n.asLong();
             } catch (Exception ignored) {
-                // 响应体无法解析不影响“已记账”的判断，只是缺少流水号。
+                // 响应体无法解析不影响“已记账”的判断，只是缺少流水号（计契约不一致）。
             }
-            return new Booked(txnId, "true".equalsIgnoreCase(raw.replayed()));
+            return new Booked(txnId, "true".equalsIgnoreCase(raw.replayed()), txnId == null);
         }
         String type = problemField(raw.body(), "type");
         String error = truncate("HTTP " + s + (type == null ? "" : " " + type) + optional(problemField(raw.body(), "detail")));
-        if (s == 401 || s == 403 || s == 404 || s == 408 || s == 429 || s >= 500) return new Retryable(error);
-        if (s == 400) return new Rejected(error, true);
-        if (s == 422) return new Rejected(error, !"idempotency-key-conflict".equals(type));
-        if (s == 409) return new Rejected(error, "insufficient-stock".equals(type));
-        return new Rejected(error, false);
+        if (s == 408 || s == 429 || s >= 500) return new Retryable(error);
+        if (s == 401 || s == 403) return new Rejected(error, true, Signal.AUTH);
+        if (s == 404) return new Rejected(error, true, Signal.NONE);
+        if (s == 409 && "insufficient-stock".equals(type)) return new Rejected(error, true, Signal.NONE);
+        if (s == 422 && "uom-mismatch".equals(type)) return new Rejected(error, true, Signal.NONE);
+        if (s == 400) return new Rejected(error, true, Signal.CONTRACT);
+        if (s == 422 && "idempotency-key-conflict".equals(type)) return new Rejected(error, false, Signal.CONTRACT);
+        return new Rejected(error, false, Signal.CONTRACT);
     }
 
     private String problemField(String body, String field) {

@@ -809,7 +809,7 @@ components:
             dispositionId:
               type: integer
               format: int64
-              description: 质检处置行 ID。REWORK/CONCESSION 必填；NCR_VOIDED 禁止携带。违反返回 400（type=validation-error）。
+              description: 质检处置行编号。取值为质检处置行在该 NCR 内的行号（line_no，从 1 起只追加、不复用），**不保证全局唯一**；库存以 `ncrNo` + `dispositionId` 定位来源处置行（流水 refType=NCR、refNo=ncrNo）。REWORK/CONCESSION 必填；NCR_VOIDED 禁止携带。违反返回 400（type=validation-error）。
         # 按放行原因约束 dispositionId：处置放行必须关联处置行，作废扣回不得关联。
         - if:
             properties:
@@ -832,7 +832,7 @@ components:
             dispositionId:
               type: integer
               format: int64
-              description: 质检处置行（type=SCRAP）ID。
+              description: 质检处置行（type=SCRAP）编号。取值为质检处置行在该 NCR 内的行号（line_no，从 1 起只追加、不复用），**不保证全局唯一**；库存以 `ncrNo` + `dispositionId` 定位来源处置行（流水 refType=NCR、refNo=ncrNo）。
 
     CreateLocationRequest:
       type: object

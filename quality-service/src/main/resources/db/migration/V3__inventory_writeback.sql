@@ -16,13 +16,13 @@ CREATE TABLE inventory_writeback (
   lot_no VARCHAR(64),
   uom VARCHAR(16) NOT NULL,
   qty DECIMAL(18,6) NOT NULL,
-  -- PENDING / DONE / FAILED / CANCELLED / RESOLVED_MANUALLY；后三者与 DONE 为终态。
+  -- PENDING / RUNNING（已领取、租约内执行中）/ DONE / FAILED / CANCELLED / RESOLVED_MANUALLY；DONE、CANCELLED、RESOLVED_MANUALLY 为终态。
   status VARCHAR(20) NOT NULL,
   -- 本轮尝试次数：调度器领取时先 +1 再调用库存（领取即视为“已尝试”）；人工重试清零。
   attempts INT NOT NULL DEFAULT 0,
   -- 首次被领取执行的时间，人工重试也不清空：作废时据此判断 HOLD 是否“从未尝试过”（attempts 会被人工重试清零，不能单独作依据）。
   first_attempted_at TIMESTAMP(3) NULL,
-  -- PENDING 时为下次可执行时间；执行中为租约到期时间（进程崩溃后到期可被重新领取）；终态与 FAILED 为 NULL。
+  -- PENDING 时为下次可执行时间；RUNNING 时为租约到期时间（进程崩溃后到期可被重新领取）；终态与 FAILED 为 NULL。
   next_attempt_at TIMESTAMP(3) NULL,
   -- FAILED 的性质：REJECTED 库存明确拒绝（确定未记账）；UNCERTAIN 超时、5xx 等重试耗尽（是否记账不确定）。
   failure_kind VARCHAR(16),

@@ -25,15 +25,19 @@ class QcHoldTokenProvider {
         this.auth = auth; this.props = props; this.clock = clock;
     }
 
-    /** 申请令牌失败（凭据被拒、认证服务不可用等），调用方按可重试处理。 */
+    /**
+     * 申请令牌失败。rejected=true：令牌端点 4xx（客户端凭据或 scope 被拒，配置问题，重试无益），任务直接 FAILED 并计鉴权失败；
+     * false：认证服务 5xx 或不可达、未返回令牌，按可重试退避。
+     */
     static final class TokenException extends RuntimeException {
-        TokenException(String message, Throwable cause) { super(message, cause); }
+        final boolean rejected;
+        TokenException(String message, Throwable cause, boolean rejected) { super(message, cause); this.rejected = rejected; }
     }
 
     /** 返回有效令牌；缓存过期时同步刷新（synchronized：并发调用只申请一次）。 */
     synchronized String token() {
         if (token != null && clock.instant().isBefore(refreshAt)) return token;
-        if (!props.configured()) throw new TokenException("未配置 mes.quality.writeback.client.client-secret（QUALITY_CLIENT_SECRET）", null);
+        if (!props.configured()) throw new TokenException("未配置 mes.quality.writeback.client.client-secret（QUALITY_CLIENT_SECRET）", null, true);
         var form = new LinkedMultiValueMap<String, String>();
         form.add("grant_type", "client_credentials");
         form.add("scope", props.scope());
@@ -43,16 +47,17 @@ class QcHoldTokenProvider {
                 .contentType(MediaType.APPLICATION_FORM_URLENCODED).body(form)
                 .retrieve().body(JsonNode.class);
             String t = body == null ? null : body.path("access_token").asText(null);
-            if (t == null) throw new TokenException("令牌端点未返回 access_token", null);
+            if (t == null) throw new TokenException("令牌端点未返回 access_token", null, false);
             long ttl = body.path("expires_in").asLong(300);
             token = t;
             refreshAt = clock.instant().plusSeconds(Math.max(ttl - props.tokenRefreshSkew().toSeconds(), 1));
             return token;
         } catch (RestClientResponseException e) {
-            // 4xx 为凭据或 scope 配置问题，5xx 为认证服务不可用；两者都不能证明库存是否记账，统一按可重试处理。
-            throw new TokenException("申请服务令牌失败（HTTP " + e.getStatusCode().value() + "）", e);
+            // 4xx 为凭据或 scope 配置问题（不重试）；5xx 为认证服务不可用（退避重试）。两种情况都没有调用库存，库存确定未记账。
+            int s = e.getStatusCode().value();
+            throw new TokenException("申请服务令牌失败（HTTP " + s + "）", e, s >= 400 && s < 500);
         } catch (RestClientException e) {
-            throw new TokenException("认证服务不可达：" + e.getMessage(), e);
+            throw new TokenException("认证服务不可达：" + e.getMessage(), e, false);
         }
     }
 

@@ -22,13 +22,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * 库存回写执行器（设计 §5），由 {@link QualitySchedules} 每 2s 触发一次 {@link #runBatch()}；测试中直接调用。
  * <ol>
- *   <li><b>领取</b>（短事务）：取到期的 PENDING 任务（{@code FOR UPDATE SKIP LOCKED}，每批 50），且同一 NCR 中 id 更小的任务
- *       没有 PENDING / FAILED（<b>同一 NCR 按 id 串行</b>，保证先入后出、VOID 排在 HOLD 之后）。领取即 attempts+1、记录 first_attempted_at，
- *       并把 next_attempt_at 推到租约到期时间——之后作废判定看到的就是“已尝试/执行中”。</li>
+ *   <li><b>领取</b>（短事务）：取到期的 PENDING 任务，以及租约已到期的 RUNNING 任务（进程在调用中途崩溃留下的），
+ *       {@code FOR UPDATE SKIP LOCKED}，每批 50；同一 NCR 中 id 更小的任务没有 PENDING / RUNNING / FAILED（<b>同一 NCR 按 id 串行</b>，
+ *       保证先入后出、VOID 排在 HOLD 之后）。领取即置 RUNNING、attempts+1、记录 first_attempted_at，next_attempt_at 为租约到期时间。</li>
  *   <li><b>调用</b>：在事务外调用库存（不持有数据库锁等待网络）。</li>
  *   <li><b>回写</b>（短事务）：按 id + attempts 栅栏更新结果，租约过期后被别的实例重新领取的旧结果直接丢弃。
- *       成功 → DONE；可重试 → 指数退避（2s 起、上限 5min），超过 20 次 → FAILED（UNCERTAIN）；明确拒绝 → FAILED，
- *       HOLD 明确拒绝（确定未记账）时取消其后的 VOID。</li>
+ *       成功 → DONE；可重试 → 回到 PENDING 指数退避（2s 起、上限 5min），超过 20 次 → FAILED（UNCERTAIN）；不可重试 → FAILED，
+ *       HOLD 被拒绝且确定未记账时取消其后的 VOID；鉴权失败与契约不一致另计专用指标。</li>
  * </ol>
  * 每次执行结果计入 mes_quality_writeback_total{result}（事务提交后计数）。
  */
@@ -37,8 +37,9 @@ public class WritebackWorker {
     private static final Logger log = LoggerFactory.getLogger(WritebackWorker.class);
     private static final String CLAIM = "select w.id, w.ncr_no, w.action, w.reason, w.disposition_id, w.idempotency_key, w.material_code,"
         + " w.lot_no, w.uom, w.qty, w.attempts from inventory_writeback w"
-        + " where w.status = 'PENDING' and w.next_attempt_at <= ?"
-        + " and not exists (select 1 from inventory_writeback p where p.ncr_no = w.ncr_no and p.id < w.id and p.status in ('PENDING', 'FAILED'))"
+        + " where w.status in ('PENDING', 'RUNNING') and w.next_attempt_at <= ?"
+        + " and not exists (select 1 from inventory_writeback p where p.ncr_no = w.ncr_no and p.id < w.id"
+        + " and p.status in ('PENDING', 'RUNNING', 'FAILED'))"
         + " order by w.next_attempt_at, w.id limit ? for update skip locked";
 
     private final JdbcTemplate jdbc;
@@ -91,15 +92,15 @@ public class WritebackWorker {
         Timestamp ts = Timestamp.from(now);
         Timestamp leaseUntil = Timestamp.from(now.plus(props.lease()));
         for (Claimed c : rows)
-            jdbc.update("update inventory_writeback set attempts = ?, first_attempted_at = coalesce(first_attempted_at, ?), next_attempt_at = ?,"
+            jdbc.update("update inventory_writeback set status = 'RUNNING', attempts = ?, first_attempted_at = coalesce(first_attempted_at, ?), next_attempt_at = ?,"
                 + " updated_at = ? where id = ?", c.claimedAttempts(), ts, leaseUntil, ts, c.id());
         return rows;
     }
 
     private void apply(Claimed c, Outcome outcome) {
         Timestamp now = Timestamp.from(clock.instant().truncatedTo(ChronoUnit.MILLIS));
-        // 栅栏：只有仍是本次领取（状态 PENDING 且 attempts 未变）才回写，防止租约过期后的旧结果覆盖新一轮执行。
-        List<Integer> current = jdbc.query("select attempts from inventory_writeback where id = ? and status = 'PENDING' for update",
+        // 栅栏：只有仍是本次领取（状态 RUNNING 且 attempts 未变）才回写，防止租约过期后的旧结果覆盖新一轮执行。
+        List<Integer> current = jdbc.query("select attempts from inventory_writeback where id = ? and status = 'RUNNING' for update",
             (rs, i) -> rs.getInt(1), c.id());
         if (current.isEmpty() || current.get(0) != c.claimedAttempts()) {
             log.warn("回写任务 {} 的执行结果已过期（租约到期后被重新领取或状态已变），丢弃本次结果", c.id());
@@ -110,13 +111,14 @@ public class WritebackWorker {
                 jdbc.update("update inventory_writeback set status = 'DONE', next_attempt_at = null, failure_kind = null, last_error = null,"
                     + " inventory_txn_id = ?, updated_at = ? where id = ?", b.txnId(), now, c.id());
                 metrics.writeback(b.replayed() ? QualityMetrics.WRITEBACK_REPLAY : QualityMetrics.WRITEBACK_OK);
+                if (b.contractMismatch()) metrics.inventoryContractMismatch(InventoryQcHoldClient.operation(c.call().action()));
             }
             case Retryable r -> {
                 if (c.claimedAttempts() >= props.maxAttempts()) {
                     fail(c, WritebackService.UNCERTAIN, "重试 " + c.claimedAttempts() + " 次仍失败：" + r.error(), now);
                 } else {
                     Timestamp next = Timestamp.from(now.toInstant().plus(backoff(c.claimedAttempts())));
-                    jdbc.update("update inventory_writeback set next_attempt_at = ?, last_error = ?, updated_at = ? where id = ?",
+                    jdbc.update("update inventory_writeback set status = 'PENDING', next_attempt_at = ?, last_error = ?, updated_at = ? where id = ?",
                         next, HttpInventoryQcHoldClient.truncate(r.error()), now, c.id());
                     metrics.writeback(QualityMetrics.WRITEBACK_RETRY);
                 }
@@ -125,6 +127,12 @@ public class WritebackWorker {
                 fail(c, r.certain() ? WritebackService.REJECTED : WritebackService.UNCERTAIN, r.error(), now);
                 // HOLD 被库存明确拒绝：库存确定未记账，排在其后的作废扣回无需执行（设计 §4）。结果不确定时 VOID 保持 PENDING。
                 if (r.certain() && c.call().action() == Action.HOLD) writebacks.cancelPendingVoid(c.ncrNo());
+                switch (r.signal()) {
+                    case AUTH -> metrics.inventoryAuthFailure(InventoryQcHoldClient.operation(c.call().action()));
+                    case TOKEN_AUTH -> metrics.inventoryAuthFailure("token");
+                    case CONTRACT -> metrics.inventoryContractMismatch(InventoryQcHoldClient.operation(c.call().action()));
+                    case NONE -> { }
+                }
             }
         }
     }

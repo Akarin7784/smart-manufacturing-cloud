@@ -17,7 +17,7 @@
 | 3 | 进隔离 | NCR 以 `OPEN` 建成时把不良数量记入 `QC-HOLD`：物料 = 工单产品编码，批次、单位取自不良事件。隔离量不计入现存量合计与可用量、不可预留；现存量与可用量查询单独返回隔离量（`quarantined`） |
 | 4 | REWORK / CONCESSION | 从 QC-HOLD 放行出库，原因 `REWORK` / `CONCESSION`，**不指定目标库位** |
 | 5 | 作废 | 已入 QC-HOLD 的 NCR 因冲销作废 → 放行出库，原因 `NCR_VOIDED` |
-| 6 | 关闭 | NCR 仍有 `PENDING` 或 `FAILED` 回写任务时关闭返回 409 `writeback-pending` |
+| 6 | 关闭 | NCR 仍有 `PENDING`、`RUNNING` 或 `FAILED` 回写任务时关闭返回 409 `writeback-pending` |
 | 7 | 运维接口 | `GET /ncrs/{ncrNo}/writebacks`（`quality:read`）；`POST .../writebacks/{id}/retry` 与 `POST .../writebacks/{id}/resolve`（`quality:write`，均需 `Idempotency-Key`），仅 `FAILED` 可操作，否则 409 **复用 `invalid-status-transition`** |
 | 8 | 重试窗口 | `mes.quality.writeback.retry-window`，默认 `P6D`，必须小于库存幂等记录保留期（7 天）；超窗口重试 409 |
 | 9 | 人工结案 | `resolve` 必填 `reason`（空白 400），任务置终态 `RESOLVED_MANUALLY` 并写审计；计入 `result="resolved_manually"` |
@@ -46,7 +46,7 @@
 - **入隔离**：消费 DefectReported 建 `OPEN` NCR 的同一事务写 HOLD 任务。报工前已冲销而直接 `VOIDED` 的 NCR 不写任务。
 - **处置**：登记处置行的同一事务写 SCRAP 或 RELEASE 任务（处置行只追加，`dispositionId` 稳定，键固定）。
 - **作废**：NCR 转 `VOIDED` 的同一事务内：
-  - HOLD `attempts=0` 且不在执行中 → HOLD 置 `CANCELLED`，不写 VOID；
+  - HOLD `first_attempted_at` 为空（从未被领取执行）且不在执行中（非 `RUNNING`）→ HOLD 置 `CANCELLED`，不写 VOID。不用 `attempts=0` 判断：人工重试会把 attempts 清零，`first_attempted_at` 永不清空（#55 拍板）；
   - 否则（已尝试过或正在执行，库存是否已记账不确定）→ 保留 HOLD，追加 VOID 任务，同一 NCR 串行，VOID 排在 HOLD 之后：
     - HOLD 最终 `DONE` → 执行 VOID；
     - HOLD 因**明确拒绝**（400、422、409 `insufficient-stock`）`FAILED` → 库存确定未记账，VOID 自动 `CANCELLED`；
@@ -55,10 +55,12 @@
 - **关闭**：有 `PENDING`/`FAILED` 任务 → 409 `writeback-pending`；全部为终态 `DONE`/`CANCELLED`/`RESOLVED_MANUALLY` 才允许关闭。
 
 ## 5. 任务表与重试
-- `inventory_writeback(id, ncr_no, action[HOLD|SCRAP|RELEASE|VOID], reason, disposition_id, idempotency_key UNIQUE, material_code, lot_no, uom, qty, status[PENDING|DONE|FAILED|CANCELLED|RESOLVED_MANUALLY], attempts, next_attempt_at, last_error, inventory_txn_id, created_at, updated_at)`。
-- 调度每 2s 取到期 `PENDING`（`FOR UPDATE SKIP LOCKED`，每批 50），事务外调用库存后回写状态。**同一 NCR 按 id 顺序串行**：前序任务未 `DONE` 时后续不执行，保证先入后出。
-- 可重试：网络错误、5xx、429、401（刷新令牌后）→ 指数退避 2s 起、上限 5min，最多 20 次后 `FAILED`。
-- 不可重试：400、409 `insufficient-stock`、422 → 直接 `FAILED`，`last_error` 记 problem type 与 detail。
+- `inventory_writeback(id, ncr_no, action[HOLD|SCRAP|RELEASE|VOID], reason, disposition_id, idempotency_key UNIQUE, material_code, lot_no, uom, qty, status[PENDING|RUNNING|DONE|FAILED|CANCELLED|RESOLVED_MANUALLY], attempts, next_attempt_at, last_error, inventory_txn_id, created_at, updated_at)`。
+- 调度每 2s 取到期 `PENDING` 及租约到期的 `RUNNING`（`FOR UPDATE SKIP LOCKED`，每批 50），领取即置 `RUNNING`（租约 60s），事务外调用库存后回写状态。**同一 NCR 按 id 顺序串行**：前序任务为 `PENDING`、`RUNNING` 或 `FAILED` 时后续不执行，保证先入后出；`DONE`、`CANCELLED`、`RESOLVED_MANUALLY` 不阻塞。
+- 可重试：网络错误、429、503 及其他 5xx、令牌端点 5xx 或不可达 → 指数退避 2s 起、上限 5min，最多 20 次后 `FAILED`（结果不确定）。
+- 不可重试（直接 `FAILED`，`last_error` 记 problem type 与 detail）：400、403、404（库位 / 物料不存在）、409 `insufficient-stock`、422；401 先作废令牌重取并重试一次，仍 401 则 `FAILED`；令牌端点 4xx 同样 `FAILED`。401/403/令牌 4xx 计 `mes_quality_inventory_auth_failure_total{operation=hold|release|scrap|token}`。
+- 422 `idempotency-key-conflict`：`FAILED` 不重试，但不能证明库存未记账，其后的 VOID **不**自动取消；与 400、未约定响应一起计 `mes_quality_inventory_contract_mismatch_total{operation}`（口径同工单服务同名指标）。
+- `dispositionId` 取处置行在 NCR 内的 `line_no`，不保证全局唯一，库存以 `ncrNo` + `dispositionId` 定位；`lotNo` 原样透传报工事件中的值，不设默认批次。
 - 人工重试：`FAILED` → `PENDING`、`attempts` 清零，幂等键不变。库存幂等记录只保留 7 天，超期重放可能重复记账，因此重试窗口 `mes.quality.writeback.retry-window`（默认 `P6D`，配置注释写明必须小于库存幂等保留期 7 天）外的重试返回 409 `invalid-status-transition`，只能人工核对后 `resolve`。
 - 人工结案：`resolve` 仅 `FAILED` 可用（否则 409 `invalid-status-transition`），`reason` 必填（空白 400 `validation-error`），需 `Idempotency-Key`（同键不同请求体 422 `idempotency-key-conflict`）；置 `RESOLVED_MANUALLY`、写审计（操作人 sub、原因、时间）；HOLD 被结案时其后的 VOID 置 `CANCELLED`。
 - `DONE`/`CANCELLED`/`RESOLVED_MANUALLY` 行保留 P30D，接入现有 03:47 清理任务。

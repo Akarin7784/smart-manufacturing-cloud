@@ -39,9 +39,9 @@ info:
     - `SCRAP` 处置行 → 从 QC-HOLD 报废出库（`qc:{ncrNo}:disp:{dispositionId}:scrap`）；`REWORK` / `CONCESSION` → 放行出库，
       原因分别为 `REWORK` / `CONCESSION`，不指定目标库位（`qc:{ncrNo}:disp:{dispositionId}:release`）。
     - 已入 QC-HOLD 的 NCR 因冲销作废 → 以原因 `NCR_VOIDED` 扣回（`qc:{ncrNo}:void`）。
-    - 已入 QC-HOLD 判定：HOLD 尝试次数为 0 且不在执行中才直接取消；否则保留 HOLD 并追加 VOID，同一 NCR 串行执行。
+    - 已入 QC-HOLD 判定：HOLD 从未被领取执行过（首次尝试时间为空）且不在执行中（非 RUNNING）才直接取消；否则保留 HOLD 并追加 VOID，同一 NCR 串行执行。
     - 回写经质检服务的任务表异步执行（与 NCR/处置同一事务写入），失败按退避重试；不可重试错误置 `FAILED`，可经接口人工重试（重试窗口内）或人工结案（`RESOLVED_MANUALLY`）。
-    - 关闭 NCR 时若仍有 `PENDING` 或 `FAILED` 的回写任务，返回 409（type=writeback-pending）；全部为 `DONE`、`CANCELLED`、`RESOLVED_MANUALLY` 才可关闭。
+    - 关闭 NCR 时若仍有 `PENDING`、`RUNNING` 或 `FAILED` 的回写任务，返回 409（type=writeback-pending）；全部为 `DONE`、`CANCELLED`、`RESOLVED_MANUALLY` 才可关闭。
 
     ## 认证
     - 用户令牌（受众 manufacturing-api），查询需 `quality:read`，写入需 `quality:write`；本期单人处置，无审批流。
@@ -209,7 +209,7 @@ paths:
       summary: 关闭 NCR
       description: |
         `DISPOSED` → `CLOSED`。对已 `CLOSED` 的 NCR 重复调用返回 200；其他状态返回 409（type=invalid-status-transition），
-        已作废返回 409（type=ncr-voided）；该 NCR 仍有 `PENDING` 或 `FAILED` 的库存回写任务时返回 409（type=writeback-pending；`DONE`/`CANCELLED`/`RESOLVED_MANUALLY` 不阻止关闭）。需要 `quality:write`。
+        已作废返回 409（type=ncr-voided）；该 NCR 仍有 `PENDING`、`RUNNING` 或 `FAILED` 的库存回写任务时返回 409（type=writeback-pending；`DONE`/`CANCELLED`/`RESOLVED_MANUALLY` 不阻止关闭）。需要 `quality:write`。
       parameters:
         - $ref: '#/components/parameters/NcrNo'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -749,7 +749,7 @@ components:
         dispositionId:
           type: [integer, 'null']
           format: int64
-          description: 对应处置行 ID；HOLD 与 VOID 为 null。
+          description: 对应处置行在该 NCR 内的行号（line_no），不保证全局唯一，库存以 ncrNo + dispositionId 定位；HOLD 与 VOID 为 null。
         idempotencyKey:
           type: string
           description: 调用库存时使用的固定幂等键，如 `qc:NCR-20261012-0001:hold`。
@@ -760,8 +760,8 @@ components:
           description: 计量单位。
         status:
           type: string
-          enum: [PENDING, DONE, FAILED, CANCELLED, RESOLVED_MANUALLY]
-          description: PENDING 待执行或退避中；DONE 已成功；FAILED 不可重试错误或重试耗尽；CANCELLED 因 NCR 作废而未执行；RESOLVED_MANUALLY 人工结案。DONE、CANCELLED、RESOLVED_MANUALLY 为终态。
+          enum: [PENDING, RUNNING, DONE, FAILED, CANCELLED, RESOLVED_MANUALLY]
+          description: PENDING 待执行或退避中；RUNNING 已被调度器领取、正在调用库存（租约到期未回写会被重新领取）；PENDING、RUNNING、FAILED 会阻塞同一 NCR 的后续任务与关闭；DONE 已成功；FAILED 不可重试错误或重试耗尽；CANCELLED 因 NCR 作废而未执行；RESOLVED_MANUALLY 人工结案。DONE、CANCELLED、RESOLVED_MANUALLY 为终态。
         attempts:
           type: integer
           description: 已尝试次数。
@@ -807,7 +807,7 @@ components:
         | `invalid-status-transition` | 409 | 当前状态不允许该操作 |
         | `ncr-voided` | 409 | NCR 已作废，不能再评审、处置或关闭 |
         | `ncr-not-found` | 404 | 路径中的 NCR 编号（或其下的回写任务）不存在 |
-        | `writeback-pending` | 409 | 关闭 NCR 时仍有 PENDING 或 FAILED 的库存回写任务 |
+        | `writeback-pending` | 409 | 关闭 NCR 时仍有 PENDING、RUNNING 或 FAILED 的库存回写任务 |
         服务内 401/403 由框架统一处理，type 为 `about:blank`；经网关访问时 401/403/429/503 由网关先行返回，type 为 `gateway-*`（见 docs/authentication.md）。已处置 NCR 被冲销属于事件消费侧冲突，不对应任何 Problem type。
 
     Problem:

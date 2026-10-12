@@ -112,20 +112,38 @@ class HttpInventoryQcHoldClientTest {
         expectToken("old");
         expectToken("new");
         inventoryServer.expect(requestTo("http://inventory/inventory/qc-hold/receipts")).andExpect(header(HttpHeaders.AUTHORIZATION, "Bearer old"))
+            .andExpect(header("Idempotency-Key", "qc:NCR-20261012-0001:hold"))
             .andRespond(withStatus(HttpStatus.UNAUTHORIZED).contentType(MediaType.parseMediaType(PROBLEM)).body("{\"type\":\"authentication-required\"}"));
+        // 强制刷新令牌后用同一幂等键重试一次；成功即已记账，不带鉴权失败信号（不计 auth_failure）。
         inventoryServer.expect(requestTo("http://inventory/inventory/qc-hold/receipts")).andExpect(header(HttpHeaders.AUTHORIZATION, "Bearer new"))
+            .andExpect(header("Idempotency-Key", "qc:NCR-20261012-0001:hold"))
             .andRespond(withStatus(HttpStatus.CREATED).contentType(MediaType.APPLICATION_JSON).body(txn(9)));
-        assertThat(client.call(call(Action.HOLD, null, null))).isEqualTo(new Booked(9L, false));
+        assertThat(client.call(call(Action.HOLD, null, null))).isEqualTo(new Booked(9L, false, false));
         authServer.verify();
         inventoryServer.verify();
     }
 
-    @Test void repeatedUnauthorizedIsRetryable() {
+    /** 刷新令牌后仍 401：FAILED（确定未记账），带鉴权失败信号；只重试一次（共两次调用、两次申请令牌）。 */
+    @Test void unauthorizedAfterRefreshFails() {
         expectToken("a");
         expectToken("b");
-        inventoryServer.expect(requestTo("http://inventory/inventory/qc-hold/receipts")).andRespond(withStatus(HttpStatus.UNAUTHORIZED));
-        inventoryServer.expect(requestTo("http://inventory/inventory/qc-hold/receipts")).andRespond(withStatus(HttpStatus.UNAUTHORIZED));
-        assertThat(client.call(call(Action.HOLD, null, null))).isInstanceOf(Retryable.class);
+        inventoryServer.expect(requestTo("http://inventory/inventory/qc-hold/receipts")).andExpect(header(HttpHeaders.AUTHORIZATION, "Bearer a"))
+            .andExpect(header("Idempotency-Key", "qc:NCR-20261012-0001:hold")).andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+        inventoryServer.expect(requestTo("http://inventory/inventory/qc-hold/receipts")).andExpect(header(HttpHeaders.AUTHORIZATION, "Bearer b"))
+            .andExpect(header("Idempotency-Key", "qc:NCR-20261012-0001:hold")).andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+        assertThat(client.call(call(Action.HOLD, null, null))).isInstanceOfSatisfying(Rejected.class, r -> {
+            assertThat(r.certain()).isTrue();
+            assertThat(r.signal()).isEqualTo(InventoryQcHoldClient.Signal.AUTH);
+        });
+        authServer.verify();
+        inventoryServer.verify();
+    }
+
+    /** 令牌端点 4xx（凭据被拒）：FAILED，计 operation=token。 */
+    @Test void tokenEndpointRejectionFails() {
+        authServer.expect(requestTo("http://auth/auth/oauth2/token")).andRespond(withStatus(HttpStatus.UNAUTHORIZED));
+        assertThat(client.call(call(Action.HOLD, null, null))).isInstanceOfSatisfying(Rejected.class,
+            r -> assertThat(r.signal()).isEqualTo(InventoryQcHoldClient.Signal.TOKEN_AUTH));
     }
 
     @Test void tokenEndpointFailureIsRetryable() {
@@ -143,17 +161,21 @@ class HttpInventoryQcHoldClientTest {
     }
 
     @Test void responsesAreClassified() {
+        var S = InventoryQcHoldClient.Signal.class;
         assertThat(classify(503, null)).isInstanceOf(Retryable.class);
         assertThat(classify(500, null)).isInstanceOf(Retryable.class);
         assertThat(classify(429, null)).isInstanceOf(Retryable.class);
-        assertThat(classify(403, "access-denied")).isInstanceOf(Retryable.class);
-        assertThat(classify(400, "validation-error")).isEqualTo(new Rejected("HTTP 400 validation-error：明细", true));
-        assertThat(classify(422, "uom-mismatch")).isInstanceOfSatisfying(Rejected.class, r -> assertThat(r.certain()).isTrue());
-        assertThat(classify(409, "insufficient-stock")).isInstanceOfSatisfying(Rejected.class, r -> assertThat(r.certain()).isTrue());
-        // 幂等键冲突不能证明未记账（首次请求可能已记账）。
-        assertThat(classify(422, "idempotency-key-conflict")).isInstanceOfSatisfying(Rejected.class, r -> assertThat(r.certain()).isFalse());
-        assertThat(classify(409, "other")).isInstanceOfSatisfying(Rejected.class, r -> assertThat(r.certain()).isFalse());
-        assertThat(client.classify(new HttpInventoryQcHoldClient.Raw(201, "not json", null))).isEqualTo(new Booked(null, false));
+        assertThat(classify(403, "access-denied")).isEqualTo(new Rejected("HTTP 403 access-denied：明细", true, InventoryQcHoldClient.Signal.AUTH));
+        assertThat(classify(404, null)).isEqualTo(new Rejected("HTTP 404", true, InventoryQcHoldClient.Signal.NONE));
+        assertThat(classify(400, "validation-error")).isEqualTo(new Rejected("HTTP 400 validation-error：明细", true, InventoryQcHoldClient.Signal.CONTRACT));
+        assertThat(classify(422, "uom-mismatch")).isEqualTo(new Rejected("HTTP 422 uom-mismatch：明细", true, InventoryQcHoldClient.Signal.NONE));
+        assertThat(classify(409, "insufficient-stock")).isEqualTo(new Rejected("HTTP 409 insufficient-stock：明细", true, InventoryQcHoldClient.Signal.NONE));
+        // 幂等键冲突不能证明未记账（首次请求可能已记账），计契约不一致。
+        assertThat(classify(422, "idempotency-key-conflict")).isEqualTo(new Rejected("HTTP 422 idempotency-key-conflict：明细", false, InventoryQcHoldClient.Signal.CONTRACT));
+        assertThat(classify(409, "other")).isEqualTo(new Rejected("HTTP 409 other：明细", false, InventoryQcHoldClient.Signal.CONTRACT));
+        // 2xx 缺 txnId：仍按已记账，标记契约不一致。
+        assertThat(client.classify(new HttpInventoryQcHoldClient.Raw(201, "not json", null))).isEqualTo(new Booked(null, false, true));
+        assertThat(S).isNotNull();
     }
 
     @Test void lastErrorIsTruncatedTo512() {

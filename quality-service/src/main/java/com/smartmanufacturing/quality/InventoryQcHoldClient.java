@@ -18,17 +18,36 @@ public interface InventoryQcHoldClient {
     record Call(Action action, String idempotencyKey, String ncrNo, String materialCode, String uom, String lotNo,
                 String qty, String reason, Long dispositionId) {}
 
+    /**
+     * 需要额外计数的信号（由执行器在结果回写提交后计入指标）：
+     * AUTH → mes_quality_inventory_auth_failure_total{operation=hold|release|scrap}；TOKEN_AUTH → 同一指标 operation=token；
+     * CONTRACT → mes_quality_inventory_contract_mismatch_total{operation}（库存返回了契约之外或说明请求构造有误的响应）。
+     */
+    enum Signal { NONE, AUTH, TOKEN_AUTH, CONTRACT }
+
     /** 调用结果。 */
     sealed interface Outcome {}
-    /** 库存已记账（201）；replayed 表示库存按原幂等键重放了首次结果（响应头 Idempotent-Replayed: true）。 */
-    record Booked(Long txnId, boolean replayed) implements Outcome {}
-    /** 可重试：网络错误、超时、5xx、429、401（已刷新令牌重试一次仍失败）、403、令牌申请失败等，库存是否记账可能不确定。 */
+    /**
+     * 库存已记账（2xx）；replayed 表示库存按原幂等键重放了首次结果（响应头 Idempotent-Replayed: true）。
+     * contractMismatch：2xx 但响应体缺少 txnId（仍按已记账处理，同时计契约不一致）。
+     */
+    record Booked(Long txnId, boolean replayed, boolean contractMismatch) implements Outcome {
+        public Booked(Long txnId, boolean replayed) { this(txnId, replayed, false); }
+    }
+    /** 可重试：网络错误、超时、429、5xx、令牌端点 5xx 或不可达，库存是否记账可能不确定，退避后重试。 */
     record Retryable(String error) implements Outcome {}
     /**
-     * 不可重试：库存明确拒绝（400、409 insufficient-stock、422 等）。
-     * certain=true 表示可确定库存未记账（作废时据此自动取消 VOID）；false 表示拒绝本身不能证明未记账（如 422 idempotency-key-conflict）。
+     * 不可重试，任务直接 FAILED：库存拒绝（400、403、404、409、422，401 刷新令牌重试一次后仍 401，令牌端点 4xx 等）。
+     * certain=true 表示可确定库存未记账（作废时据此自动取消 VOID）；false 表示拒绝本身不能证明未记账（如 422 idempotency-key-conflict），VOID 保持 PENDING。
      */
-    record Rejected(String error, boolean certain) implements Outcome {}
+    record Rejected(String error, boolean certain, Signal signal) implements Outcome {
+        public Rejected(String error, boolean certain) { this(error, certain, Signal.NONE); }
+    }
+
+    /** 指标 operation 标签：HOLD → hold；SCRAP → scrap；RELEASE、VOID 都调用 releases → release。 */
+    static String operation(Action action) {
+        return switch (action) { case HOLD -> "hold"; case SCRAP -> "scrap"; case RELEASE, VOID -> "release"; };
+    }
 
     /** 是否具备调用条件（已配置服务密钥）。未配置时调度器跳过本轮，任务保持 PENDING，可从 pending 指标观察。 */
     boolean ready();

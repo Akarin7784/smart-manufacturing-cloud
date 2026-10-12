@@ -55,7 +55,7 @@ public class WritebackService {
         Long dispositionId = rs.wasNull() ? null : disp;
         return new WritebackTask(rs.getLong(1), rs.getString(2), Action.valueOf(rs.getString(3)), rs.getString(4), dispositionId,
             rs.getString(6), Quantities.format(rs.getBigDecimal(7)), rs.getString(8), status, rs.getInt(10),
-            // 契约：非 PENDING 时 nextAttemptAt 为 null。
+            // 契约：非 PENDING 时 nextAttemptAt 为 null（RUNNING 的 next_attempt_at 是租约到期时间，不对外暴露）。
             status == WritebackStatus.PENDING && next != null ? next.toInstant() : null,
             rs.getString(12), txnNull ? null : txn, rs.getTimestamp(14).toInstant(), rs.getTimestamp(15).toInstant());
     };
@@ -83,9 +83,10 @@ public class WritebackService {
     /**
      * NCR 因冲销转 VOIDED（调用方已持有 NCR 行锁，且该 NCR 无处置行，因此最多只有一条 HOLD 任务）：
      * <ul>
-     *   <li>HOLD 仍 PENDING 且从未被领取（first_attempted_at 为空，即 attempts=0 且不在执行中）→ HOLD 置 CANCELLED，不写 VOID；</li>
-     *   <li>否则保留 HOLD 并追加 VOID（排在 HOLD 之后串行执行）：HOLD 已被明确拒绝（FAILED/REJECTED）或已人工结案时，
-     *       库存确定未记账或已线下处理，VOID 直接以 CANCELLED 落库留痕；其余情况（DONE、执行中、退避中、结果不确定的 FAILED）VOID 为 PENDING。</li>
+     *   <li>HOLD 为 PENDING（不在执行中，RUNNING 即执行中）且 first_attempted_at 为空 → HOLD 置 CANCELLED，不写 VOID。
+     *       不用 attempts=0 判断：人工重试会把 attempts 清零，而 first_attempted_at 永不清空（#55 拍板）；</li>
+     *   <li>否则保留 HOLD 并追加 VOID（排在 HOLD 之后串行执行）：HOLD 已被拒绝且确定未记账（FAILED/REJECTED）或已人工结案时，
+     *       VOID 直接以 CANCELLED 落库留痕；其余情况（DONE、RUNNING、退避中、结果不确定的 FAILED）VOID 为 PENDING。</li>
      * </ul>
      * HOLD 行先 {@code FOR UPDATE}：调度器领取 HOLD 的事务（领取即记 first_attempted_at）与本事务互斥，不会出现“判定未尝试后又被领取”。
      */
@@ -111,14 +112,14 @@ public class WritebackService {
         if (cancelled) metrics.writeback(QualityMetrics.WRITEBACK_CANCELLED);
     }
 
-    /** 关闭前校验：该 NCR 仍有 PENDING 或 FAILED 任务 → 409 writeback-pending（DONE / CANCELLED / RESOLVED_MANUALLY 不阻止关闭）。 */
+    /** 关闭前校验：该 NCR 仍有 PENDING、RUNNING 或 FAILED 任务 → 409 writeback-pending（DONE / CANCELLED / RESOLVED_MANUALLY 不阻止关闭）。 */
     @Transactional(propagation = Propagation.MANDATORY)
     public void assertSettled(String ncrNo) {
-        Integer open = jdbc.queryForObject("select count(*) from inventory_writeback where ncr_no = ? and status in ('PENDING', 'FAILED')",
+        Integer open = jdbc.queryForObject("select count(*) from inventory_writeback where ncr_no = ? and status in ('PENDING', 'RUNNING', 'FAILED')",
             Integer.class, ncrNo);
         if (open != null && open > 0)
             throw new ProblemException(ProblemType.WRITEBACK_PENDING,
-                "NCR " + ncrNo + " 仍有 " + open + " 条未完成（PENDING/FAILED）的库存回写任务，完成、重试成功或人工结案后才能关闭");
+                "NCR " + ncrNo + " 仍有 " + open + " 条未完成（PENDING/RUNNING/FAILED）的库存回写任务，完成、重试成功或人工结案后才能关闭");
     }
 
     // ---------------- 查询与人工操作 ----------------
@@ -183,9 +184,9 @@ public class WritebackService {
         return n;
     }
 
-    /** PENDING 任务数（含退避中与执行中），供 mes_quality_writeback_pending。 */
+    /** PENDING（含退避中）与 RUNNING 任务数，与 mes_quality_writeback_pending 口径一致。 */
     public long pendingCount() {
-        Long n = jdbc.queryForObject("select count(*) from inventory_writeback where status = 'PENDING'", Long.class);
+        Long n = jdbc.queryForObject("select count(*) from inventory_writeback where status in ('PENDING', 'RUNNING')", Long.class);
         return n == null ? 0 : n;
     }
 
