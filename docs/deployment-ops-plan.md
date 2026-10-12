@@ -31,19 +31,20 @@
 
 ### 1. 一条命令启动完整演示环境（含演示数据）
 - 新增 `nacos-config-init` 一次性容器（curl 镜像，挂载 `infra/nacos/`，调用与 `import-nacos.ps1` 相同的 v3 运维接口），业务服务通过 `depends_on: service_completed_successfully` 等它完成。
-- 为业务服务增加 healthcheck（`/actuator/health/readiness`；运行镜像需要加入 curl，或改用 Java 自带的探测方式），gateway 改为依赖 `service_healthy`。
+- 为业务服务增加 healthcheck（探测 `/actuator/health/readiness`），gateway 改为依赖 `service_healthy`。**运行镜像不安装 curl/wget**：在镜像中放一个极小的 Java 探针（单文件 `HealthProbe.java`，用 JDK 自带 `java.net.http.HttpClient` 请求 readiness，非 200 时退出码为 1，通过 `java HealthProbe.java` 源码模式运行），compose 的 healthcheck 调用它。这样不增加攻击面，也不扩大镜像体积。
 - 新增 `demo` profile 和 `Makefile` / `scripts/demo.sh` 跨平台入口：`make demo` = `docker compose --profile app --profile demo --profile observability up -d --build --wait`，完成后自动运行冒烟测试（参照 `scripts/smoke-test.ps1` 移植一个 sh 版本）。
 - 演示数据放在 Flyway 的 `db/demo` 位置（见第 2 项），只在 `demo` 环境加载：设备约 20 台、多种状态，工单约 50 条，覆盖各个状态。
-- `AUTH_BOOTSTRAP_PASSWORD` 在 demo 环境给出明确提示的默认值，或由脚本生成后打印出来。
+- **P1 即开启 Nacos 鉴权**（`NACOS_AUTH_ENABLE=true`），各服务和 `nacos-config-init` 使用账号密码访问 Nacos。
+- 密钥统一放在**不入库的 `.env`**（`NACOS_AUTH_TOKEN`、Nacos 账号密码、MySQL 密码、`AUTH_BOOTSTRAP_PASSWORD` 等），从 compose 中删除明文；仓库只提交 `.env.example`（占位值和说明），并确认 `.gitignore` 包含 `.env`。`make demo` 在 `.env` 不存在时从 `.env.example` 生成并随机填充密钥，再把演示登录密码打印出来。
 - `make demo-reset` = `down -v` 后重新执行 `demo`。
 - **验收**：在干净机器上执行一条 `make demo`，10 分钟内所有容器 healthy；冒烟测试通过；登录后能查到演示设备和工单。
 
 ### 2. 用 Flyway 做数据库迁移
 - device/workorder/auth 三个服务引入 `flyway-core` + `flyway-mysql`，删除 `schema.sql`，并把 `spring.sql.init.mode` 改为 `never`。
 - 把现有 DDL 迁成 `db/migration/V1__baseline.sql`；为已有数据卷配置 `baseline-on-migrate: true`、`baseline-version: 1`。
-- 种子/演示数据放在 `db/demo/R__demo_data.sql`（repeatable，幂等写法），只在 demo profile 中把它加入 `spring.flyway.locations`。
+- 种子/演示数据放在 `db/demo/R__demo_data.sql`（repeatable），只在 demo profile 中把它加入 `spring.flyway.locations`。**脚本必须幂等**：使用固定主键/业务编码，配合 `INSERT ... ON DUPLICATE KEY UPDATE`，不依赖自增 ID，不做无条件 DELETE。CI 中对同一个库连续执行两次迁移（第二次需修改校验和触发重跑），并校验两次后的行数和关键数据一致。
 - `infra/mysql/*.sql` 保持只负责建库和账号；把 `auth-init.sql` 合入 init 流程。
-- CI 增加 Testcontainers MySQL 迁移测试（先 migrate 再 validate）。
+- Testcontainers MySQL 迁移测试（先 migrate 再 validate）**由 MES测试与质量负责**编写和维护，纳入其测试分层；运维这边负责提供迁移脚本，并在 CI 中接入该 job。
 - **验收**：空库和旧数据卷都能启动；`flyway_schema_history` 中有记录；修改已发布的迁移脚本会让 CI 失败。
 
 ### 3. Prometheus / Grafana 看板
@@ -62,7 +63,7 @@
 
 ### 5. 镜像构建与发布流水线（GitHub Actions）
 - 保留 `build.yml`。新增 `release.yml`：在 `v*` tag 和 main 分支 push 时触发，用 matrix 构建 4 个服务（复用根 `Dockerfile` 的 `MODULE` 参数），使用 buildx 与 GHA 缓存，推送到 GHCR（`ghcr.io/akarin7784/<service>`），标签为 `sha`、`semver`、`latest(main)`。
-- 只给需要的 job 授予 `packages: write`、`id-token: write`；增加 Trivy 扫描（高危漏洞让构建失败）、SBOM（syft）和 cosign keyless 签名；继续固定 Action 的 SHA，保持现有做法。
+- 只给需要的 job 授予 `packages: write`、`id-token: write`；增加 Trivy 扫描（**只有 CRITICAL 让构建失败**，HIGH 只告警并在 job summary 中列出，`--ignore-unfixed`）、SBOM（syft）和 cosign keyless 签名；继续固定 Action 的 SHA，保持现有做法。
 - PR 上只构建、不推送镜像，并执行一次 compose 冒烟（`--wait` + smoke 脚本）。
 - tag 时生成 GitHub Release（changelog + `compose.release.yaml`，其中改用镜像而非 build）。
 - 处理 `Dockerfile` 中写死的版本号 `1.0.0-SNAPSHOT`：改为通配或通过 `-Drevision` 传入版本。
@@ -84,4 +85,4 @@
 - Nacos 3 运维接口与 2.x 不兼容：导入容器需要固定使用 v3 路径。
 - 已有数据卷第一次切换到 Flyway 时需要 baseline；先在 demo-reset 环境验证。
 - windows CI 不能跑 Linux 容器：容器相关任务只放在 ubuntu。
-- compose 中的明文开发密钥只用于本地演示；生产环境必须改用 secrets 并开启 Nacos 鉴权。
+- 密钥只放在不入库的 `.env`；生产环境改用平台 secrets（如 K8s Secret），Nacos 鉴权在所有环境保持开启。
