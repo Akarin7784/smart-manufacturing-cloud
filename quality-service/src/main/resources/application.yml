@@ -1,0 +1,83 @@
+# 质检服务基础配置：端口、默认开发环境、健康探针、日志关联格式、安全参数、消息与任务参数。
+server:
+  port: ${SERVER_PORT:8086}
+spring:
+  application:
+    name: quality-service
+  profiles:
+    default: local
+management:
+  # 所有指标统一带 application 标签（取服务名），Prometheus/Grafana 按服务区分与聚合。
+  metrics.tags.application: ${spring.application.name}
+  # HTTP 请求耗时输出直方图桶，支撑看板中的 P95/P99 延迟（histogram_quantile）。
+  metrics.distribution.percentiles-histogram.http.server.requests: true
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+logging:
+  pattern:
+    level: "%5p [requestId=%X{requestId:-}]"
+spring.cloud.sentinel:
+  transport:
+    dashboard: ${SENTINEL_DASHBOARD:localhost:8858}
+    port: ${SENTINEL_CLIENT_PORT:9086}
+  eager: true
+
+manufacturing:
+  security:
+    # 关闭 cloud-common 的通用安全链：质检服务的 401/403 需输出 problem+json（见 QualitySecurityConfiguration）。
+    resource-server: false
+    issuer: ${AUTH_ISSUER:http://localhost:8080}
+    # 用户令牌受众，与其他服务一致。
+    audience: ${AUTH_AUDIENCE:manufacturing-api}
+    jwk-set-uri: ${AUTH_JWK_SET_URI:http://localhost:8083/auth/jwks}
+
+# topic/tag/消费组以 Nacos common.yml 的 manufacturing.mq.* 为准；消费侧默认值与 infra/nacos/common.yml 一致。
+# quality-event 及 Ncr* tag 尚未登记到 common.yml（归运维），此处默认值与契约 x-events 一致，Nacos 登记后以 Nacos 为准。
+manufacturing.mq:
+  topics:
+    workorder-quality: mes-workorder-quality
+    quality-event: mes-quality-event
+  tags:
+    defect-reported: DefectReported
+    defect-reversed: DefectReversed
+    ncr-opened: NcrOpened
+    ncr-disposed: NcrDisposed
+    ncr-closed: NcrClosed
+    ncr-voided: NcrVoided
+  consumer-groups:
+    quality-defect: CG_QUALITY_DEFECT
+
+quality:
+  # 幂等记录保留 7 天，每天 03:37 分批清理（错开工单 03:17、库存 03:27）。
+  idempotency:
+    retention: P7D
+    cleanup:
+      cron: "0 37 3 * * *"
+  # 冲销先于报工到达时的暂存 TTL（默认 24 小时），超时标 EXPIRED；每分钟扫描一次。
+  pending-reversal:
+    ttl: PT24H
+    expiry:
+      interval: PT1M
+      batch-size: 100
+  outbox:
+    interval: PT1S
+    batch-size: 50
+    producer-group: PG_QUALITY_EVENT
+    send-timeout-ms: 3000
+  consumer:
+    # 消费 mes-workorder-quality；测试（H2）中关闭，由 RocketMQ IT 打开。
+    enabled: true
+    consume-threads: 4
+
+# 表结构只由 Flyway 管理；默认关闭 baseline-on-migrate，库状态与迁移历史不一致时直接失败。
+spring.sql.init.mode: never
+spring.flyway:
+  locations: classpath:db/migration
+  baseline-on-migrate: ${FLYWAY_BASELINE_ON_MIGRATE:false}
+  baseline-version: "1"

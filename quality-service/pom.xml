@@ -1,0 +1,40 @@
+<!-- 质检微服务：消费报工不良事件生成 NCR，评审、部分处置与关闭；使用独立的 manufacturing_quality 库。 -->
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+<modelVersion>4.0.0</modelVersion>
+<parent><groupId>com.smartmanufacturing</groupId><artifactId>manufacturing-cloud</artifactId><version>1.0.0-SNAPSHOT</version></parent>
+<artifactId>quality-service</artifactId>
+<properties>
+  <!-- 客户端版本：remoting 协议兼容 RocketMQ 5.x Broker，与库存服务一致。 -->
+  <rocketmq-client.version>5.3.1</rocketmq-client.version>
+  <json-schema-validator.version>1.5.6</json-schema-validator.version>
+</properties>
+<dependencies>
+<!-- 公共组件：请求 ID、Sentinel 降级等；质检服务自带安全链（见 QualitySecurityConfiguration）。 -->
+<dependency><groupId>com.smartmanufacturing</groupId><artifactId>cloud-common</artifactId></dependency>
+<dependency><groupId>com.smartmanufacturing</groupId><artifactId>cloud-api</artifactId></dependency>
+<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
+<dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId></dependency>
+<dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId></dependency>
+<dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-starter-alibaba-sentinel</artifactId></dependency>
+<dependency><groupId>io.micrometer</groupId><artifactId>micrometer-registry-prometheus</artifactId></dependency>
+<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-jdbc</artifactId></dependency>
+<dependency><groupId>com.mysql</groupId><artifactId>mysql-connector-j</artifactId><scope>runtime</scope></dependency>
+<!-- Flyway 管理表结构版本；MySQL 8.x 需要 flyway-mysql 方言模块。 -->
+<dependency><groupId>org.flywaydb</groupId><artifactId>flyway-core</artifactId></dependency>
+<dependency><groupId>org.flywaydb</groupId><artifactId>flyway-mysql</artifactId></dependency>
+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>
+<!-- RocketMQ remoting 客户端：推模式消费 mes-workorder-quality，outbox 发布 mes-quality-event。 -->
+<dependency><groupId>org.apache.rocketmq</groupId><artifactId>rocketmq-client</artifactId><version>${rocketmq-client.version}</version></dependency>
+<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+<dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-test</artifactId><scope>test</scope></dependency>
+<!-- 契约测试：按 OpenAPI 3.1（JSON Schema 2020-12）校验每个响应体。 -->
+<dependency><groupId>com.networknt</groupId><artifactId>json-schema-validator</artifactId><version>${json-schema-validator.version}</version><scope>test</scope></dependency>
+<!-- Testcontainers：*IT 在真实 MySQL 8.4 与 RocketMQ（与 compose 同版本镜像，见 RocketMqBroker）上验证消费门禁、行锁并发与迁移。 -->
+<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-testcontainers</artifactId><scope>test</scope></dependency>
+<dependency><groupId>org.testcontainers</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
+<dependency><groupId>org.testcontainers</groupId><artifactId>mysql</artifactId><scope>test</scope></dependency>
+<!-- 异步消费断言：轮询等待消息经 Broker 投递并处理完成。 -->
+<dependency><groupId>org.awaitility</groupId><artifactId>awaitility</artifactId><scope>test</scope></dependency>
+</dependencies>
+<build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>
+</project>

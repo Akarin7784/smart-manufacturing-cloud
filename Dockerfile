@@ -13,6 +13,7 @@ COPY device-service device-service
 COPY workorder-service workorder-service
 COPY masterdata-service masterdata-service
 COPY inventory-service inventory-service
+COPY quality-service quality-service
 ARG MODULE
 RUN --mount=type=cache,target=/root/.m2,sharing=locked mvn -B -ntp -pl ${MODULE} -am package -DskipTests && cp ${MODULE}/target/${MODULE}-1.0.0-SNAPSHOT.jar /app.jar \
  && (cp ${MODULE}/jvm.options /jvm.options 2>/dev/null || : > /jvm.options)
