@@ -1,5 +1,5 @@
 -- GR-60 二级圆柱斜齿轮减速机演示主数据（与 docs/mes-product-domain-design.md 第 4 节一致）。
--- 仅在 demo profile 加载；运维引入 Flyway 后作为 db/demo 下的可重复迁移（R__）执行，文件无需改名。
+-- 仅在 demo profile 由 Flyway 作为 db/demo 下的可重复迁移（R__）执行；脚本校验和变化时自动重放。
 -- 幂等约定：固定业务编码 + INSERT ... ON DUPLICATE KEY UPDATE，不依赖自增 ID、不做无条件 DELETE，重复执行结果一致。
 -- 物料编码统一大写（如 20CRMNTI），与接口的编码格式校验一致；材料牌号原始写法保留在名称中。
 -- BOM 与工艺路线直接写入 RELEASED 状态（版本 A01 / R01，生效日 2026-10-01）；其一致性（组件存在、消耗工序存在、无循环）

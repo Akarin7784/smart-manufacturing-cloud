@@ -120,3 +120,30 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose --profile app down -v
+
+  # 迁移双跑校验：每个服务在同一 MySQL 8.4 库上执行两次 Flyway 迁移（第二次强制重放 R__ 演示数据脚本），
+  # 断言业务表行数一致且 R__ 确实重放，证明演示数据幂等。Testcontainers 迁移集成测试归测试与质量负责，此处只做双跑。
+  migrations-twice:
+    name: migrations twice (demo data idempotency)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          # 仅存在于本次 CI 运行的一次性数据库，口令不用于任何真实环境。
+          MYSQL_ROOT_PASSWORD: ci-ephemeral-root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pci-ephemeral-root --silent"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run migrations twice and compare row counts
+        env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: '3306'
+          MYSQL_ROOT_PASSWORD: ci-ephemeral-root
+        run: sh scripts/verify-migrations.sh

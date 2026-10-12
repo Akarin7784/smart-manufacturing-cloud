@@ -9,7 +9,7 @@ demo:
 demo-down:
 	sh scripts/demo.sh down
 
-# 删除数据卷后重新启动，回到干净演示状态。
+# 删除数据卷和本项目构建的本地镜像后重新启动，回到干净演示状态。
 demo-reset:
 	sh scripts/demo.sh reset
 

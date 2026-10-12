@@ -21,10 +21,8 @@ spring:
   datasource:
     url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/manufacturing_masterdata?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
     username: ${MYSQL_USERNAME:masterdata_app}
-    password: ${MYSQL_PASSWORD:local-demo-password}
+    # 不设默认值：容器或本机 cloud 环境漏配密码时启动即失败，避免静默使用弱口令（取自 .env 的 MYSQL_APP_PASSWORD）。
+    password: ${MYSQL_PASSWORD}
     hikari:
       maximum-pool-size: 10
       minimum-idle: 2
-  sql:
-    init:
-      mode: always

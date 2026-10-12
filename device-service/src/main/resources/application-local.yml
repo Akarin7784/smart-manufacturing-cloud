@@ -15,6 +15,5 @@ spring:
     driver-class-name: org.h2.Driver
     username: sa
     password: ""
-  sql:
-    init:
-      mode: always
+# 本地独立开发沿用原有行为：同时加载演示设备，便于直接调用工单接口。
+spring.flyway.locations: classpath:db/migration,classpath:db/demo

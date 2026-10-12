@@ -91,10 +91,12 @@ java -jar cloud-gateway/target/cloud-gateway-1.0.0-SNAPSHOT.jar
 make demo          # 或 sh scripts/demo.sh；Windows：powershell -ExecutionPolicy Bypass -File .\scripts\demo.ps1
 make smoke         # 对已运行环境重新冒烟
 make demo-down     # 停止，保留数据
-make demo-reset    # 删除数据卷后重建
+make demo-reset    # 删除数据卷和本项目构建的本地镜像后重建
 ```
 
-`make demo` 会：缺少 `.env` 时从 `.env.example` 生成并填充随机密钥（`.env` 不入库）→ 构建并启动全部容器 → `db-init` 初始化数据库账号、`nacos-config-init` 初始化 Nacos 管理员并导入 `infra/nacos` 配置 → 等待所有业务服务 healthy（网关在下游 healthy 后才启动）→ 运行 `scripts/smoke-test.sh`。Nacos 已开启鉴权，控制台账号为 `.env` 中的 `NACOS_USERNAME`/`NACOS_PASSWORD`。已有旧数据卷时如出现 Nacos 登录失败，执行 `make demo-reset`。
+`make demo` 会：缺少 `.env` 时从 `.env.example` 生成并填充随机密钥（`.env` 不入库）→ 构建并启动全部容器 → `db-init` 初始化数据库账号、`nacos-config-init` 初始化 Nacos 管理员并导入 `infra/nacos` 配置 → 等待所有业务服务 healthy（网关在下游 healthy 后才启动）→ 运行 `scripts/smoke-test.sh`。Nacos 已开启鉴权，控制台账号为 `.env` 中的 `NACOS_USERNAME`/`NACOS_PASSWORD`。已有旧数据卷时如出现 Nacos 登录失败，执行 `make demo-reset`。表结构由各服务启动时的 Flyway 迁移创建，演示数据（`db/demo`）只在 demo profile 加载，详见 docs/architecture.md。
+
+> 注意：Windows 脚本 `scripts/demo.ps1`、`init-env.ps1`、`import-nacos.ps1` 以及 `start-local.ps1 -Profile cloud` 尚未在 Windows 上实际运行验证（CI 只在 Linux 上跑演示环境）。遇到问题请反馈，或优先使用 WSL/Git Bash 执行 `make demo`。
 
 ### 本机运行服务（便于 IDE 调试）
 

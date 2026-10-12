@@ -149,6 +149,8 @@ services:
         MODULE: device-service
     environment:
       <<: *cloud-env
+      # 叠加 demo profile：Flyway 追加 db/demo，加载冒烟测试依赖的演示设备 D001/D002。
+      SPRING_PROFILES_ACTIVE: cloud,demo
       AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
       MYSQL_HOST: mysql
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}

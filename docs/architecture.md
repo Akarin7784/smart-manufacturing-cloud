@@ -10,12 +10,12 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 | SERVER_PORT | 8080 / 8081 / 8082 / 8083 / 8084（主数据） |
 | NACOS_ADDR | localhost:8848，容器内为 nacos:8848 |
 | NACOS_NAMESPACE | 空字符串 = public，填写 namespace ID |
-| NACOS_USERNAME / NACOS_PASSWORD | 默认空，开发 Nacos 关闭鉴权；启用鉴权时设置 |
+| NACOS_USERNAME / NACOS_PASSWORD | 容器演示环境 Nacos 已开启鉴权，取自 .env（用户名默认 nacos，密码由 init-env 随机生成）；local profile 不连接 Nacos |
 | SENTINEL_DASHBOARD | localhost:8858 |
 | SENTINEL_CLIENT_PORT | 网关 9080、设备 9081、工单 9082、认证 9083、主数据 9084 |
 | MYSQL_HOST / MYSQL_PORT | localhost / 3306 |
 | MYSQL_USERNAME | device_app / workorder_app / auth_app / masterdata_app |
-| MYSQL_PASSWORD | 容器环境取 .env 的 MYSQL_APP_PASSWORD（随机生成）；本机默认 local-demo-password |
+| MYSQL_PASSWORD | cloud profile 必填、无默认值：容器取 .env 的 MYSQL_APP_PASSWORD；本机 cloud 运行由 init-env.ps1 自动设置 |
 | DEVICE_SERVICE_URL / WORKORDER_SERVICE_URL / MASTERDATA_SERVICE_URL | 仅 local 网关的固定目标 |
 | CLIENTS_DEVICE_URL | 仅明确需要绕过发现时覆盖 Feign 目标 URL |
 
@@ -23,7 +23,15 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 
 ## 数据边界
 
-设备与工单使用独立数据库和独立 MySQL 账号，没有跨库外键。示例通过 JdbcTemplate 参数绑定访问数据库。schema.sql 是开发初始化脚本，并非生产数据库迁移工具。上线时改为 Flyway/Liquibase，并关闭 spring.sql.init.mode=always。
+设备与工单使用独立数据库和独立 MySQL 账号，没有跨库外键。示例通过 JdbcTemplate 参数绑定访问数据库。
+
+### 数据库迁移（Flyway）
+
+- 表结构位于各服务 `src/main/resources/db/migration`（`V<版本>__<说明>.sql`），服务启动时由 Flyway 执行；不再使用 `spring.sql.init`。已发布的 V 脚本不可修改，结构变更一律新增版本。
+- 演示数据位于 `db/demo`（`R__*.sql` 可重复迁移），只在 `demo` profile 中追加到 `spring.flyway.locations`；脚本必须幂等（固定主键 + `ON DUPLICATE KEY UPDATE`，禁止无条件 DELETE）。CI 的 `migrations twice` job 在同一库上执行两次迁移（第二次强制重放 R__），校验行数一致。
+- test profile 只执行 `db/migration`（设备服务另含测试资源 `db/testdata`），不加载 `db/demo`；Testcontainers MySQL 集成测试使用同一套迁移脚本（归 MES测试与质量维护）。
+- 旧开发库（已有表、无迁移历史）通过 `baseline-on-migrate`、基线版本 0 接入，V1 使用 `IF NOT EXISTS` 补齐。
+- 工单幂等记录保留 7 天，由 `IdempotencyRecordCleaner` 每天定时按 `created_at` 索引分批删除；多实例并发执行结果幂等，暂未引入 ShedLock。
 
 已实现账号登录、管理员用户管理及三种角色的接口授权。示例不提供完整业务 CRUD、分页、租户数据权限或 MES 生产排程。这些属于后续业务模块，而不是基础服务治理框架已经完成的功能。
 
