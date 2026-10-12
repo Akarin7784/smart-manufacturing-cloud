@@ -30,6 +30,18 @@ public class LocationService {
             (rs, n) -> new Location(rs.getString(1), rs.getString(2), rs.getString(3), rs.getBoolean(4)));
     }
 
+    /** 通用入库校验：库位存在、启用且不是系统库位（QC-HOLD 只能经质检隔离接口变动）。 */
+    void requireGeneral(String code) {
+        requireEnabled(code);
+        requireSystemExcluded(code);
+    }
+
+    /** 通用出库校验：系统库位返回 400 validation-error；库位不存在时不在此报错，按余额 0 处理（保持原出库语义）。 */
+    void requireSystemExcluded(String code) {
+        List<Boolean> rows = jdbc.query("select system_location from warehouse_location where code = ?", (rs, n) -> rs.getBoolean(1), code);
+        if (!rows.isEmpty() && rows.get(0)) throw ProblemException.validation("系统库位 " + code + " 不允许通用出入库，请使用质检隔离接口");
+    }
+
     /** 入库前校验库位存在且启用；不存在或停用属于请求错误（400），而非资源不存在（404，路径资源才用 404）。 */
     void requireEnabled(String code) {
         List<Boolean> rows = jdbc.query("select enabled from warehouse_location where code = ?", (rs, n) -> rs.getBoolean(1), code);

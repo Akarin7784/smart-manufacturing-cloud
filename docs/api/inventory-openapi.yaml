@@ -34,7 +34,6 @@ info:
     ## 质检隔离库位 QC-HOLD（质检回写库存，设计见 docs/quality-inventory-writeback-design.md）
     - 系统库位 `QC-HOLD` 由迁移种子创建，只能经 `/inventory/qc-hold/**` 变动；通用出入库对它返回 400（type=validation-error）。
     - 隔离量不计入现存量合计与可用量，不可预留；现存量与可用量查询单独返回隔离量。
-    - 标记 `x-planned: true` 的接口与字段为本契约新增、待实现部分，契约测试在实现 PR 前跳过它们。
 
     ## 幂等
     - 所有修改类接口必须携带 `Idempotency-Key` 请求头。
@@ -548,7 +547,6 @@ paths:
         - 必须携带 `Idempotency-Key`（作用域为 client_id），键格式见请求体说明；重放语义同预留接口。
         - 仅接受服务令牌：`aud=inventory-service` 且 scope 含 `inventory:qc-hold`；用户令牌或 scope 不足分别返回 401/403。
         - **内部接口**：路径为库存服务自身的 `/inventory/qc-hold/**`（见本操作的 `servers`），质检服务经 Nacos 服务发现直连，不经网关；网关不转发 `/api/inventory/qc-hold/**`。
-      x-planned: true
       security:
         - serviceClient: [inventory:qc-hold]
       parameters:
@@ -592,7 +590,6 @@ paths:
         - 必须携带 `Idempotency-Key`（作用域为 client_id），键格式见请求体说明；重放语义同预留接口。
         - 仅接受服务令牌：`aud=inventory-service` 且 scope 含 `inventory:qc-hold`；用户令牌或 scope 不足分别返回 401/403。
         - **内部接口**：路径为库存服务自身的 `/inventory/qc-hold/**`（见本操作的 `servers`），质检服务经 Nacos 服务发现直连，不经网关；网关不转发 `/api/inventory/qc-hold/**`。
-      x-planned: true
       security:
         - serviceClient: [inventory:qc-hold]
       parameters:
@@ -640,7 +637,6 @@ paths:
         - 必须携带 `Idempotency-Key`（作用域为 client_id），键格式见请求体说明；重放语义同预留接口。
         - 仅接受服务令牌：`aud=inventory-service` 且 scope 含 `inventory:qc-hold`；用户令牌或 scope 不足分别返回 401/403。
         - **内部接口**：路径为库存服务自身的 `/inventory/qc-hold/**`（见本操作的 `servers`），质检服务经 Nacos 服务发现直连，不经网关；网关不转发 `/api/inventory/qc-hold/**`。
-      x-planned: true
       security:
         - serviceClient: [inventory:qc-hold]
       parameters:
@@ -894,7 +890,7 @@ components:
     Stock:
       type: object
       description: 现存量行（物料、库位、批次）。
-      required: [materialCode, uom, locationCode, lotNo, qty, version]
+      required: [materialCode, uom, locationCode, lotNo, qty, inQcHold, version]
       properties:
         materialCode:
           type: string
@@ -912,8 +908,7 @@ components:
           $ref: '#/components/schemas/Quantity'
         inQcHold:
           type: boolean
-          description: 是否为隔离库存（库位为 QC-HOLD 时为 true）；隔离行的 qty 即隔离量。实现 PR 中加入 required。
-          x-planned: true
+          description: 是否为隔离库存（库位为 QC-HOLD 时为 true）；隔离行的 qty 即隔离量。
         version:
           type: integer
           format: int64
@@ -922,7 +917,7 @@ components:
     Availability:
       type: object
       description: 物料可用量。
-      required: [materialCode, uom, onHand, reserved, available]
+      required: [materialCode, uom, onHand, reserved, available, quarantined]
       properties:
         materialCode:
           type: string
@@ -938,8 +933,7 @@ components:
           $ref: '#/components/schemas/SignedQuantity'
         quarantined:
           $ref: '#/components/schemas/Quantity'
-          description: 隔离量（QC-HOLD 库位余额合计）。不计入 onHand 与 available，不可预留、不可通用出库。实现 PR 中加入 required。
-          x-planned: true
+          description: 隔离量（QC-HOLD 库位余额合计）。不计入 onHand 与 available，不可预留、不可通用出库。
 
     MovementRequest:
       type: object
