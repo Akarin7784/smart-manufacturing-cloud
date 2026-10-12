@@ -9,6 +9,8 @@ x-cloud-env: &cloud-env
   NACOS_USERNAME: ${NACOS_USERNAME:-nacos}
   NACOS_PASSWORD: ${NACOS_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
   SENTINEL_DASHBOARD: sentinel:8858
+  # RocketMQ NameServer 地址；Topic 名称见 Nacos 公共配置 common.yml。
+  ROCKETMQ_NAMESRV_ADDR: namesrv:9876
   AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
   AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
 
@@ -91,6 +93,61 @@ services:
     entrypoint: ["sh", "/init-databases.sh"]
     depends_on:
       mysql:
+        condition: service_healthy
+  # RocketMQ 5.x（remoting 协议，单 NameServer + 单 Broker），承载库存预留等领域事件；放在 app profile，随 make demo 启动。
+  # 镜像自带 bash，健康检查用 /dev/tcp 探测端口，不额外启动 JVM。
+  namesrv:
+    profiles: ["app"]
+    image: apache/rocketmq:${ROCKETMQ_IMAGE_TAG:-5.5.0}
+    command: ["sh", "mqnamesrv"]
+    environment:
+      # 默认堆 1G，演示环境压到 256M；JAVA_OPT_EXT 追加在默认参数之后，同名参数以它为准。
+      JAVA_OPT_EXT: ${ROCKETMQ_NAMESRV_JAVA_OPT:--Xms128m -Xmx256m -Xmn64m}
+    ports:
+      - "127.0.0.1:9876:9876"
+    healthcheck:
+      # NameServer 无状态、启动即可服务，端口可连即代表可用；用 /dev/tcp 探测不额外启动 JVM，开销最小。
+      # Broker 是否真正注册由 broker 自身的健康检查（clusterList）判定。
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9876"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+  broker:
+    profiles: ["app"]
+    image: apache/rocketmq:${ROCKETMQ_IMAGE_TAG:-5.5.0}
+    command: ["sh", "mqbroker", "-n", "namesrv:9876", "-c", "/home/rocketmq/broker.conf"]
+    environment:
+      # 共享机器只有 15G 内存：Broker 堆上限 512M（默认 2G），直接内存 256M（默认 1G）。
+      JAVA_OPT_EXT: ${ROCKETMQ_BROKER_JAVA_OPT:--Xms256m -Xmx512m -Xmn128m -XX:MaxDirectMemorySize=256m}
+    volumes:
+      # 不挂数据卷：镜像以非 root 用户运行，命名卷挂到不存在的目录会归 root 所有导致 Broker 无法写入；演示消息随容器删除即可。
+      - ./infra/rocketmq/broker.conf:/home/rocketmq/broker.conf:ro
+    healthcheck:
+      # 用 mqadmin clusterList 向 NameServer 查询，只有本 Broker（broker-a）已注册才算健康，避免仅端口监听就放行。
+      # 每次探测会启动一个短命 JVM：堆压到 64M（覆盖容器里给 Broker 的 JAVA_OPT_EXT），间隔 30s 控制开销；
+      # start_interval 让启动阶段每 5s 探测一次，尽快变为 healthy。
+      test: ["CMD", "bash", "-c", "JAVA_OPT_EXT='-Xms32m -Xmx64m -Xmn16m' \"$$ROCKETMQ_HOME/bin/mqadmin\" clusterList -n namesrv:9876 2>/dev/null | grep -qw 'broker-a'"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 60s
+      start_interval: 5s
+    depends_on:
+      namesrv:
+        condition: service_healthy
+  # 一次性容器：确认 Broker 已注册并按 infra/rocketmq/topics.txt 幂等创建 Topic，业务服务可等待其成功退出。
+  rocketmq-init:
+    profiles: ["app"]
+    image: apache/rocketmq:${ROCKETMQ_IMAGE_TAG:-5.5.0}
+    environment:
+      NAMESRV_ADDR: namesrv:9876
+    volumes:
+      - ./infra/rocketmq/init-topics.sh:/init-topics.sh:ro
+      - ./infra/rocketmq/topics.txt:/topics.txt:ro
+    entrypoint: ["bash", "/init-topics.sh"]
+    depends_on:
+      broker:
         condition: service_healthy
   auth:
     profiles: ["app"]
@@ -178,6 +235,9 @@ services:
       nacos-config-init:
         condition: service_completed_successfully
       db-init:
+        condition: service_completed_successfully
+      # 工单服务订阅库存预留事件，需等 Topic 创建完成。
+      rocketmq-init:
         condition: service_completed_successfully
   # 主数据服务：物料/BOM/工艺/工厂模型；叠加 demo profile 加载 GR-60 演示主数据（脚本幂等，可重复执行）。
   masterdata:
