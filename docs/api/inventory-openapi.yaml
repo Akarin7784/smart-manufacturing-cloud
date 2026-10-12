@@ -1,0 +1,713 @@
+# 库存服务（inventory-service）预留接口契约。
+# 本文件是库存服务与工单服务之间的唯一契约来源：工单侧替身、双方契约测试均按本文件生成，
+# 修改接口必须先修改本文件并通过评审，再改实现。CI 使用 Spectral（.spectral.yaml）校验。
+openapi: 3.1.0
+info:
+  title: 库存服务预留接口（inventory-service）
+  version: 1.0.0
+  contact:
+    name: smart-manufacturing-cloud 维护者
+    url: https://github.com/Akarin7784/smart-manufacturing-cloud
+  summary: 工单下达时的物料整单预留、续期、释放与按行扣减。
+  description: |
+    ## 业务概述
+    工单下达时，工单服务按 BOM 快照需求行向库存服务**整单**申请物料预留；预留成功后工单服务周期性续期，
+    领料时按预留行扣减（必须指定批次号），工单取消或下达失败时整单释放。
+
+    ## 预留单状态
+    | 状态 | 含义 | 可迁移到 |
+    | --- | --- | --- |
+    | `ACTIVE` | 已预留，占用可用量 | `RELEASED`、`EXPIRED`、`CONSUMED` |
+    | `RELEASED` | 已整单释放，未扣减部分归还可用量 | 终态 |
+    | `EXPIRED` | 超过 `expiresAt` 未续期，由库存服务定时任务判定并归还 | 终态 |
+    | `CONSUMED` | 所有预留行均已扣减关闭 | 终态 |
+
+    - 全有或全无：任一行可用量不足则整单不预留，返回 409 并列出全部缺口。
+    - TTL 15 分钟：调用方每 5 分钟续期一次；过期只由库存服务定时任务判定，并发出 `ReservationExpired` 事件，调用方不得自行推断过期。
+
+    ## 认证与调用方身份
+    - 工单服务以**服务身份**调用本服务：通过认证服务的 OAuth2 客户端凭证模式（client credentials）获取访问令牌，scope 为 `inventory:reserve`。
+      续期作业、补偿释放等无用户上下文的系统调用同样使用该服务身份，不透传终端用户令牌。
+    - 网关与库存服务分别校验令牌；所有接口均要求 `inventory:reserve`。
+    - 调用方身份取自已验证令牌中的客户端标识（client_id），不信任任何请求头声明的身份。
+
+    ## 幂等
+    - 所有修改类接口必须携带 `Idempotency-Key` 请求头。
+    - 幂等记录按**调用方服务身份**（令牌中的 client_id）划分作用域，与工单服务 #9 的做法一致：不同调用方使用相同键互不影响；
+      同一服务内不同用户触发的重试共用工单服务身份，因此同一下达键不会建出两张预留单。
+    - 幂等记录至少保留 7 天（与 #9 一致），远大于调用方重试窗口；过期清理后同一键视为新请求。
+    - 同一作用域内相同键、相同请求体（重放）：原样返回首次处理的状态码与响应体（逐字节一致，含当时的 status），不重复执行。
+      例如创建超时后用同一键重放 POST，即使预留单此后已 `RELEASED`/`EXPIRED`，仍返回首次的 201 与首次响应体，不会重新预留；
+      调用方据此取回 reservationId 完成补偿，需要最新状态时调用 GET 查询。
+    - 同一作用域内相同键、不同请求体：返回 422，防止同一个键被挪作他用。
+    - 工单下达派生的预留请求，幂等键固定为 `release:{工单号}:{下达 Idempotency-Key}`，
+      带上工单号可避免不同工单的调用方使用相同下达键时互相冲突。
+
+    ## 错误
+    所有错误响应遵循 RFC 7807，媒体类型为 `application/problem+json`。
+
+    ## 事件
+    预留单状态变化通过 outbox 表与业务数据在同一事务内落库，再异步投递到 RocketMQ：
+    - topic：`mes-inventory-reservation`；tag：`Created`、`Released`、`Consumed`、`Expired`。
+    - topic 与 tag 从 Nacos 共享配置 `manufacturing.mq.*` 读取，代码中不写死。
+    - MQ 本身不做持久化保证（演示环境），可靠性由 outbox 补发保证，因此投递语义为**至少一次**；
+      消费端必须按 `eventId` 幂等，并以 `reservationId` + 事件状态做状态判断，忽略重复或过时事件。
+    - 顺序：消息键为 `reservationId`，但**不保证**同一预留单事件的到达顺序（普通消息 + outbox 补发可能乱序）。
+      终态（RELEASED/EXPIRED/CONSUMED）互斥且每张预留单只会产生一个终态事件，消费端可按 reservationId 对终态只处理一次，
+      收到 Created 晚于终态时直接忽略。
+    - 消费组：工单服务使用 `CG_WORKORDER_RESERVATION`（同样从 Nacos `manufacturing.mq.*` 读取）。
+    - 事件结构见 `components.schemas` 中的 `Reservation*Event`，投递约定见扩展字段 `x-events`。
+servers:
+  - url: http://localhost:8080
+    description: 本地经网关访问
+tags:
+  - name: reservation
+    description: 物料预留单
+security:
+  - serviceClient: [inventory:reserve]
+
+paths:
+  /api/inventory/reservations:
+    post:
+      tags: [reservation]
+      operationId: createReservation
+      summary: 整单创建预留
+      description: |
+        按整张工单提交全部需求行，全部预留成功或全部不预留。成功后发出 `ReservationCreated` 事件。
+        工单下达场景的幂等键必须为 `release:{工单号}:{下达 Idempotency-Key}`。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReservationRequest'
+      responses:
+        '201':
+          description: 预留成功。
+          headers:
+            Location:
+              description: 新建预留单的地址。
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: 可用量不足，整单未预留（type=insufficient-stock）；`shortages` 逐行列出缺口。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/InsufficientStockProblem'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+
+  /api/inventory/reservations/{reservationId}:
+    get:
+      tags: [reservation]
+      operationId: getReservation
+      summary: 查询预留单
+      description: 按预留单 ID 查询当前状态与各行明细。
+      parameters:
+        - $ref: '#/components/parameters/ReservationId'
+      responses:
+        '200':
+          description: 预留单详情。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/inventory/reservations/{reservationId}/renew:
+    post:
+      tags: [reservation]
+      operationId: renewReservation
+      summary: 整单续期
+      description: 将 `expiresAt` 重置为当前时间加 15 分钟。仅 `ACTIVE` 可续期；已过期或已释放返回 410。404 只表示预留单 ID 不存在（调用方可视同 410 进入重新预留流程）。
+      parameters:
+        - $ref: '#/components/parameters/ReservationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 续期成功，返回最新预留单。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 预留单已整单扣减（type=reservation-consumed），无需续期。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ConsumedProblem'
+        '410':
+          description: 预留单已过期（type=reservation-expired）或已释放（type=reservation-released），需重新预留。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/GoneProblem'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+
+  /api/inventory/reservations/{reservationId}/release:
+    post:
+      tags: [reservation]
+      operationId: releaseReservation
+      summary: 整单释放
+      description: |
+        释放全部未扣减数量，状态置为 `RELEASED` 并发出 `ReservationReleased` 事件。
+        释放是幂等的：对已释放的预留单重复调用返回 200 与当前状态，不重复发事件。
+        对 `EXPIRED` 预留单调用同样返回 200（占用已归还）；对 `CONSUMED` 预留单返回 409。
+        请求体可选，用于记录释放原因并写入 `ReservationReleased` 事件；缺省为 `CALLER_REQUEST`。
+      parameters:
+        - $ref: '#/components/parameters/ReservationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReleaseReservationRequest'
+      responses:
+        '200':
+          description: 已释放（含重复释放）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 预留单已整单扣减，不能释放（type=reservation-consumed）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ConsumedProblem'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+
+  /api/inventory/reservations/{reservationId}/lines/{lineId}/consume:
+    post:
+      tags: [reservation]
+      operationId: consumeReservationLine
+      summary: 按行扣减
+      description: |
+        按预留行扣减，必须指定批次号。剩余可扣减量（`reservedQty - consumedQty`）为 0 时该行关闭；
+        所有行关闭后预留单变为 `CONSUMED` 并发出 `ReservationConsumed` 事件。
+        超过剩余可扣减量返回 422；预留单非 `ACTIVE` 返回 409（过期或释放返回 410）。
+      parameters:
+        - $ref: '#/components/parameters/ReservationId'
+        - $ref: '#/components/parameters/LineId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConsumeLineRequest'
+      responses:
+        '200':
+          description: 扣减成功，返回最新预留单。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 预留行已关闭（type=line-closed）或预留单已整单扣减（type=reservation-consumed）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ConsumeConflictProblem'
+        '410':
+          description: 预留单已过期（type=reservation-expired）或已释放（type=reservation-released）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/GoneProblem'
+        '422':
+          description: 扣减数量超过剩余可扣减量（type=over-consume），或幂等键与请求体不一致（type=idempotency-key-conflict）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/UnprocessableProblem'
+
+components:
+  securitySchemes:
+    serviceClient:
+      type: oauth2
+      description: |
+        服务间调用使用 OAuth2 客户端凭证模式（RFC 6749 client_credentials）。
+        - 令牌端点：经网关访问 `POST /api/auth/oauth2/token`，转发到认证服务 `POST /auth/oauth2/token`。
+        - 签名与校验：令牌与用户 JWT 使用同一把 RSA 私钥签名，网关与库存服务通过现有 JWKS 端点获取公钥并分别校验。
+        - 库存服务同时校验 scope 包含 `inventory:reserve` 且 `aud=inventory-service`。令牌无效、过期或 aud 不匹配返回 401，scope 不足返回 403。
+        - 令牌有效期 5 分钟；调用方必须缓存令牌并在临近过期时提前刷新，不得每次请求都重新申请。
+        - 幂等作用域取自令牌中的 client_id。
+      flows:
+        clientCredentials:
+          tokenUrl: /api/auth/oauth2/token
+          scopes:
+            inventory:reserve: 物料预留的创建、查询、续期、释放与扣减。
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 幂等键，按调用方身份划分作用域；相同键不同请求体返回 422。工单下达派生的预留使用 `release:{工单号}:{下达 Idempotency-Key}`。
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+      example: 'release:WO20261012001:7f3c9a2e-5b1d-4e8a-9c0f-2d6b8e4a1c33'
+    ReservationId:
+      name: reservationId
+      in: path
+      required: true
+      description: 预留单 ID。
+      schema:
+        type: string
+    LineId:
+      name: lineId
+      in: path
+      required: true
+      description: 预留行 ID，取自预留响应的 `lines[].lineId`。
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: 请求参数校验失败（type=validation-error）。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ValidationProblem'
+    Unauthorized:
+      description: 未认证或令牌无效。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: 无对应权限。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: 预留单或预留行不存在。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    IdempotencyConflict:
+      description: 同一作用域内幂等键已用于不同的请求体（type=idempotency-key-conflict）。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/IdempotencyConflictProblem'
+
+  schemas:
+    Quantity:
+      type: string
+      pattern: '^\d{1,12}(\.\d{1,6})?$'
+      description: 数量，以十进制字符串传输以避免浮点误差；对应数据库 DECIMAL(18,6)，即整数部分最多 12 位、小数最多 6 位，单位见所在对象的 uom。
+      examples: ['10.5']
+
+    ReservationStatus:
+      type: string
+      enum: [ACTIVE, RELEASED, EXPIRED, CONSUMED]
+      description: 预留单状态，迁移规则见文档开头。
+
+    LineStatus:
+      type: string
+      enum: [OPEN, CLOSED]
+      description: 预留行状态；剩余可扣减量为 0 时为 CLOSED。
+
+    CreateReservationRequest:
+      type: object
+      description: 整单预留请求。
+      required: [workOrderNo, lines]
+      properties:
+        workOrderNo:
+          type: string
+          description: 工单号。
+        lines:
+          type: array
+          minItems: 1
+          description: 需求行，按 BOM 快照行逐行提交（每条快照行一行，同一物料可出现多行，不做汇总）；同一请求内 sourceLineId 不得重复，重复返回 400（type=validation-error）。
+          items:
+            $ref: '#/components/schemas/CreateReservationLine'
+
+    CreateReservationLine:
+      type: object
+      description: 单条需求行，来源为工单下达时的 BOM 快照需求行。
+      required: [materialCode, qty, uom, sourceLineId]
+      properties:
+        materialCode:
+          type: string
+          description: 物料编码。
+        uom:
+          type: string
+          description: 计量单位编码（如 PCS、KG），必须与物料主数据的基本单位一致，不一致返回 400；数量均以该单位计。
+          examples: ['PCS']
+        qty:
+          $ref: '#/components/schemas/Quantity'
+        sourceLineId:
+          type: string
+          description: 来源 BOM 快照需求行 ID，格式建议 `{工单号}:{快照行号}`，用于工单侧逐行对账。
+
+    Reservation:
+      type: object
+      description: 预留单。
+      required: [reservationId, workOrderNo, status, expiresAt, lines]
+      properties:
+        reservationId:
+          type: string
+          description: 预留单 ID。
+        workOrderNo:
+          type: string
+          description: 工单号。
+        status:
+          $ref: '#/components/schemas/ReservationStatus'
+        expiresAt:
+          type: string
+          format: date-time
+          description: 过期时间（创建或最近一次续期后 15 分钟）；终态时为最后一次有效值。
+        lines:
+          type: array
+          description: 预留行明细。
+          items:
+            $ref: '#/components/schemas/ReservationLine'
+
+    ReservationLine:
+      type: object
+      description: 预留行。
+      required: [lineId, sourceLineId, materialCode, uom, qty, reservedQty, consumedQty, status]
+      properties:
+        uom:
+          type: string
+          description: 计量单位编码（如 PCS、KG），与物料主数据一致；数量均以该单位计。
+          examples: ['PCS']
+        lineId:
+          type: string
+          description: 预留行 ID，扣减时使用。
+        sourceLineId:
+          type: string
+          description: 来源 BOM 快照需求行 ID。
+        materialCode:
+          type: string
+          description: 物料编码。
+        qty:
+          $ref: '#/components/schemas/Quantity'
+        reservedQty:
+          $ref: '#/components/schemas/Quantity'
+        consumedQty:
+          $ref: '#/components/schemas/Quantity'
+        status:
+          $ref: '#/components/schemas/LineStatus'
+
+    ConsumeLineRequest:
+      type: object
+      description: 按行扣减请求。
+      required: [qty, lotNo]
+      properties:
+        qty:
+          $ref: '#/components/schemas/Quantity'
+        lotNo:
+          type: string
+          minLength: 1
+          description: 批次号，必填，用于批次追溯。
+
+    ReleaseReason:
+      type: string
+      enum: [CALLER_REQUEST, WORK_ORDER_CANCELLED, COMPENSATION]
+      description: |
+        释放原因：
+        - `CALLER_REQUEST`：调用方主动释放（缺省）。
+        - `WORK_ORDER_CANCELLED`：工单取消。
+        - `COMPENSATION`：下达失败或创建超时后的补偿释放。
+
+    ReleaseReservationRequest:
+      type: object
+      description: 释放请求（可选）。
+      properties:
+        reason:
+          $ref: '#/components/schemas/ReleaseReason'
+
+    ProblemType:
+      type: string
+      enum:
+        - insufficient-stock
+        - over-consume
+        - idempotency-key-conflict
+        - reservation-expired
+        - reservation-released
+        - reservation-consumed
+        - line-closed
+        - validation-error
+      description: |
+        固定的错误类型枚举，调用方按此分支处理，不解析 `detail`。
+        | type | HTTP 状态 | 含义 |
+        | --- | --- | --- |
+        | `insufficient-stock` | 409 | 可用量不足，整单未预留，见 `shortages` |
+        | `over-consume` | 422 | 扣减数量超过该行剩余可扣减量 |
+        | `idempotency-key-conflict` | 422 | 同一作用域内幂等键已用于不同请求体 |
+        | `reservation-expired` | 410 | 预留单已过期 |
+        | `reservation-released` | 410 | 预留单已释放 |
+        | `reservation-consumed` | 409 | 预留单已整单扣减 |
+        | `line-closed` | 409 | 预留行已关闭 |
+        | `validation-error` | 400 | 请求参数校验失败（含计量单位与主数据不一致） |
+        401/403/404 由框架统一处理，不在此枚举中，调用方按 HTTP 状态码处理。
+
+    Problem:
+      type: object
+      description: RFC 7807 错误响应。
+      properties:
+        type:
+          type: string
+          description: 错误类型；业务错误取值见 ProblemType，401/403/404 为 `about:blank`。
+        title:
+          type: string
+          description: 错误简述。
+        status:
+          type: integer
+          description: HTTP 状态码。
+        detail:
+          type: string
+          description: 本次错误的具体说明。
+        instance:
+          type: string
+          format: uri-reference
+          description: 出错的请求资源。
+
+    ValidationProblem:
+      description: 参数校验错误。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              const: validation-error
+    UnprocessableProblem:
+      description: 422 错误：超扣或幂等键冲突。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              enum: [over-consume, idempotency-key-conflict]
+    IdempotencyConflictProblem:
+      description: 幂等键冲突。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              const: idempotency-key-conflict
+    GoneProblem:
+      description: 410 错误：预留单已过期或已释放。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              enum: [reservation-expired, reservation-released]
+    ConsumedProblem:
+      description: 预留单已整单扣减。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              const: reservation-consumed
+    ConsumeConflictProblem:
+      description: 扣减冲突：预留行已关闭或预留单已整单扣减。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              enum: [line-closed, reservation-consumed]
+
+    InsufficientStockProblem:
+      description: 可用量不足的错误响应，逐行列出缺口。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type, shortages]
+          properties:
+            type:
+              const: insufficient-stock
+            shortages:
+              type: array
+              description: 所有不足的物料（不只是第一条），按物料编码 + 计量单位汇总。
+              items:
+                $ref: '#/components/schemas/Shortage'
+
+    Shortage:
+      type: object
+      description: 单个物料的缺口，按物料编码 + 计量单位汇总（同一物料多条需求行合并为一项）。
+      required: [materialCode, uom, requested, available, shortage, sourceLineIds]
+      properties:
+        materialCode:
+          type: string
+          description: 物料编码。
+        uom:
+          type: string
+          description: 计量单位编码（如 PCS、KG）；缺口按物料编码 + 计量单位汇总。
+          examples: ['PCS']
+        requested:
+          allOf:
+            - $ref: '#/components/schemas/Quantity'
+          description: 本请求中该物料（同一 uom）所有需求行的数量合计。
+        available:
+          allOf:
+            - $ref: '#/components/schemas/Quantity'
+          description: 当前可用量。
+        shortage:
+          allOf:
+            - $ref: '#/components/schemas/Quantity'
+          description: 缺口数量，等于 requested - available。
+        sourceLineIds:
+          type: array
+          minItems: 1
+          description: 参与汇总的需求行 sourceLineId，便于工单侧定位到 BOM 快照行。
+          items:
+            type: string
+
+    ReservationEventBase:
+      type: object
+      description: 预留事件公共字段；消费端按 eventId 幂等，按 reservationId 关联预留单。
+      required: [eventId, eventType, reservationId, workOrderNo, status, occurredAt]
+      properties:
+        eventId:
+          type: string
+          description: 事件唯一 ID，outbox 补发时保持不变。
+        eventType:
+          type: string
+          enum: [ReservationCreated, ReservationReleased, ReservationConsumed, ReservationExpired]
+          description: 事件类型，与 RocketMQ tag 一一对应。
+        reservationId:
+          type: string
+          description: 预留单 ID。
+        workOrderNo:
+          type: string
+          description: 工单号。
+        status:
+          $ref: '#/components/schemas/ReservationStatus'
+        occurredAt:
+          type: string
+          format: date-time
+          description: 状态变化发生时间。
+
+    ReservationCreatedEvent:
+      description: 预留创建事件（tag `Created`）。
+      allOf:
+        - $ref: '#/components/schemas/ReservationEventBase'
+        - type: object
+          required: [expiresAt, lines]
+          properties:
+            expiresAt:
+              type: string
+              format: date-time
+              description: 首次过期时间。
+            lines:
+              type: array
+              description: 预留行明细。
+              items:
+                $ref: '#/components/schemas/ReservationLine'
+
+    ReservationReleasedEvent:
+      description: 预留释放事件（tag `Released`）。
+      allOf:
+        - $ref: '#/components/schemas/ReservationEventBase'
+        - type: object
+          required: [reason]
+          properties:
+            reason:
+              $ref: '#/components/schemas/ReleaseReason'
+
+    ReservationConsumedEvent:
+      description: 整单扣减完成事件（tag `Consumed`）。
+      allOf:
+        - $ref: '#/components/schemas/ReservationEventBase'
+        - type: object
+          required: [lines]
+          properties:
+            lines:
+              type: array
+              description: 最终的预留行明细。
+              items:
+                $ref: '#/components/schemas/ReservationLine'
+
+    ReservationExpiredEvent:
+      description: 预留过期事件（tag `Expired`），由库存服务定时任务判定后发出。
+      allOf:
+        - $ref: '#/components/schemas/ReservationEventBase'
+        - type: object
+          required: [expiresAt]
+          properties:
+            expiresAt:
+              type: string
+              format: date-time
+              description: 被判定过期时的 expiresAt。
+
+# 事件投递约定：topic 与 tag 实际值从 Nacos manufacturing.mq.* 读取，此处为约定默认值。
+x-events:
+  transport: RocketMQ
+  publishVia: outbox
+  delivery: at-least-once
+  topic: mes-inventory-reservation
+  topicConfigKey: manufacturing.mq.*
+  messageKey: reservationId
+  consumerIdempotency: eventId
+  # 工单服务消费组，与 #13 中 Nacos 共享配置一致。
+  consumerGroups:
+    - CG_WORKORDER_RESERVATION
+  events:
+    - tag: Created
+      schema: '#/components/schemas/ReservationCreatedEvent'
+    - tag: Released
+      schema: '#/components/schemas/ReservationReleasedEvent'
+    - tag: Consumed
+      schema: '#/components/schemas/ReservationConsumedEvent'
+    - tag: Expired
+      schema: '#/components/schemas/ReservationExpiredEvent'
