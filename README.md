@@ -201,6 +201,22 @@ GitHub Actions 在每次推送、PR 和手动触发时执行 Linux / Windows 的
 
 添加新服务时复制业务服务结构，设置唯一 application.name / 端口 / 数据库，新增网关显式路由与 Nacos Data ID；API 契约放 cloud-api，避免共享各服务数据库。
 
+### 手动重复运行集成测试（CI）
+
+验证并发类修复（如死锁）时，用手动触发的 `.github/workflows/repeat-it.yml` 在 CI 上把同一个 IT 重复运行 N 次（每次一个独立 job，默认 20 次，上限 50），运行摘要中给出通过/失败次数，失败的那次会上传 surefire/failsafe 报告：
+
+```bash
+gh workflow run repeat-it.yml --ref <branch> -f module=inventory-service -f test=ReservationMySqlIT -f repeat=20
+```
+
+`test` 也可以写成 `类名#方法名`，或用逗号一次列出多个（同一模块内），例如：
+
+```bash
+gh workflow run repeat-it.yml --ref <branch> -f module=inventory-service -f test=ReservationMySqlIT,InventoryMySqlIT#someMethod -f repeat=20
+```
+
+列出的每个类都必须实际执行过用例且没有跳过，否则该次运行失败。这类 Testcontainers IT 只在 CI 上跑，不要在共用电脑上本地连跑。该 workflow 只有 `workflow_dispatch` 触发，不影响 push / PR 的现有检查。
+
 ## 使用边界
 
 Compose 使用仅限本机的端口绑定，Nacos 关闭鉴权、MySQL 使用开发密码，业务 API 已实现账号认证和角色权限控制。上线前补充企业身份接入（按需）、租户/数据权限、TLS、密钥轮换、数据库迁移、监控告警、备份以及 Nacos 高可用。详情见 docs/architecture.md。RocketMQ 与 Seata 在扩展说明中给出设计接入位置，当前没有启用这两个组件。
