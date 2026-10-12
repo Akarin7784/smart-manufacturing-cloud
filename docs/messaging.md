@@ -137,3 +137,10 @@ V2 写入的 outbox 行没有投递目标。V3 迁移按事件类型回填：
 ## 冒烟检查
 
 `scripts/smoke-test.sh` 在 broker 容器内用自带的 `mqadmin sendMessage` 向 `mes-smoke-test` 发送一条唯一标记消息，再用新消费组 `consumeMessage` 拉回并比对，验证 NameServer → Broker → 消费的完整链路；不给业务镜像增加任何依赖。`SKIP_MQ_SMOKE=1` 可跳过。CI 的 demo smoke job 通过 `make demo` 自动执行。
+
+## Broker 消息保留期与质检去重保留期
+
+`infra/rocketmq/broker.conf` 显式设置 `fileReservedTime = 72`（小时）。约束：
+
+- 该值必须等于质检服务的 `mes.quality.broker-retention`（默认 PT72H；compose 中以 `MES_QUALITY_BROKER_RETENTION=PT72H` 显式传入，两处一起改；质检服务启动时校验去重保留期 > broker 保留期 + 冲销 TTL）。
+- 质检 `consumed_event`、`defect_report_lock` 的保留期必须大于 broker 保留期 + 冲销暂存窗口（`quality.pending-reversal.ttl`，默认 24h），即 > 96h；否则 Broker 仍可能重投的消息在去重记录清理后会被重复处理。

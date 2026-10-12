@@ -11,7 +11,7 @@
 | workorder-service | 8082 | 18082 |
 | auth-service | 8083 | 18083 |
 | masterdata-service | 8084 | 18084 |
-| quality-service | 8086（待服务代码合入后接入 compose） | 18086 |
+| quality-service | 8086（不发布到宿主机，经网关 `/api/quality/**` 访问） | 18086 |
 | inventory-service | 8085（不发布到宿主机，冒烟经 compose 内网直连） | 18085 |
 
 - 各服务已有 `spring-boot-starter-actuator` 和 `micrometer-registry-prometheus`，暴露 `health,info,prometheus`。
@@ -44,7 +44,7 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 
 ### 抓取方式：静态配置，不用 Nacos 服务发现
 
-配置文件是 `infra/observability/prometheus/prometheus.yml`，按 compose 服务名静态抓取 6 个管理端口。不用 Nacos 发现的原因：
+配置文件是 `infra/observability/prometheus/prometheus.yml`，按 compose 服务名静态抓取 7 个管理端口。不用 Nacos 发现的原因：
 
 1. Prometheus 没有内置 Nacos SD，接入需要额外部署 adapter 或 http_sd 桥接服务；
 2. Nacos 注册的是业务端口，而指标在管理端口，仍要重写端口；
@@ -72,6 +72,7 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | `OutboxBacklog` | `max by (application) ({__name__=~"mes_.*_outbox_pending"}) > 100` | 5m | warning |
 | `QualityDisposedReversalConflict` | `sum by (application) (increase(mes_quality_event_consumed_total{result="disposed_reversal_conflict"}[15m])) > 0` | 无（一次即告警） | warning |
 | `QualityReversalOrphan` | `sum by (application) (increase(mes_quality_pending_reversal_expired_total[15m])) > 0` | 无（一次即告警） | warning |
+| `QualityInvalidEvent` | `sum by (application) (increase(mes_quality_event_consumed_total{result="invalid"}[15m])) > 0` | 无（一次即告警） | warning |
 
 `OutboxBacklog` 依赖第 5 节约定的 `mes_*_outbox_pending` Gauge。**这个指标目前还不存在**，选择器匹配不到任何序列，所以规则已加载但不会触发；工单和库存服务实现该指标后自动生效，不需要再改规则。
 
@@ -87,13 +88,13 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
   - 业务端口返回 401。
 - `scripts/monitoring-smoke.sh`：只在 monitoring profile 下运行。检查以下各项：
   - Prometheus 的 `spring-boot` targets 全部 up（轮询等待，默认 120 秒）；
-  - 6 条告警规则都已加载；
+  - 7 条告警规则都已加载；
   - 指标带 `application` 标签；
   - Grafana 健康、数据源连通、看板已加载；
   - 网关 8080 的 `/actuator/prometheus` 返回 401。
 - CI：
   - `verify` 校验 app profile 不含监控容器，并校验 monitoring 叠加后的 compose 配置；
-  - `observability-lint` 用 promtool 检查抓取配置和 6 条告警规则，并确认看板 JSON 与生成脚本一致；
+  - `observability-lint` 用 promtool 检查抓取配置和 7 条告警规则，并确认看板 JSON 与生成脚本一致；
   - `demo smoke` 在 `make demo` 之后额外拉起 prometheus 和 grafana，运行 `monitoring-smoke.sh`（约增加 1–2 分钟）。这里不单独开 job，因为单独的 job 需要重新构建并启动整套服务，耗时 10 分钟以上。
 
 ## 5. 业务指标命名约定
@@ -148,4 +149,4 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | `mes_quality_outbox_pending` | Gauge | — | 待投递的 outbox 事件数（自动匹配告警 `OutboxBacklog`） |
 | `mes_quality_ncr_open` | Gauge | — | 未关闭（OPEN/UNDER_REVIEW/DISPOSED）的 NCR 数 |
 
-告警已在 `alerts.yml` 落地（见第 3 节）：`QualityDisposedReversalConflict`（`disposed_reversal_conflict` 增量 > 0 即告警）、`QualityReversalOrphan`（`pending_reversal_expired_total` 增量 > 0）。坏消息告警 `QualityInvalidEvent`（建议 `sum by (application) (increase(mes_quality_event_consumed_total{result="invalid"}[15m])) > 0`）由运维另行添加到 `alerts.yml`。
+告警已在 `alerts.yml` 落地（见第 3 节）：`QualityDisposedReversalConflict`（`disposed_reversal_conflict` 增量 > 0 即告警）、`QualityReversalOrphan`（`pending_reversal_expired_total` 增量 > 0）、`QualityInvalidEvent`（`result="invalid"` 增量 > 0）。

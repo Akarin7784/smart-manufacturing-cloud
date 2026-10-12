@@ -164,9 +164,9 @@ after=$(avail)
 echo "PASS: 库存预留与释放（服务令牌直连、可用量往返一致）"
 
 
-# 质检权限（网关层）：用 init-env 生成的演示账号真实登录，验证角色映射。
-# quality-service 尚未部署时网关找不到实例会返回 503，因此这里只断言"网关放行（非 401/403）"或"网关拒绝（403）"，
-# 不断言业务结果；服务上线后放行路径会变为 200/404/422 等，断言依然成立。
+# 质检权限（网关 + 真实质检服务）：用 init-env 生成的演示账号真实登录，验证角色映射。
+# 服务已部署，不再接受 503：查询必须 200；无写权限的处置必须 403；
+# 有写权限的处置打到不存在的 NCR-SMOKE，只接受业务层拒绝（400/404/422），证明请求确实到达了质检服务，且不会产生数据。
 demo_login() {
   # 环境变量优先，其次读 .env（与管理员密码的取法一致）。
   dpw=$(printenv "$1" || sed -n "s/^$1=//p" "$root/.env" 2>/dev/null || true)
@@ -177,13 +177,25 @@ demo_login() {
 qcode() { _qt=$1; shift; curl -s -o /dev/null -w '%{http_code}' -m 10 -H "Authorization: Bearer $_qt" -H 'Content-Type: application/json' "$@"; }
 qc=$(demo_login AUTH_DEMO_QC01_PASSWORD qc01); [ -n "$qc" ] || fail "qc01 登录失败"
 op=$(demo_login AUTH_DEMO_OP01_PASSWORD op01); [ -n "$op" ] || fail "op01 登录失败"
-allowed() { case "$1" in 401|403) return 1 ;; *) return 0 ;; esac; }
-c=$(qcode "$op" -X POST -d '{}' "$base/api/quality/ncrs/NCR-SMOKE/dispositions"); [ "$c" = 403 ] || fail "操作员处置应被网关拒绝 403，实际 $c"
-c=$(qcode "$op" "$base/api/quality/ncrs"); allowed "$c" || fail "操作员查询质检应被网关放行，实际 $c"
-c=$(qcode "$qc" "$base/api/quality/ncrs"); allowed "$c" || fail "qc01 查询质检应被网关放行，实际 $c"
-c=$(qcode "$qc" -X POST -d '{}' "$base/api/quality/ncrs/NCR-SMOKE/dispositions"); allowed "$c" || fail "qc01 处置应被网关放行，实际 $c"
-c=$(qcode "$token" -X POST -d '{}' "$base/api/quality/ncrs/NCR-SMOKE/dispositions"); allowed "$c" || fail "管理员处置应被网关放行，实际 $c"
-echo "PASS: 质检权限（op01 处置 403、查询放行；qc01 与 admin 查询和处置放行）"
+rejected() { case "$1" in 400|404|422) return 0 ;; *) return 1 ;; esac; }
+dispose="$base/api/quality/ncrs/NCR-SMOKE/dispositions"
+c=$(qcode "$op" -X POST -d '{}' "$dispose"); [ "$c" = 403 ] || fail "操作员处置应返回 403，实际 $c"
+c=$(qcode "$op" "$base/api/quality/ncrs"); [ "$c" = 200 ] || fail "操作员查询质检应返回 200，实际 $c"
+c=$(qcode "$qc" "$base/api/quality/ncrs"); [ "$c" = 200 ] || fail "qc01 查询质检应返回 200，实际 $c"
+c=$(qcode "$qc" -X POST -d '{}' "$dispose"); rejected "$c" || fail "qc01 处置不存在的 NCR 应由质检服务拒绝（400/404/422），实际 $c"
+c=$(qcode "$token" -X POST -d '{}' "$dispose"); rejected "$c" || fail "管理员处置不存在的 NCR 应由质检服务拒绝（400/404/422），实际 $c"
+echo "PASS: 质检权限（op01 处置 403、查询 200；qc01 查询 200；qc01 与 admin 处置到达服务）"
+
+# 质检告警计数器：在 compose 内网经 inv_call 的 curl 容器读取 quality:18086（管理端口不发布到宿主机），
+# 断言三条告警依赖的序列（冲突、孤儿冲销、坏消息）已以 0 预注册；否则 increase() 计不到第一次增量，告警会漏报。
+qm=$(INV_BASE=http://quality-service:18086 INV_TOKEN= INV_IDEM_KEY= inv_call GET /actuator/prometheus) || fail "读取质检服务指标失败"
+[ "$(printf '%s' "$qm" | tail -n1)" = 200 ] || fail "质检服务管理端口 /actuator/prometheus 应返回 200"
+printf '%s\n' "$qm" | grep -Eq '^mes_quality_event_consumed_total\{[^}]*result="disposed_reversal_conflict"[^}]*\} 0(\.0)?$' \
+  || fail "缺少 mes_quality_event_consumed_total{result=\"disposed_reversal_conflict\"} 0"
+printf '%s\n' "$qm" | grep -Eq '^mes_quality_event_consumed_total\{[^}]*result="invalid"[^}]*\} 0(\.0)?$' \
+  || fail "缺少 mes_quality_event_consumed_total{result=\"invalid\"} 0"
+printf '%s\n' "$qm" | grep -Eq '^mes_quality_pending_reversal_expired_total(\{[^}]*\})? 0(\.0)?$' || fail "缺少 mes_quality_pending_reversal_expired_total 0"
+echo "PASS: 质检告警计数器已以 0 预注册（内网 18086）"
 
 # RocketMQ 收发回环：用 Broker 镜像自带的 mqadmin 发一条带唯一标记的消息，再以新消费组拉回，确认 NameServer→Broker→消费链路可用。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。SKIP_MQ_SMOKE=1 可跳过（如未启动 app profile）。

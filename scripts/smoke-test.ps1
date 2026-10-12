@@ -161,8 +161,8 @@ try {
 }
 Write-Host 'PASS: inventory reserve/release (service token, available qty restored).'
 
-# 质检权限（网关层，与 smoke-test.sh 对等）：用 init-env 生成的演示账号真实登录，验证角色映射。
-# quality-service 尚未部署时网关找不到实例会返回 503，因此只断言"网关放行（非 401/403）"或"网关拒绝（403）"，不断言业务结果。
+# 质检权限（网关 + 真实质检服务，与 smoke-test.sh 对等）：用 init-env 生成的演示账号真实登录，验证角色映射。
+# 服务已部署，不再接受 503：查询必须 200；无写权限的处置必须 403；有写权限的处置打到不存在的 NCR-SMOKE，只接受业务拒绝（400/404/422）。
 function Get-DemoPassword([string]$Key) {
     $value = [Environment]::GetEnvironmentVariable($Key)
     if (-not $value) {
@@ -195,12 +195,25 @@ $qcToken = Get-DemoToken 'qc01' 'AUTH_DEMO_QC01_PASSWORD'
 $opToken = Get-DemoToken 'op01' 'AUTH_DEMO_OP01_PASSWORD'
 $adminToken = $login.data.accessToken
 $disposePath = '/api/quality/ncrs/NCR-SMOKE/dispositions'
-if ((Get-QualityStatus $opToken 'Post' $disposePath) -ne 403) { throw 'op01 dispose should be 403 at gateway.' }
-foreach ($case in @(@($opToken, 'Get', '/api/quality/ncrs'), @($qcToken, 'Get', '/api/quality/ncrs'), @($qcToken, 'Post', $disposePath), @($adminToken, 'Post', $disposePath))) {
-    $code = Get-QualityStatus $case[0] $case[1] $case[2]
-    if ($code -eq 401 -or $code -eq 403) { throw "Gateway should allow $($case[1]) $($case[2]), got $code." }
+if ((Get-QualityStatus $opToken 'Post' $disposePath) -ne 403) { throw 'op01 dispose should be 403.' }
+foreach ($case in @(@($opToken, 'op01'), @($qcToken, 'qc01'))) {
+    $code = Get-QualityStatus $case[0] 'Get' '/api/quality/ncrs'
+    if ($code -ne 200) { throw "$($case[1]) GET /api/quality/ncrs should be 200, got $code." }
 }
-Write-Host 'PASS: quality permissions (op01 dispose 403, read allowed; qc01/admin read and dispose allowed).'
+foreach ($case in @(@($qcToken, 'qc01'), @($adminToken, 'admin'))) {
+    $code = Get-QualityStatus $case[0] 'Post' $disposePath
+    if (@(400, 404, 422) -notcontains $code) { throw "$($case[1]) dispose on missing NCR should be rejected by quality-service (400/404/422), got $code." }
+}
+Write-Host 'PASS: quality permissions (op01 dispose 403, op01/qc01 read 200, qc01/admin dispose reach service).'
+
+# 质检告警计数器：经 inv_call 的 curl 容器在 compose 内网读取 quality:18086（不发布到宿主机），断言三条告警序列（冲突、孤儿冲销、坏消息）已以 0 预注册。
+$env:INV_TOKEN = ''; $env:INV_IDEM_KEY = ''; $env:INV_BASE = 'http://quality-service:18086'
+try { $qm = inv_call GET /actuator/prometheus } finally { $env:INV_BASE = '' }
+if ((Get-InvStatus $qm) -ne 200) { throw 'quality-service /actuator/prometheus on 18086 should be 200.' }
+if ($qm -notmatch '(?m)^mes_quality_event_consumed_total\{[^}]*result="disposed_reversal_conflict"[^}]*\} 0(\.0)?\r?$') { throw 'disposed_reversal_conflict counter not pre-registered at 0.' }
+if ($qm -notmatch '(?m)^mes_quality_event_consumed_total\{[^}]*result="invalid"[^}]*\} 0(\.0)?\r?$') { throw 'invalid counter not pre-registered at 0.' }
+if ($qm -notmatch '(?m)^mes_quality_pending_reversal_expired_total(\{[^}]*\})? 0(\.0)?\r?$') { throw 'pending_reversal_expired counter not pre-registered at 0.' }
+Write-Host 'PASS: quality alert counters pre-registered at 0 (internal 18086).'
 # RocketMQ 收发回环（与 smoke-test.sh 对等）：在 broker 容器内用自带 mqadmin 发一条唯一标记消息，再以新消费组拉回比对。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。设置环境变量 SKIP_MQ_SMOKE=1 可跳过。
 if ($env:SKIP_MQ_SMOKE -ne '1') {

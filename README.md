@@ -53,7 +53,7 @@ flowchart LR
 - workorder-service：工单校验、Feign 调用、持久化与降级。
 - masterdata-service：物料、工作中心/工位、版本化多层 BOM、工艺路线；demo profile 加载 GR-60 演示主数据（端口 8084）。
 - inventory-service：库位、批次、现存量、出入库与物料预留；demo profile 加载期初库存（端口 8085，管理端口 18085，均不对宿主机发布）。预留接口只接受工单服务的服务令牌，冒烟脚本用一次性 curl 容器（`inv_call`，镜像固定在 `scripts/tool-images.env`）在 compose 内网验证预留→释放往返；离线环境先执行 `make prepull`。
-- quality-service（待服务代码合入）：NCR 与不良品处置；数据库 manufacturing_quality、网关路由、Topic mes-quality-event 与告警已就绪，compose 与监控抓取随服务代码 PR 接入（端口 8086，管理端口 18086）。
+- quality-service：NCR 与不良品处置；数据库 manufacturing_quality，消费 mes-workorder-quality、经 outbox 发布 mes-quality-event（端口 8086，管理端口 18086，均不对宿主机发布，业务接口经网关 /api/quality/**）。冒烟脚本用 qc01/op01 真实登录验证权限，并在内网核对两条质检告警计数器已以 0 预注册。
 - infra：Nacos 配置样例、MySQL 初始化、Sentinel 控制台镜像。
 - scripts：Windows 启停、配置导入、冒烟检查。
 - docs：部署与扩展说明。

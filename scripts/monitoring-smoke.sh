@@ -2,7 +2,7 @@
 # 监控冒烟测试：只在 monitoring profile 下运行（docker compose --profile app --profile monitoring up -d）。
 # 检查项：
 #   1) Prometheus 的 spring-boot 抓取目标数量等于预期，且全部 health=up（服务刚就绪时首轮抓取可能未完成，轮询等待）；
-#   2) 6 条告警规则已加载（ServiceDown / HighHttp5xxRatio / JvmHeapUsageHigh / OutboxBacklog / QualityDisposedReversalConflict / QualityReversalOrphan）；
+#   2) 7 条告警规则已加载（ServiceDown / HighHttp5xxRatio / JvmHeapUsageHigh / OutboxBacklog / QualityDisposedReversalConflict / QualityReversalOrphan / QualityInvalidEvent）；
 #   3) 各服务指标带 application 标签；
 #   4) Grafana 健康，自动配置的数据源连通、概览看板已加载（用 .env 中 init-env 生成的管理员账号）；
 #   5) 指标不经网关对外暴露：宿主机访问 8080 的 /actuator/prometheus 必须被拒绝（401）。
@@ -13,7 +13,7 @@ prom=${PROMETHEUS_URL:-http://localhost:9090}
 grafana=${GRAFANA_URL:-http://localhost:3000}
 gateway=${BASE_URL:-http://localhost:8080}
 # 与 infra/observability/prometheus/prometheus.yml 中的静态目标保持一致。
-expected=${EXPECTED_TARGETS:-6}
+expected=${EXPECTED_TARGETS:-7}
 timeout=${MONITORING_WAIT_SECONDS:-120}
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -36,7 +36,7 @@ pass "Prometheus 抓取目标 $up/$expected 全部 up"
 
 # 2) 告警规则已加载。
 rules=$(curl -fsS -m 5 "$prom/api/v1/rules" | jq -r '[.data.groups[].rules[].name] | join(",")')
-for r in ServiceDown HighHttp5xxRatio JvmHeapUsageHigh OutboxBacklog QualityDisposedReversalConflict QualityReversalOrphan; do
+for r in ServiceDown HighHttp5xxRatio JvmHeapUsageHigh OutboxBacklog QualityDisposedReversalConflict QualityReversalOrphan QualityInvalidEvent; do
   case ",$rules," in *",$r,"*) ;; *) fail "告警规则 $r 未加载（已加载：$rules）" ;; esac
 done
 pass "告警规则已加载"
