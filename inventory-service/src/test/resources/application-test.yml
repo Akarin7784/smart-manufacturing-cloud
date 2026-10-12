@@ -1,0 +1,18 @@
+# 自动测试隔离配置：不依赖 Nacos/Sentinel，业务数据存放在 H2 内存库；表结构同样由 Flyway db/migration 建立，不加载 db/demo。
+spring:
+  config:
+    import: ""
+  cloud:
+    nacos:
+      config:
+        enabled: false
+        import-check.enabled: false
+      discovery.enabled: false
+    sentinel.enabled: false
+  datasource:
+    url: jdbc:h2:mem:inventory-service;MODE=MySQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+# 测试中不触发定时清理，清理逻辑由用例直接调用验证。
+inventory.idempotency.cleanup.enabled: false

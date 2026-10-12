@@ -1,0 +1,4 @@
+# 演示环境叠加配置（与 local 或 cloud 组合使用，如 SPRING_PROFILES_ACTIVE=cloud,demo）：
+# 在 Flyway 迁移位置追加 db/demo，V1 建表后执行可重复迁移 R__demo_data.sql 加载 演示库位、批次与期初库存。
+# 脚本幂等，可重复执行，不覆盖非演示数据；脚本内容变化（校验和改变）时 Flyway 会自动重放。
+spring.flyway.locations: classpath:db/migration,classpath:db/demo
