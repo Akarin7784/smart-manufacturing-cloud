@@ -2,7 +2,7 @@
 # 采用静态配置 + compose 内网 DNS，而不是 Nacos 服务发现：
 #   1) Prometheus 没有内置 Nacos SD，接入需额外部署 adapter，演示环境不值得多一个组件；
 #   2) Nacos 注册的是业务端口，指标却在独立管理端口（1808x），仍需重写端口；
-#   3) 服务清单固定为 6 个，静态配置更直观，冒烟脚本也能据此断言 target 数量。
+#   3) 服务清单固定为 7 个，静态配置更直观，冒烟脚本也能据此断言 target 数量。
 # 新增服务时：在下面 targets 中补一行，并同步 scripts/monitoring-smoke.sh 的 EXPECTED_TARGETS。
 global:
   scrape_interval: 15s
@@ -24,6 +24,7 @@ scrape_configs:
           - auth:18083
           - masterdata:18084
           - inventory:18085
+          - quality:18086
     relabel_configs:
       # instance 只保留 compose 服务名，看板图例更简洁；application 标签由服务自身（Micrometer 公共标签）提供。
       - source_labels: [__address__]

@@ -11,7 +11,7 @@
 | workorder-service | 8082 | 18082 |
 | auth-service | 8083 | 18083 |
 | masterdata-service | 8084 | 18084 |
-| quality-service | 8086（待服务代码合入后接入 compose） | 18086 |
+| quality-service | 8086（不发布到宿主机，经网关 `/api/quality/**` 访问） | 18086 |
 | inventory-service | 8085（不发布到宿主机，冒烟经 compose 内网直连） | 18085 |
 
 - 各服务已有 `spring-boot-starter-actuator` 和 `micrometer-registry-prometheus`，暴露 `health,info,prometheus`。
@@ -44,7 +44,7 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 
 ### 抓取方式：静态配置，不用 Nacos 服务发现
 
-配置文件是 `infra/observability/prometheus/prometheus.yml`，按 compose 服务名静态抓取 6 个管理端口。不用 Nacos 发现的原因：
+配置文件是 `infra/observability/prometheus/prometheus.yml`，按 compose 服务名静态抓取 7 个管理端口。不用 Nacos 发现的原因：
 
 1. Prometheus 没有内置 Nacos SD，接入需要额外部署 adapter 或 http_sd 桥接服务；
 2. Nacos 注册的是业务端口，而指标在管理端口，仍要重写端口；
