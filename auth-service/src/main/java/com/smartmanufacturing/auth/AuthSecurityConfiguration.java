@@ -15,7 +15,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.jwt.*;
 import org.springframework.security.web.SecurityFilterChain;
 
-/** 认证服务自身也要求 JWT；只有登录、公钥及健康探针允许匿名访问。 */
+/** 认证服务自身也要求 JWT；只有登录、服务令牌端点、公钥及健康探针允许匿名访问。 */
 @Configuration
 @EnableMethodSecurity
 public class AuthSecurityConfiguration {
@@ -38,6 +38,8 @@ public class AuthSecurityConfiguration {
             .formLogin(form -> form.disable()).httpBasic(basic -> basic.disable()).logout(logout -> logout.disable())
             .authorizeHttpRequests(rules -> rules
                 .requestMatchers(HttpMethod.POST, "/auth/login").permitAll()
+                // 令牌端点自行按 RFC 6749 校验客户端凭据（Basic 或表单），不经过 JWT 资源服务器认证。
+                .requestMatchers(HttpMethod.POST, "/auth/oauth2/token").permitAll()
                 .requestMatchers(HttpMethod.GET, "/auth/jwks", "/actuator/health", "/actuator/health/**").permitAll()
                 .requestMatchers("/actuator/**").hasAuthority("metrics:read")
                 .requestMatchers("/auth/me", "/auth/users", "/auth/users/**").authenticated()
