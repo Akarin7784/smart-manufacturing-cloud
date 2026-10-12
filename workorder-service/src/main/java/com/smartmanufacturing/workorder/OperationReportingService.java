@@ -40,11 +40,13 @@ public class OperationReportingService {
     private final ObjectMapper mapper;
     private final Clock clock;
     private final ReportingMetrics metrics;
+    private final WorkOrderCancellation cancellation;
     private final String eventTopic, startedTag, completedTag, reopenedTag, qualityTopic, defectReportedTag, defectReversedTag;
 
     public OperationReportingService(JdbcTemplate jdbc, TransactionTemplate tx, WorkOrderJournal journal, ObjectMapper mapper,
-                                     Clock clock, MqProperties mq, ReportingMetrics metrics) {
+                                     Clock clock, MqProperties mq, ReportingMetrics metrics, WorkOrderCancellation cancellation) {
         this.metrics = metrics;
+        this.cancellation = cancellation;
         this.jdbc = jdbc; this.tx = tx; this.journal = journal; this.mapper = mapper; this.clock = clock;
         // 启动即解析，缺配置直接启动失败，而不是在第一次报工时才发现
         this.eventTopic = mq.topic("workorder-event");
@@ -89,6 +91,7 @@ public class OperationReportingService {
     private OperationReportResult doReport(Order order, String opNo, ReportOperationRequest req, String operator) {
         switch (order.status()) {
             case "CLOSED" -> throw WorkOrderProblemType.WORKORDER_CLOSED.exception("工单 " + order.id() + " 已关闭，不能报工");
+            case "CANCELLED" -> throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单 " + order.id() + " 已取消，不能报工");
             case "RELEASED", "IN_PROGRESS" -> { }
             default -> throw WorkOrderProblemType.WORK_ORDER_STATE_CONFLICT.exception("工单当前状态 " + order.status() + " 不允许报工");
         }
@@ -158,6 +161,7 @@ public class OperationReportingService {
     private OperationReportResult doReverse(Order order, String reportId, String reason, String operator) {
         switch (order.status()) {
             case "CLOSED" -> throw WorkOrderProblemType.WORKORDER_CLOSED.exception("工单 " + order.id() + " 已关闭，不能冲销");
+            case "CANCELLED" -> throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单 " + order.id() + " 已取消，不能冲销");
             case "IN_PROGRESS", "COMPLETED" -> { }
             default -> throw WorkOrderProblemType.WORK_ORDER_STATE_CONFLICT.exception("工单当前状态 " + order.status() + " 不允许冲销");
         }
@@ -221,6 +225,7 @@ public class OperationReportingService {
     private WorkOrderCompletionView doComplete(Order order, String reason, String operator) {
         switch (order.status()) {
             case "CLOSED" -> throw WorkOrderProblemType.WORKORDER_CLOSED.exception("工单 " + order.id() + " 已关闭，不能完工");
+            case "CANCELLED" -> throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单 " + order.id() + " 已取消，不能完工");
             case "RELEASED", "IN_PROGRESS" -> { }
             default -> throw WorkOrderProblemType.WORK_ORDER_STATE_CONFLICT.exception("工单当前状态 " + order.status() + " 不允许手工完工");
         }
@@ -246,6 +251,17 @@ public class OperationReportingService {
         List<Progress> ops = readProgress(order.id());
         if (ops.isEmpty()) ops = fromTasks(order.id());
         return progressView(order.id(), order.status(), order.planned(), ops);
+    }
+
+    /**
+     * 取消工单（幂等）：与报工共用“锁工单行 → 查幂等记录 → 执行 → 保存幂等记录”的单事务流程，因此与报工、冲销、完工串行。
+     * 同键重放原样返回首次结果（不会再次登记释放）；换键再取消已取消的工单返回 409 workorder-cancelled。
+     * 状态变更与预留释放任务在同一事务内提交，释放由 ReservationReleaseWorker 异步完成。
+     */
+    public CommandResult cancel(String orderNo, CancelWorkOrderRequest req, String key, String operator) {
+        String note = req == null ? null : req.note();
+        String hash = hash("CANCEL", orderNo, note);
+        return idempotent(operator, key, "CANCEL", orderNo, hash, 200, order -> cancellation.cancelInTx(order.id(), order.status(), note, operator));
     }
 
     public List<OperationReportView> reports(String orderNo) {

@@ -242,6 +242,8 @@ services:
       AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
       # 服务身份：调用库存服务时用 client_credentials 向 auth-service 换取服务令牌（明文密钥只给调用方）。
       WORKORDER_CLIENT_SECRET: ${WORKORDER_CLIENT_SECRET:?请先运行 scripts/init-env.sh 生成 .env}
+      # 物料预留接入真实库存服务（经 Nacos 服务发现直连 inventory-service，不经网关）；local 为不检查库存的本地替身。
+      WORKORDER_MATERIAL_RESERVATION: inventory
       MYSQL_HOST: mysql
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
     healthcheck:

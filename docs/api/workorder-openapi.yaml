@@ -20,9 +20,10 @@ info:
     - 首次报工：RELEASED → IN_PROGRESS；末道累计合格数 ≥ 计划数：→ COMPLETED。
     - 冲销使末道不足计划数：COMPLETED → IN_PROGRESS（发布 WorkOrderReopened）；全部冲销后仍为 IN_PROGRESS。
     - CLOSED：报工、冲销、完工均返回 409 `workorder-closed`；ON_HOLD：返回 409 `workorder-state-conflict`。
+    - 取消：CREATED / RELEASED / ON_HOLD → CANCELLED；CANCELLED 后的写操作返回 409 `workorder-cancelled`。
 
     ## 幂等
-    报工、冲销、手工完工必须携带 `Idempotency-Key`。同一调用方同键同请求：原样返回首次的状态码与响应体，并带
+    报工、冲销、手工完工、取消必须携带 `Idempotency-Key`。同一调用方同键同请求：原样返回首次的状态码与响应体，并带
     `Idempotent-Replayed: true`；同键不同请求：422 `idempotency-key-conflict`。只记录成功结果，失败可用同键重试。
 
     ## 错误
@@ -187,6 +188,49 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+
+  /api/workorders/{workOrderNo}/cancel:
+    post:
+      tags: [reporting]
+      operationId: cancelWorkOrder
+      summary: 取消工单
+      description: |
+        CREATED / RELEASED / ON_HOLD 状态可取消。同一事务内把工单置 CANCELLED、发布 WorkOrderCancelled，
+        并为有效（ACTIVE）库存预留登记释放任务；释放由后台异步执行（`reason=WORK_ORDER_CANCELLED`，
+        库存 `Idempotency-Key: cancel-{工单号}-{预留单号}`），库存暂时不可用不影响取消，恢复后自动释放。
+        同键重放原样返回首次结果且不再次释放；换键再次取消返回 409 `workorder-cancelled`。
+        已关闭 409 `workorder-closed`；IN_PROGRESS / COMPLETED（已有报工）409 `workorder-state-conflict`。需要 `workorder:write`。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelWorkOrderRequest'
+      responses:
+        '200':
+          description: '已取消（重放时响应头 Idempotent-Replayed 为 true）。'
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderCancellationResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
 
   /api/workorders/{workOrderNo}/progress:
     get:
@@ -478,6 +522,49 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/OperationReportView'
+    CancelWorkOrderRequest:
+      type: object
+      description: 取消请求（可省略）。
+      properties:
+        note:
+          type: string
+          maxLength: 256
+          description: 取消说明，写入状态审计。
+    WorkOrderCancellationView:
+      type: object
+      description: 取消结果。
+      required: [workOrderNo, status, previousStatus, cancelledAt]
+      properties:
+        workOrderNo:
+          type: string
+          description: 工单号。
+        status:
+          type: string
+          const: CANCELLED
+          description: 取消后状态。
+        previousStatus:
+          type: string
+          enum: [CREATED, RELEASED, ON_HOLD]
+          description: 取消前状态。
+        reservationId:
+          type: [string, 'null']
+          description: 需要释放的库存预留单；无有效预留时为 null。
+        releaseStatus:
+          type: [string, 'null']
+          enum: [PENDING, null]
+          description: 释放任务状态；PENDING 表示已登记、由后台异步释放。
+        cancelledAt:
+          type: string
+          format: date-time
+          description: 取消时间。
+    WorkOrderCancellationResponse:
+      description: 取消响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/WorkOrderCancellationView'
     ProblemType:
       type: string
       description: |
@@ -492,7 +579,9 @@ components:
         | `report-already-reversed` | 409 | 报工已被冲销（只允许冲销一次），或冲销对象本身是冲销记录 |
         | `operation-not-found` | 404 | 工序号不在下达时的工艺快照中 |
         | `report-not-found` | 404 | 该工单下不存在此报工记录 |
-        | `uom-mismatch` | 422 | 报工计量单位与本工单已有报工的单位不一致；`data` 含 expectedUom / requestedUom |
+        | `uom-mismatch` | 422 | 报工计量单位与本工单已有报工的单位不一致（`data` 含 expectedUom / requestedUom）；或下达预留时 BOM 单位与库存已登记的现存量单位不一致（`data.source=inventory`） |
+        | `workorder-cancelled` | 409 | 工单已取消：重复取消（换键；同键为重放）以及取消后的下达、报工、冲销、完工、冻结、恢复 |
+        | `inventory-service-unavailable` | 503 | 库存服务不可用或拒绝服务令牌（下达预留、恢复时重新预留） |
         | `validation-error` | 400 | 请求参数校验失败（格式、必填、范围、小数位超过 6 位等） |
         | `idempotency-key-required` | 400 | 缺少或格式非法的 `Idempotency-Key` |
         | `idempotency-key-conflict` | 422 | 同一调用方的幂等键已用于不同请求 |
@@ -508,7 +597,7 @@ components:
         | `device-service-unavailable` | 503 | 设备服务不可用 |
         | `masterdata-service-unavailable` | 503 | 主数据服务不可用 |
         | `release-masterdata-invalid` | 422 | 下达所需主数据无效 |
-        | `material-shortage` | 409 | 物料短缺 |
+        | `material-shortage` | 409 | 物料短缺（库存 insufficient-stock 的缺口原样放在 `data`；物料从未入库时 available=0） |
         | `internal-error` | 500 | 内部错误 |
       enum:
         - over-report
@@ -519,6 +608,8 @@ components:
         - operation-not-found
         - report-not-found
         - uom-mismatch
+        - workorder-cancelled
+        - inventory-service-unavailable
         - validation-error
         - idempotency-key-required
         - idempotency-key-conflict

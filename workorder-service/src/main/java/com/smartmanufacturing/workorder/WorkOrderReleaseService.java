@@ -75,6 +75,9 @@ public class WorkOrderReleaseService {
      */
     public ReleaseResult release(String orderId, String key, String operator) {
         Order order = order(orderId);
+        // 已取消：同键重放仍返回首次下达结果（幂等契约），其他键返回 409 workorder-cancelled
+        if ("CANCELLED".equals(order.status()) && lifecycle(orderId).map(lc -> !lc.releaseKey().equals(key)).orElse(true))
+            throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单已取消，不能下达");
         Optional<ReleaseResult> replay = replay(orderId, key);
         if (replay.isPresent()) return replay.get();
         if (!"CREATED".equals(order.status()))
@@ -219,6 +222,7 @@ public class WorkOrderReleaseService {
     /** 在调用方事务内冻结；版本冲突抛 VersionConflict 由外层回滚重试。返回是否产生了变更。 */
     private boolean holdInTx(String orderId, HoldReason reason, String note, String operator) {
         Order order = order(orderId);
+        if ("CANCELLED".equals(order.status())) throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单已取消，不能冻结");
         Lifecycle lc = requireLifecycle(orderId);
         boolean onHold = "ON_HOLD".equals(order.status());
         if (!onHold && !HOLDABLE.contains(order.status()))
@@ -239,6 +243,8 @@ public class WorkOrderReleaseService {
      */
     public WorkOrderReleaseView resume(String orderId, HoldReason reason, String note, String operator) {
         requireLifecycle(orderId);
+        // 取消时保留了冻结原因（见 WorkOrderCancellation），已取消的工单不允许恢复
+        if ("CANCELLED".equals(order(orderId).status())) throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单已取消，不能恢复");
         if (!reasons(orderId).contains(reason.name())) return view(orderId);
         MaterialReservationPort.Reservation renewed = null;
         String reservationKey = null;
@@ -276,6 +282,7 @@ public class WorkOrderReleaseService {
     private void resumeInTx(String orderId, HoldReason reason, String note, String operator,
                             MaterialReservationPort.Reservation reservation, int seq) {
         Order order = order(orderId);
+        if ("CANCELLED".equals(order.status())) throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单已取消，不能恢复");
         Lifecycle lc = requireLifecycle(orderId);
         if (jdbc.update("delete from work_order_hold_reason where order_id = ? and reason = ?", orderId, reason.name()) == 0) return;
         boolean last = reasons(orderId).isEmpty();

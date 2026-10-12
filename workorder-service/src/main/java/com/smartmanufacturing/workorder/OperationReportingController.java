@@ -46,6 +46,17 @@ public class OperationReportingController {
         return respond(service.complete(id, request, key(key), auth.getName()));
     }
 
+    /**
+     * 取消工单：CREATED / RELEASED / ON_HOLD 可取消，有效预留由后台异步释放（reason=WORK_ORDER_CANCELLED）。
+     * 已取消 409 workorder-cancelled（同键重放除外）；已关闭 409 workorder-closed；已有报工 409 workorder-state-conflict。请求体可省略。
+     */
+    @PreAuthorize("hasAuthority('workorder:write')")
+    @PostMapping("/cancel")
+    public ResponseEntity<String> cancel(@PathVariable String id, @Valid @RequestBody(required = false) CancelWorkOrderRequest request,
+                                         @RequestHeader(value = "Idempotency-Key", required = false) String key, Authentication auth) {
+        return respond(service.cancel(id, request, key(key), auth.getName()));
+    }
+
     @GetMapping("/progress")
     public ApiResponse<WorkOrderProgressView> progress(@PathVariable String id) { return ApiResponse.ok(service.progressView(id)); }
 
