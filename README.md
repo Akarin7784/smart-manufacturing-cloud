@@ -175,7 +175,7 @@ GitHub Actions 在每次推送、PR 和手动触发时执行 Linux / Windows 的
 
 ## 使用边界
 
-Compose 使用仅限本机的端口绑定，Nacos 关闭鉴权、MySQL 使用开发密码，业务 API 已实现账号认证和角色权限控制。上线前补充企业身份接入（按需）、租户/数据权限、TLS、密钥轮换、数据库迁移、监控告警、备份以及 Nacos 高可用。详情见 docs/architecture.md。RocketMQ 已接入工单事件链路，按需启用；Seata 尚未启用。
+Compose 使用仅限本机的端口绑定，Nacos 关闭鉴权、MySQL 使用开发密码，业务 API 已实现账号认证和角色权限控制。上线前补充企业身份接入（按需）、租户/数据权限、TLS、密钥轮换、数据库迁移、监控告警、备份以及 Nacos 高可用。详情见 docs/architecture.md。RocketMQ 工单事件与 Seata 设备预留均已接入，按需启用。
 
 ## 认证授权
 
@@ -192,3 +192,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\security-smoke-test.ps1
 工单与 Outbox 在本地事务中提交，后台可靠发送；event-service 在独立数据库中幂等消费。默认关闭 MQ，启用方式、查询接口和重试操作见 [docs/rocketmq.md](docs/rocketmq.md)。
 
 新增 cloud-messaging 共享组件与 event-service（端口 8084），事件查询路径为 /api/events/workorders。
+
+## Seata
+
+Seata 2.5.0 AT 协调设备库与工单库的资源预留，包含 TC 持久化、undo_log、自动数据源代理与 XID 传播。配置、接口、一致性边界见 [docs/seata.md](docs/seata.md)。
+
+```powershell
+docker compose -f compose.yaml -f compose.rocketmq.yaml -f compose.seata.yaml --profile app --profile mq --profile seata up -d --build
+powershell -ExecutionPolicy Bypass -File .\scripts\seata-smoke-test.ps1
+```

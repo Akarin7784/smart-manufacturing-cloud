@@ -49,3 +49,16 @@ messaging.rocketmq:
   max-attempts: 8
   lease-seconds: 60
   retry-base-seconds: 2
+
+# 默认关闭 AT；启用时只使用自动数据源代理，不允许叠加手动代理。
+seata:
+  enabled: ${SEATA_ENABLED:false}
+  enable-auto-data-source-proxy: ${SEATA_ENABLED:false}
+  data-source-proxy-mode: AT
+  tx-service-group: manufacturing_tx_group
+  application-id: ${spring.application.name}
+  config.type: file
+  registry.type: file
+  service:
+    vgroup-mapping.manufacturing_tx_group: default
+    grouplist.default: ${SEATA_SERVER:localhost:8091}

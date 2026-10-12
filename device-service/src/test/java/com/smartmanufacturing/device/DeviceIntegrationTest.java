@@ -56,4 +56,14 @@ class DeviceIntegrationTest {
         mvc.perform(get("/devices/config").with(reader())).andExpect(status().isForbidden())
             .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
     }
+
+    /** 内部预留分支也需写权限；即使持有读令牌和伪造 XID 也不能改变设备占用。 */
+    @Test void readerCannotMutateReservationBranch() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/devices/reservations")
+            .with(reader()).header("TX_XID","forged-xid").contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+            .content("{\"reservationId\":\"test-id\",\"deviceId\":\"D001\"}"))
+            .andExpect(status().isForbidden());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/devices/reservations/test-id")
+            .with(reader())).andExpect(status().isForbidden());
+    }
 }

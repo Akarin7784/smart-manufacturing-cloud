@@ -23,6 +23,7 @@ class WorkOrderIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @MockitoBean DeviceClient devices;
+    @MockitoBean ReservationDeviceClient reservations;
     @MockitoBean org.springframework.security.oauth2.jwt.JwtDecoder decoder;
 
     /** 操作员拥有工单创建权限，原业务回归在此身份下运行。 */
@@ -83,6 +84,18 @@ class WorkOrderIntegrationTest {
             .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
         verifyNoInteractions(devices);
         assertEquals(0, jdbc.queryForObject("select count(*) from work_order", Integer.class));
+    }
+
+    /** 直连服务也校验新增接口权限，禁止查看者启动跨服务资源修改。 */
+    @Test void viewerCannotReserveOrRelease() throws Exception {
+        var viewer = org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt()
+            .authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("workorder:read"));
+        mvc.perform(post("/workorders/reservations").with(viewer).contentType(MediaType.APPLICATION_JSON)
+            .content("{\"reservationId\":\"test-id\",\"deviceId\":\"D001\"}"))
+            .andExpect(status().isForbidden());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/workorders/reservations/test-id").with(viewer))
+            .andExpect(status().isForbidden());
+        verifyNoInteractions(reservations);
     }
 
     /** 直连工单服务不能绕过认证，伪造角色请求头也不会授予身份。 */
