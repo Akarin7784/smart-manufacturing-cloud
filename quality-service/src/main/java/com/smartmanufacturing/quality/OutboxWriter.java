@@ -37,7 +37,9 @@ public class OutboxWriter {
     @Transactional(propagation = Propagation.MANDATORY)
     public String append(String eventType, String ncrNo, Map<String, Object> extra) {
         String eventId = UUID.randomUUID().toString();
-        Instant now = clock.instant();
+        // 截断到毫秒（向下取整）：next_attempt_at / created_at 为 TIMESTAMP(3)，H2 与 MySQL 写入时会把多余小数位四舍五入，
+        // 可能存成比写入时刻更晚的值；同一毫秒内发布时 next_attempt_at <= now 不成立，事件被误判为未到期（#46）。
+        Instant now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("eventId", eventId);
         payload.put("eventType", eventType);
