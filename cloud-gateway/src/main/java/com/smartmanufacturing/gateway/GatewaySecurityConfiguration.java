@@ -2,9 +2,11 @@ package com.smartmanufacturing.gateway;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartmanufacturing.api.ApiResponse;
+import com.smartmanufacturing.security.ManagementPortAccess;
 import com.smartmanufacturing.security.SecurityClaims;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.*;
+import org.springframework.core.env.Environment;
 import org.springframework.http.*;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
@@ -12,6 +14,7 @@ import org.springframework.security.oauth2.jwt.*;
 import org.springframework.security.oauth2.server.resource.authentication.ReactiveJwtAuthenticationConverterAdapter;
 import org.springframework.security.web.server.SecurityWebFilterChain;
 import org.springframework.security.web.server.context.NoOpServerSecurityContextRepository;
+import org.springframework.security.web.server.util.matcher.ServerWebExchangeMatcher.MatchResult;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
@@ -29,12 +32,18 @@ public class GatewaySecurityConfiguration {
     }
 
     /** 按请求方法和路径授权；未声明的新路由默认拒绝，避免新增接口意外开放。 */
-    @Bean SecurityWebFilterChain gatewaySecurity(ServerHttpSecurity http, ObjectMapper mapper) {
+    @Bean SecurityWebFilterChain gatewaySecurity(ServerHttpSecurity http, ObjectMapper mapper, Environment environment) {
         return http.csrf(csrf -> csrf.disable())
             .httpBasic(basic -> basic.disable()).formLogin(form -> form.disable()).logout(logout -> logout.disable())
             .securityContextRepository(NoOpServerSecurityContextRepository.getInstance())
             .authorizeExchange(rules -> rules
                 .pathMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/**", "/api/auth/jwks").permitAll()
+                // cloud profile 下健康探针的附加路径（业务端口上的 /livez、/readyz），供宿主机通过 8080 确认网关存活。
+                .pathMatchers(HttpMethod.GET, "/livez", "/readyz").permitAll()
+                // 仅在独立管理端口（不对宿主机发布）上匿名开放 Prometheus 抓取；8080 上的 actuator 仍需 metrics:read。
+                .matchers(exchange -> isPrometheusOnManagementPort(exchange, environment)
+                    ? MatchResult.match()
+                    : MatchResult.notMatch()).permitAll()
                 .pathMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
                 // 服务令牌端点由认证服务按 RFC 6749 校验客户端凭据，网关不要求 JWT；
                 // 演示环境服务间调用经 Nacos 直连 auth-service，此网关入口主要供冒烟与外部集成使用，生产应叠加 Sentinel 限流。
@@ -78,5 +87,12 @@ public class GatewaySecurityConfiguration {
         } catch (java.io.IOException e) {
             return Mono.error(e);
         }
+    }
+
+    /** 判定请求是否为落在独立管理端口上的 Prometheus 抓取；端口取自本地套接字地址，无法通过请求头伪造。 */
+    static boolean isPrometheusOnManagementPort(ServerWebExchange exchange, Environment environment) {
+        var local = exchange.getRequest().getLocalAddress();
+        return local != null && ManagementPortAccess.PROMETHEUS_PATH.equals(exchange.getRequest().getPath().value())
+            && ManagementPortAccess.isManagementPort(environment, local.getPort());
     }
 }

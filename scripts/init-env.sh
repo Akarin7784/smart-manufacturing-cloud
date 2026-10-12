@@ -34,6 +34,9 @@ ensure NACOS_USERNAME "nacos"
 ensure NACOS_PASSWORD "$(rand_hex 16)"
 ensure AUTH_ISSUER "http://localhost:8080"
 ensure AUTH_AUDIENCE "manufacturing-api"
+# 可选监控（compose monitoring profile）：Grafana 管理员账号与密码都随机生成，不使用镜像默认的 admin/admin。
+ensure GRAFANA_ADMIN_USER "grafana-$(rand_hex 4)"
+ensure GRAFANA_ADMIN_PASSWORD "$(rand_hex 16)"
 
 # 服务间调用（OAuth2 client_credentials）的工单客户端密钥：明文只给调用方 workorder-service，
 # 认证服务只拿到 BCrypt 散列（WORKORDER_CLIENT_SECRET_HASH），从不持有明文。

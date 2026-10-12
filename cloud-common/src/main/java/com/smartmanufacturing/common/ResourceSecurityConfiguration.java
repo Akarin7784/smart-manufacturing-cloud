@@ -2,18 +2,21 @@ package com.smartmanufacturing.common;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartmanufacturing.api.ApiResponse;
+import com.smartmanufacturing.security.ManagementPortAccess;
 import com.smartmanufacturing.security.SecurityClaims;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.*;
+import org.springframework.core.env.Environment;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.*;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 
 /** 业务服务独立验签；即使请求绕过网关，也必须通过身份校验和方法权限控制。 */
 @Configuration
@@ -31,12 +34,14 @@ public class ResourceSecurityConfiguration {
     }
 
     /** API 只接受显式 Bearer 令牌，不使用会话、表单登录或 Cookie 认证。 */
-    @Bean SecurityFilterChain resourceSecurity(HttpSecurity http, ObjectMapper mapper) throws Exception {
+    @Bean SecurityFilterChain resourceSecurity(HttpSecurity http, ObjectMapper mapper, Environment environment) throws Exception {
         http.csrf(csrf -> csrf.disable())
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .formLogin(form -> form.disable()).httpBasic(basic -> basic.disable()).logout(logout -> logout.disable())
             .authorizeHttpRequests(rules -> rules
                 .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                // 仅在独立管理端口（内网）上匿名开放 Prometheus 抓取；业务端口上的 actuator 仍需 metrics:read。
+                .requestMatchers(prometheusOnManagementPort(environment)).permitAll()
                 .requestMatchers("/actuator/**").hasAuthority("metrics:read")
                 .anyRequest().authenticated())
             .exceptionHandling(errors -> errors
@@ -46,6 +51,12 @@ public class ResourceSecurityConfiguration {
                 .jwt(jwt -> jwt.jwtAuthenticationConverter(SecurityClaims.authenticationConverter()))
                 .authenticationEntryPoint((req, res, e) -> writeError(mapper, res, 401, "AUTHENTICATION_REQUIRED", "请登录或重新获取令牌")));
         return http.build();
+    }
+
+    /** 匹配“落在独立管理端口上的 /actuator/prometheus 请求”，供认证服务的安全链复用。 */
+    public static RequestMatcher prometheusOnManagementPort(Environment environment) {
+        return request -> ManagementPortAccess.PROMETHEUS_PATH.equals(request.getRequestURI())
+            && ManagementPortAccess.isManagementPort(environment, request.getLocalPort());
     }
 
     /** 安全过滤器中的异常不经过控制器异常处理，需在此统一输出 JSON。 */

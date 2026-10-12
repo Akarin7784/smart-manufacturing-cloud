@@ -1,0 +1,64 @@
+# 基础告警规则：演示环境不部署 Alertmanager，告警在 Prometheus 的 Alerts 页面和 Grafana 中查看。
+# 阈值面向演示规模（低流量、单实例），生产环境需按 SLO 重新评估。
+groups:
+  - name: service-health
+    rules:
+      # 服务不可抓取：容器退出、管理端口未就绪或网络不通，持续 1 分钟告警。
+      - alert: ServiceDown
+        expr: up{job="spring-boot"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "服务 {{ $labels.instance }} 不可用"
+          description: "Prometheus 已连续 1 分钟无法抓取 {{ $labels.instance }} 的 /actuator/prometheus。"
+
+  - name: http
+    rules:
+      # 5xx 比例：5 分钟窗口内 5xx 请求占比超过 5%。
+      # 分母加最小流量门槛（> 0.1 req/s 即 5 分钟约 30 次），避免低流量下一两次错误就触发。
+      - alert: HighHttp5xxRatio
+        expr: |
+          (
+            sum by (application) (rate(http_server_requests_seconds_count{outcome="SERVER_ERROR"}[5m]))
+            /
+            sum by (application) (rate(http_server_requests_seconds_count[5m]))
+          ) > 0.05
+          and
+          sum by (application) (rate(http_server_requests_seconds_count[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.application }} 的 HTTP 5xx 比例过高"
+          description: "最近 5 分钟 5xx 占比 {{ $value | humanizePercentage }}，超过 5%。"
+
+  - name: jvm
+    rules:
+      # 堆使用率：已用堆 / 最大堆超过 90% 并持续 5 分钟（容器设置了 -Xmx，接近上限会频繁 GC 甚至 OOM）。
+      # 只统计 max > 0 的内存池，避免未设上限的池（max = -1）干扰比值。
+      - alert: JvmHeapUsageHigh
+        expr: |
+          sum by (application) (jvm_memory_used_bytes{area="heap"})
+          /
+          sum by (application) (jvm_memory_max_bytes{area="heap"} > 0)
+          > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.application }} 的 JVM 堆使用率过高"
+          description: "堆使用率 {{ $value | humanizePercentage }}，已持续 5 分钟超过 90%。"
+
+  - name: outbox
+    rules:
+      # Outbox 积压：待投递事件数超过 100 并持续 5 分钟，说明 RocketMQ 投递受阻或投递任务停摆。
+      # 依赖各服务的 mes_<领域>_outbox_pending（Gauge），该指标尚未实现：在此之前选择器匹配不到序列，规则不会触发。
+      - alert: OutboxBacklog
+        expr: max by (application) ({__name__=~"mes_.*_outbox_pending"}) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.application }} 的 outbox 积压"
+          description: "待投递事件 {{ $value }} 条，已持续 5 分钟超过 100 条。"
