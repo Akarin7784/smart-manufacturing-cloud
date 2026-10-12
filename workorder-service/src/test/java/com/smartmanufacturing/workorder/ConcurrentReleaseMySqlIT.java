@@ -73,7 +73,7 @@ class ConcurrentReleaseMySqlIT {
             assertThat(jdbc.queryForObject("select count(*) from outbox_event where aggregate_id = ?", Integer.class, id)).isEqualTo(1);
             // 每个真正向库存预留过的失败方都释放了自己的预留单（另一部分失败方在预留前就因状态已变被拒绝）。
             int reserved = mockingDetails(materials).getInvocations().stream().filter(i -> i.getMethod().getName().equals("reserve")).toList().size();
-            verify(materials, times(reserved - 1)).release(anyString(), anyString());
+            verify(materials, times(reserved - 1)).release(anyString(), anyString(), eq(MaterialReservationPort.ReleaseReason.COMPENSATION));
         }
     }
 
@@ -87,7 +87,7 @@ class ConcurrentReleaseMySqlIT {
             assertThat(jdbc.queryForObject("select count(*) from wo_material_reservation where order_id = ?", Integer.class, id)).isEqualTo(1);
             assertThat(jdbc.queryForObject("select count(*) from work_order_status_log where order_id = ?", Integer.class, id)).isEqualTo(1);
         }
-        verify(materials, never()).release(anyString(), anyString());
+        verify(materials, never()).release(anyString(), anyString(), any());
     }
 
     @Test void concurrentHoldsAndExpiryKeepReasonsConsistent() throws Exception {

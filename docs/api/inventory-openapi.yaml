@@ -1072,7 +1072,7 @@ components:
         lines:
           type: array
           minItems: 1
-          description: 需求行，按 BOM 快照行逐行提交（每条快照行一行，同一物料可出现多行，不做汇总）；同一请求内 sourceLineId 不得重复，重复返回 400（type=validation-error）。
+          description: 需求行，工单侧**按物料汇总**提交：同一物料一行，qty = 该物料在 BOM 展开（虚拟件已展开、只取叶子件）中所有行 requiredQty 之和（保留 6 位小数，不舍入）；同一物料在 BOM 中出现不同计量单位时工单侧在调用前即拒绝下达（工单服务 422 uom-mismatch），不会发出请求。同一请求内 sourceLineId 不得重复，重复返回 400（type=validation-error）。
           items:
             $ref: '#/components/schemas/CreateReservationLine'
 
@@ -1092,7 +1092,7 @@ components:
           $ref: '#/components/schemas/Quantity'
         sourceLineId:
           type: string
-          description: 来源 BOM 快照需求行 ID，格式建议 `{工单号}:{快照行号}`，用于工单侧逐行对账。
+          description: 需求行 ID，工单侧固定为 `{工单号}:{物料编码}`（一物料一行，单内唯一），用于工单侧按物料对账。
 
     Reservation:
       type: object

@@ -24,6 +24,7 @@ manufacturing:
     topics:
       workorder-event: mes-workorder-event
       workorder-quality: mes-workorder-quality
+      inventory-reservation: mes-inventory-reservation
     tags:
       workorder-started: WorkOrderStarted
       workorder-completed: WorkOrderCompleted
@@ -34,3 +35,8 @@ manufacturing:
       workorder-hold-reason-cleared: WorkOrderHoldReasonCleared
       defect-reported: DefectReported
       defect-reversed: DefectReversed
+      workorder-cancelled: WorkOrderCancelled
+      reservation-created: ReservationCreated
+      reservation-released: ReservationReleased
+      reservation-consumed: ReservationConsumed
+      reservation-expired: ReservationExpired

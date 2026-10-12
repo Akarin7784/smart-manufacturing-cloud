@@ -49,6 +49,23 @@ manufacturing:
     reservation-renew-batch-size: 200
     scheduling-enabled: true
     zone: Asia/Shanghai
+    # 库存客户端（material-reservation=inventory 时生效）：inventory-url / auth-url 为空表示经 Nacos 服务发现直连
+    # inventory-service / auth-service（不经网关）；服务身份 client_credentials，密钥只从环境变量 WORKORDER_CLIENT_SECRET 注入。
+    inventory:
+      inventory-url: ${WORKORDER_INVENTORY_URL:}
+      auth-url: ${WORKORDER_AUTH_URL:}
+      client-id: workorder-service
+      client-secret: ${WORKORDER_CLIENT_SECRET:}
+      connect-timeout: PT2S
+      read-timeout: PT3S
+      # 令牌有效期 5 分钟，提前 60 秒刷新
+      token-refresh-skew: PT60S
+    # 取消工单后的预留释放作业：每 2 秒一批、每批最多 20 条；失败按指数退避（上限 5 分钟）。
+    reservation-release:
+      interval: PT2S
+      batch-size: 20
+      # 领取租期：领取后在此期间内其他实例不会重复领取（HTTP 在事务外执行）
+      lease: PT60S
 
 # 数据库迁移：表结构只由 Flyway 的 db/migration 管理，不再使用 spring.sql.init（schema.sql 已转为 V1__init.sql）。
 # 默认关闭 baseline-on-migrate：已有表但没有迁移历史的旧库（P2 之前由 schema.sql 创建）会让 Flyway 直接报错，
