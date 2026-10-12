@@ -28,6 +28,10 @@ import java.util.Map;
 public class StockService {
     /** 流水类型：入库、出库；预留扣减（CONSUME）由预留 PR 使用。 */
     public static final String INBOUND = "INBOUND", OUTBOUND = "OUTBOUND", CONSUME = "CONSUME";
+    /** 质检隔离流水类型（refType=NCR）：入隔离、放行出库、报废出库。 */
+    public static final String QC_HOLD_IN = "QC_HOLD_IN", QC_HOLD_RELEASE = "QC_HOLD_RELEASE", SCRAP = "SCRAP";
+    /** 质检隔离系统库位编码（V2 迁移种子）；其余额为隔离量，不计入可用量、不可预留。 */
+    public static final String QC_HOLD = "QC-HOLD";
 
     private final JdbcTemplate jdbc;
     private final LocationService locations;
@@ -44,7 +48,8 @@ public class StockService {
     /** 入库：登记/校验物料单位与批次，增加（或新建）对应库位批次的现存量，并写入一条正数流水。 */
     public StockTxn inbound(String operator, Movement r) {
         BigDecimal qty = Quantities.parsePositive("qty", r.qty());
-        locations.requireEnabled(r.locationCode());
+        // 通用入库只能用于普通库位；系统库位（QC-HOLD）只能经 /inventory/qc-hold/** 变动。
+        locations.requireGeneral(r.locationCode());
         ensureUom(r.materialCode(), r.uom());
         ensureLot(r.materialCode(), r.lotNo());
         LockedRow row = lockOrCreateRow(r.materialCode(), r.locationCode(), r.lotNo());
@@ -57,6 +62,8 @@ public class StockService {
      */
     public StockTxn outbound(String operator, Movement r) {
         BigDecimal qty = Quantities.parsePositive("qty", r.qty());
+        // 通用出库同样拒绝系统库位，防止绕过质检直接出隔离品。
+        locations.requireSystemExcluded(r.locationCode());
         String uom = requireUom(r.materialCode(), r.uom());
         List<LockedRow> rows = lockMaterialRows(r.materialCode());
         LockedRow row = rows.stream().filter(x -> x.locationCode().equals(r.locationCode()) && x.lotNo().equals(r.lotNo()))
@@ -122,6 +129,33 @@ public class StockService {
         }
     }
 
+    /**
+     * 质检入隔离：登记/校验单位与批次后，增加 QC-HOLD 库位该批次余额。只锁 QC-HOLD 的单行，
+     * 不锁同物料的普通库位行：隔离量不参与可用量计算，单行锁与其他写路径不会形成环形等待。
+     */
+    public StockTxn qcHoldIn(String operator, String material, String uom, String lotNo, BigDecimal qty, String ncrNo) {
+        ensureUom(material, uom);
+        ensureLot(material, lotNo);
+        LockedRow row = lockOrCreateRow(material, QC_HOLD, lotNo);
+        return applyDelta(row, material, uom, qty, QC_HOLD_IN, "NCR", ncrNo, operator);
+    }
+
+    /**
+     * 质检出隔离（放行或报废）：只从 QC-HOLD 该批次扣减，余额不足返回 409 insufficient-stock（说明质检与库存不一致）。
+     * 单位按出库口径校验（未登记单位视为余额 0）。
+     */
+    public StockTxn qcHoldOut(String operator, String material, String uom, String lotNo, BigDecimal qty, String type, String ncrNo) {
+        String registered = requireUom(material, uom);
+        LockedRow row = lockRow(material, QC_HOLD, lotNo);
+        BigDecimal held = row == null ? BigDecimal.ZERO : row.qty();
+        if (qty.compareTo(held) > 0) {
+            throw new ProblemException(ProblemType.INSUFFICIENT_STOCK, "QC-HOLD 隔离量不足",
+                Map.of("shortages", List.of(new StockShortage(material, registered, Quantities.format(qty),
+                    Quantities.format(held), Quantities.format(qty.subtract(held))))));
+        }
+        return applyDelta(row, material, registered, qty.negate(), type, "NCR", ncrNo, operator);
+    }
+
     /** 锁定单个库位批次行；不存在则以 0 余额新建后再锁定（并发新建由唯一约束裁决，失败方锁定胜者的行）。 */
     private LockedRow lockOrCreateRow(String material, String location, String lotNo) {
         LockedRow row = lockRow(material, location, lotNo);
@@ -141,10 +175,13 @@ public class StockService {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    /** 按 id 升序锁定物料的全部现存量行（固定加锁顺序，见类注释）。 */
+    /**
+     * 按 id 升序锁定物料的全部<b>普通库位</b>现存量行（固定加锁顺序，见类注释）。
+     * 排除 QC-HOLD：隔离量不计入可用量，出库、预留、扣减都不能使用它。
+     */
     List<LockedRow> lockMaterialRows(String material) {
-        return metrics.timeLock(() -> jdbc.query("select id, location_code, lot_no, qty, version from stock_on_hand where material_code = ? order by id for update",
-            (rs, n) -> map(rs), material));
+        return metrics.timeLock(() -> jdbc.query("select id, location_code, lot_no, qty, version from stock_on_hand where material_code = ? and location_code <> ? order by id for update",
+            (rs, n) -> map(rs), material, QC_HOLD));
     }
 
     /** 物料的有效预留量：ACTIVE 预留单中 OPEN 行的未扣减部分之和。 */
@@ -185,10 +222,12 @@ public class StockService {
 
     /** 现存量查询：materialCode 必填，locationCode 可选；只返回余额大于 0 的行。 */
     public List<Stock> stock(String material, String location) {
+        // inQcHold 由库位编码判定；隔离行照常列出，便于查看隔离量的批次分布。
         return jdbc.query("select s.material_code, m.uom, s.location_code, s.lot_no, s.qty, s.version from stock_on_hand s"
                 + " join inventory_material m on m.material_code = s.material_code"
                 + " where s.material_code = ? and (? is null or s.location_code = ?) and s.qty > 0 order by s.location_code, s.lot_no",
-            (rs, n) -> new Stock(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), Quantities.format(rs.getBigDecimal(5)), rs.getLong(6)),
+            (rs, n) -> new Stock(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), Quantities.format(rs.getBigDecimal(5)),
+                QC_HOLD.equals(rs.getString(3)), rs.getLong(6)),
             material, location, location);
     }
 
@@ -196,9 +235,12 @@ public class StockService {
     public Availability availability(String material) {
         String uom = findUom(material);
         if (uom == null) throw new NotFoundException("物料没有库存记录：" + material);
-        BigDecimal onHand = jdbc.queryForObject("select coalesce(sum(qty), 0) from stock_on_hand where material_code = ?", BigDecimal.class, material);
+        // 现存量合计不含 QC-HOLD；隔离量单独汇总返回。
+        BigDecimal onHand = jdbc.queryForObject("select coalesce(sum(qty), 0) from stock_on_hand where material_code = ? and location_code <> ?", BigDecimal.class, material, QC_HOLD);
+        BigDecimal quarantined = jdbc.queryForObject("select coalesce(sum(qty), 0) from stock_on_hand where material_code = ? and location_code = ?", BigDecimal.class, material, QC_HOLD);
         BigDecimal reserved = activeReserved(material);
-        return new Availability(material, uom, Quantities.format(onHand), Quantities.format(reserved), Quantities.format(onHand.subtract(reserved)));
+        return new Availability(material, uom, Quantities.format(onHand), Quantities.format(reserved), Quantities.format(onHand.subtract(reserved)),
+            Quantities.format(quarantined));
     }
 
     /** 批次查询。 */
