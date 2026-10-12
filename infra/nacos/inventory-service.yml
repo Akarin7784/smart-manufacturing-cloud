@@ -1,0 +1,7 @@
+# 库存服务独立配置；Group = MANUFACTURING
+# 有意保持精简：库存服务的配置全部在 inventory-service 自带的 application.yml 中，Nacos 只用于运行时覆盖（按需在此追加键）。
+# 本文件必须存在：Nacos 中缺少该 dataId 时，Spring Cloud Alibaba 启动会输出 "config[dataId=inventory-service.yml] is empty" 的 WARN。
+# 下面的日志级别与默认值一致，只是一个无副作用的占位键。
+logging:
+  level:
+    com.smartmanufacturing.inventory: INFO
