@@ -23,12 +23,16 @@ for ($attempt = 0; $attempt -lt 60; $attempt++) {
     } catch { Start-Sleep -Seconds 2 }
 }
 if (-not $ready) { throw 'Gateway/device service did not become ready.' }
-$order = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json; charset=utf-8' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
+# 固定本次幂等键，随后用同一键重放并断言返回同一工单。
+$key = [guid]::NewGuid().ToString()
+$order = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=$key}) -Method Post -ContentType 'application/json; charset=utf-8' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
 if ($order.code -ne 'OK' -or $order.data.status -ne 'CREATED') { throw 'Create order failed.' }
+$replay = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=$key}) -Method Post -ContentType 'application/json; charset=utf-8' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
+if ($replay.data.id -ne $order.data.id) { throw 'Idempotent replay returned a different order.' }
 $list = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers
 if ($order.data.id -notin $list.data.id) { throw 'Created order not found in storage.' }
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/devices/missing" -Headers $headers } 404
-Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"missing","product":"bearing","quantity":10}' } 404
-Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"D002","product":"bearing","quantity":10}' } 409
-Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":0}' } 400
+Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"missing","product":"bearing","quantity":10}' } 404
+Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D002","product":"bearing","quantity":10}' } 409
+Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":0}' } 400
 Write-Host 'PASS: login, JWT verification, routing, Feign bearer relay, persistence and business errors.'
