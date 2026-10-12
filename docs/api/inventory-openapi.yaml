@@ -267,7 +267,13 @@ components:
   securitySchemes:
     serviceClient:
       type: oauth2
-      description: 服务间调用使用 OAuth2 客户端凭证模式；认证服务签发 JWT，网关与库存服务分别校验，幂等作用域取自令牌中的 client_id。
+      description: |
+        服务间调用使用 OAuth2 客户端凭证模式（RFC 6749 client_credentials）。
+        - 令牌端点：经网关访问 `POST /api/auth/oauth2/token`，转发到认证服务 `POST /auth/oauth2/token`。
+        - 签名与校验：令牌与用户 JWT 使用同一把 RSA 私钥签名，网关与库存服务通过现有 JWKS 端点获取公钥并分别校验。
+        - 库存服务同时校验 scope 包含 `inventory:reserve` 且 `aud=inventory-service`。令牌无效、过期或 aud 不匹配返回 401，scope 不足返回 403。
+        - 令牌有效期 5 分钟；调用方必须缓存令牌并在临近过期时提前刷新，不得每次请求都重新申请。
+        - 幂等作用域取自令牌中的 client_id。
       flows:
         clientCredentials:
           tokenUrl: /api/auth/oauth2/token
