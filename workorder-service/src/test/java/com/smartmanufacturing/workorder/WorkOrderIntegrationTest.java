@@ -81,7 +81,7 @@ class WorkOrderIntegrationTest {
                 .authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("workorder:read")))
             .contentType(MediaType.APPLICATION_JSON)
             .content("{\"deviceId\":\"D001\",\"product\":\"bearing\",\"quantity\":10}"))
-            .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+            .andExpect(problem(403, "access-denied", "/workorders"));
         verifyNoInteractions(devices);
         assertEquals(0, jdbc.queryForObject("select count(*) from work_order", Integer.class));
     }
@@ -204,5 +204,18 @@ class WorkOrderIntegrationTest {
         org.junit.jupiter.api.Assertions.assertEquals(
             WorkOrderService.hash(WorkOrderService.normalize(new CreateWorkOrder("D001", "caf\u00e9", 1))),
             WorkOrderService.hash(WorkOrderService.normalize(new CreateWorkOrder("D001", "cafe\u0301", 1))));
+    }
+
+    /** 断言 RFC 9457 problem+json：Content-Type、五个固定字段齐全，且不再输出旧的 code 字段。 */
+    private static org.springframework.test.web.servlet.ResultMatcher problem(int status, String type, String instance) {
+        return org.springframework.test.web.servlet.ResultMatcher.matchAll(
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().is(status),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().contentTypeCompatibleWith("application/problem+json"),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.type").value(type),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.title").isNotEmpty(),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.status").value(status),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.detail").isNotEmpty(),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.instance").value(instance),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").doesNotExist());
     }
 }

@@ -285,6 +285,26 @@ if ($qm -notmatch '(?m)^mes_quality_event_consumed_total\{[^}]*result="disposed_
 if ($qm -notmatch '(?m)^mes_quality_event_consumed_total\{[^}]*result="invalid"[^}]*\} 0(\.0)?\r?$') { throw 'invalid counter not pre-registered at 0.' }
 if ($qm -notmatch '(?m)^mes_quality_pending_reversal_expired_total(\{[^}]*\})? 0(\.0)?\r?$') { throw 'pending_reversal_expired counter not pre-registered at 0.' }
 Write-Host 'PASS: quality alert counters pre-registered at 0 (internal 18086).'
+
+# 服务自身的 403（绕过网关，经 compose 内网直连设备服务，与 smoke-test.sh 对等）：op01 无 config:read，
+# 必须返回 problem+json（type=access-denied），且无 code 字段、instance 不含查询串。需要 Content-Type，因此单独调用 curl 容器。
+$dnet = inv_network
+$utf8 = New-Object System.Text.UTF8Encoding $false
+$prevOut = $OutputEncoding; $prevConsole = [Console]::OutputEncoding
+$OutputEncoding = $utf8; [Console]::OutputEncoding = $utf8
+try {
+    $dr = & docker run --rm --network $dnet $SmokeCurlImage -sS -m 10 -H "Authorization: Bearer $opToken" -w '\n%{content_type}\n%{http_code}' 'http://device:8081/devices/config?probe=1'
+    if ($LASTEXITCODE -ne 0) { throw 'Direct call to device-service failed.' }
+} finally { $OutputEncoding = $prevOut; [Console]::OutputEncoding = $prevConsole }
+$dlines = @($dr)
+$dcode = [int]$dlines[-1]; $dct = [string]$dlines[-2]; $dbody = ($dlines | Select-Object -SkipLast 2) -join "`n"
+if ($dcode -ne 403) { throw "Direct device-service config read by op01 should be 403, got $dcode." }
+if ($dct -notlike 'application/problem+json*') { throw "Direct service 403 Content-Type should be application/problem+json, got $dct." }
+$dp = $dbody | ConvertFrom-Json
+if ($dp.type -ne 'access-denied' -or $dp.status -ne 403 -or -not $dp.title -or -not $dp.detail -or $dp.instance -ne '/devices/config' -or ($dp.PSObject.Properties.Name -contains 'code')) {
+    throw "Direct service 403 body is not the expected problem+json: $dbody"
+}
+Write-Host 'PASS: service-level 403 is problem+json (direct device:8081, type=access-denied).'
 # RocketMQ 收发回环（与 smoke-test.sh 对等）：在 broker 容器内用自带 mqadmin 发一条唯一标记消息，再以新消费组拉回比对。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。设置环境变量 SKIP_MQ_SMOKE=1 可跳过。
 if ($env:SKIP_MQ_SMOKE -ne '1') {
