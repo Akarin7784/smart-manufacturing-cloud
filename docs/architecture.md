@@ -41,6 +41,8 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 - 表：库位 `warehouse_location`、物料单位登记 `inventory_material`、批次 `lot`、现存量 `stock_on_hand`（物料+库位+批次唯一，带 version）、只追加流水 `stock_txn`、预留单 `reservation`/`reservation_line`、幂等记录 `idempotency_record`（按 client_id/sub 划分作用域，保存首次响应原文）、`outbox_event`。
 - 加锁约定：需要校验可用量的写操作对物料全部现存量行按 id 升序 `SELECT ... FOR UPDATE`，多物料按编码升序；可用量 = 现存量 − ACTIVE 预留未扣减量。死锁牺牲者整笔重试（最多 3 次）。
 - 安全：`/inventory/reservations/**` 只接受 aud=`inventory-service` 且 scope 含 `inventory:reserve` 的服务令牌；其他接口使用用户令牌（`inventory:read` / `inventory:write`）。错误统一为 RFC 7807。接口契约见 `docs/api/inventory-openapi.yaml`。
+- 预留：整单原子（按物料编码升序锁行后统一判定），过期只由库存服务的 `ReservationExpiryJob` 判定（`FOR UPDATE SKIP LOCKED`，多实例只过期一次）。幂等事务使用 READ COMMITTED，保证排队拿到行锁后读到最新的有效预留量。
+- 事件：outbox 与业务同事务写入，`OutboxPublisher` 每秒用 `SKIP LOCKED` 领取并经 RocketMQ remoting 客户端同步发送（至少一次，失败指数退避，eventId 不变）；topic/tag 读取 Nacos `manufacturing.mq.*`。
 - 镜像 JVM 参数来自 `inventory-service/jvm.options`（`-Xmx256m`），Dockerfile 对没有该文件的模块使用空参数文件。
 
 已实现账号登录、管理员用户管理及三种角色的接口授权。示例不提供完整业务 CRUD、分页、租户数据权限或 MES 生产排程。这些属于后续业务模块，而不是基础服务治理框架已经完成的功能。
