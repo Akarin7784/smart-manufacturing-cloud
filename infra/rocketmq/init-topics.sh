@@ -9,7 +9,7 @@ admin="$ROCKETMQ_HOME/bin/mqadmin"
 export JAVA_OPT_EXT="-Xms64m -Xmx128m -Xmn32m"
 
 i=0
-until "$admin" clusterList -n "$ns" 2>/dev/null | grep -q "broker-a"; do
+until "$admin" clusterList -n "$ns" 2>/dev/null | grep -qw "broker-a"; do
   i=$((i+1)); [ "$i" -le 60 ] || { echo "Broker 未注册到 NameServer" >&2; exit 1; }
   sleep 2
 done

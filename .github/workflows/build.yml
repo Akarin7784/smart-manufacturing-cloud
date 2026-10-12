@@ -116,6 +116,8 @@ jobs:
         run: |
           docker compose --profile app ps -a
           docker compose --profile app logs --no-color --tail=200
+          # 单独输出建 Topic 一次性容器的完整日志，便于定位 Broker 未注册或建 Topic 失败。
+          echo "===== rocketmq-init ====="; docker compose --profile app logs --no-color rocketmq-init || true
       # 记录 RocketMQ 容器内存占用，确认 Broker 堆上限生效。
       - name: Report RocketMQ memory
         if: success()

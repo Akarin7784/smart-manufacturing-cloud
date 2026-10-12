@@ -25,11 +25,25 @@ done
 auth="Authorization: Bearer $token"
 
 # 返回 HTTP 状态码，用于断言业务错误映射。
-status() { curl -s -o /dev/null -w '%{http_code}' -m 5 -H "$auth" -H 'Content-Type: application/json' "$@"; }
+# 每次调用生成新的幂等键（创建工单接口必须携带 Idempotency-Key）。
+status() { curl -s -o /dev/null -w '%{http_code}' -m 5 -H "$auth" -H 'Content-Type: application/json' -H "Idempotency-Key: smoke-$(od -An -N8 -tx8 /dev/urandom | tr -d " ")" "$@"; }
 
-order=$(curl -fsS -m 5 -H "$auth" -H 'Content-Type: application/json' -d '{"deviceId":"D001","product":"bearing","quantity":10}' "$base/api/workorders")
+# 创建工单并保留键用于重放断言；键包含时间戳与进程号，重复执行冒烟不会命中旧记录。
+key="smoke-$(date +%s)-$$"
+create() { curl -fsS -m 5 -D "$1" -H "$auth" -H 'Content-Type: application/json' -H "Idempotency-Key: $key" \
+  -d '{"deviceId":"D001","product":"bearing","quantity":10}' "$base/api/workorders"; }
+hdr=$(mktemp); trap 'rm -f "$hdr"' EXIT
+order=$(create "$hdr")
 id=$(printf '%s' "$order" | jq -r 'select(.code=="OK" and .data.status=="CREATED") | .data.id')
 [ -n "$id" ] || fail "创建工单失败：$order"
+grep -q '^HTTP/[0-9.]* 201' "$hdr" || fail "首次创建应返回 201"
+# 同键同内容重放：必须返回 200、Idempotent-Replayed: true 且工单号相同，不产生新工单。
+replay=$(create "$hdr")
+grep -q '^HTTP/[0-9.]* 200' "$hdr" || fail "同键重放应返回 200"
+grep -qi '^Idempotent-Replayed: true' "$hdr" || fail "重放响应应带 Idempotent-Replayed: true"
+[ "$(printf '%s' "$replay" | jq -r '.data.id')" = "$id" ] || fail "重放返回的工单号与首次不一致"
+# 缺少幂等键必须在业务处理前返回 400。
+[ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H "$auth" -H 'Content-Type: application/json' -d '{"deviceId":"D001","product":"bearing","quantity":10}' "$base/api/workorders")" = 400 ] || fail "缺少幂等键应返回 400"
 curl -fsS -m 5 -H "$auth" "$base/api/workorders" | jq -e --arg id "$id" '[.data[].id|tostring] | index($id) != null' >/dev/null || fail "新工单未持久化"
 [ "$(status "$base/api/devices/missing")" = 404 ] || fail "不存在设备应返回 404"
 [ "$(status -d '{"deviceId":"missing","product":"bearing","quantity":10}' "$base/api/workorders")" = 404 ] || fail "不存在设备下单应返回 404"
@@ -38,7 +52,7 @@ curl -fsS -m 5 -H "$auth" "$base/api/workorders" | jq -e --arg id "$id" '[.data[
 # 未带令牌访问必须被网关拒绝。
 [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$base/api/devices")" = 401 ] || fail "未认证请求应返回 401"
 
-# RocketMQ 收发回环：用 Broker 镜像自带的 tools.sh 发一条带唯一标记的消息，再用 PushConsumer 收回，确认 NameServer→Broker→消费链路可用。
+# RocketMQ 收发回环：用 Broker 镜像自带的 mqadmin 发一条带唯一标记的消息，再以新消费组拉回，确认 NameServer→Broker→消费链路可用。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。SKIP_MQ_SMOKE=1 可跳过（如未启动 app profile）。
 if [ "${SKIP_MQ_SMOKE:-0}" != 1 ]; then
   # 在 broker 容器内执行 mqadmin；参数通过环境变量传入，避免 shell 转义问题。
@@ -60,4 +74,4 @@ if [ "${SKIP_MQ_SMOKE:-0}" != 1 ]; then
   [ -n "$got" ] || fail "RocketMQ 未收回刚发送的消息"
   echo "PASS: RocketMQ 收发回环（Topic mes-smoke-test）"
 fi
-echo "PASS: 登录、JWT 校验、路由、Feign 令牌传递、持久化与业务错误码"
+echo "PASS: 登录、JWT 校验、路由、Feign 令牌传递、持久化、工单幂等重放与业务错误码"

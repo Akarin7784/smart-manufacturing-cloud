@@ -143,7 +143,8 @@ $login = Invoke-RestMethod http://localhost:8080/api/auth/login -Method Post -Co
     @{username='admin';password=$env:AUTH_BOOTSTRAP_PASSWORD} | ConvertTo-Json -Compress)
 $headers = @{Authorization="Bearer $($login.data.accessToken)"}
 Invoke-RestMethod http://localhost:8080/api/devices/D001 -Headers $headers
-Invoke-RestMethod http://localhost:8080/api/workorders -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
+# 创建工单必须携带 Idempotency-Key；同一业务请求重试时复用同一个键（重放返回 200 与首次结果，同键不同内容返回 422）。
+Invoke-RestMethod http://localhost:8080/api/workorders -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
 Invoke-RestMethod http://localhost:8080/api/workorders -Headers $headers
 ```
 
@@ -195,3 +196,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\security-smoke-test.ps1
 ```
 
 该脚本验证管理员、操作员和查看者的权限边界，拒绝伪造角色请求头与篡改签名。测试创建的账号会被禁用，示例工单保留。
+
+## 接口变更说明
+
+- **破坏性变更（工单幂等，PR #9）**：`POST /api/workorders` 必须携带 `Idempotency-Key` 请求头（1–128 位 `[A-Za-z0-9._:-]`），缺失或格式非法返回 400 `IDEMPOTENCY_KEY_REQUIRED`。首次创建返回 201；同键同内容重放返回 200 及首次结果（响应头 `Idempotent-Replayed: true`）；同键不同内容返回 422 `IDEMPOTENCY_KEY_REUSED`。幂等记录保留 7 天，过期后同键视为新请求。外部调用方升级时请为每个业务请求生成唯一键，重试时复用。

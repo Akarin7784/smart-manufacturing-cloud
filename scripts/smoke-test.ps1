@@ -23,12 +23,34 @@ for ($attempt = 0; $attempt -lt 60; $attempt++) {
     } catch { Start-Sleep -Seconds 2 }
 }
 if (-not $ready) { throw 'Gateway/device service did not become ready.' }
-$order = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json; charset=utf-8' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
+# 固定本次幂等键，随后用同一键重放并断言返回同一工单。
+$key = [guid]::NewGuid().ToString()
+$order = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=$key}) -Method Post -ContentType 'application/json; charset=utf-8' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
 if ($order.code -ne 'OK' -or $order.data.status -ne 'CREATED') { throw 'Create order failed.' }
+$replay = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=$key}) -Method Post -ContentType 'application/json; charset=utf-8' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
+if ($replay.data.id -ne $order.data.id) { throw 'Idempotent replay returned a different order.' }
 $list = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers
 if ($order.data.id -notin $list.data.id) { throw 'Created order not found in storage.' }
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/devices/missing" -Headers $headers } 404
-Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"missing","product":"bearing","quantity":10}' } 404
-Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"D002","product":"bearing","quantity":10}' } 409
-Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":0}' } 400
+Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"missing","product":"bearing","quantity":10}' } 404
+Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D002","product":"bearing","quantity":10}' } 409
+Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":0}' } 400
+# RocketMQ 收发回环（与 smoke-test.sh 对等）：在 broker 容器内用自带 mqadmin 发一条唯一标记消息，再以新消费组拉回比对。
+# 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。设置环境变量 SKIP_MQ_SMOKE=1 可跳过。
+if ($env:SKIP_MQ_SMOKE -ne '1') {
+    $marker = "smoke-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())-$PID"
+    $group = "CG_SMOKE_$PID"
+    # 参数经 -e 环境变量传入容器，避免 PowerShell 与容器内 sh 两层转义。
+    $mqBase = @('compose', '--profile', 'app', 'exec', '-T', '-e', 'JAVA_OPT_EXT=-Xms64m -Xmx128m -Xmn32m', '-e', "MARKER=$marker", '-e', "GROUP=$group", 'broker', 'sh', '-c')
+    $sent = & docker @mqBase '"$ROCKETMQ_HOME/bin/mqadmin" sendMessage -n namesrv:9876 -t mes-smoke-test -p "$MARKER" -k "$MARKER"' 2>$null
+    if (-not ($sent -match 'SEND_OK')) { throw 'RocketMQ send failed.' }
+    # 最多重试约 30 秒，拉到刚发送的唯一标记即视为成功。
+    $got = $false
+    for ($j = 0; $j -lt 15 -and -not $got; $j++) {
+        $out = & docker @mqBase '"$ROCKETMQ_HOME/bin/mqadmin" consumeMessage -n namesrv:9876 -t mes-smoke-test -g "$GROUP" -c 1000' 2>$null
+        if ($out -match [regex]::Escape($marker)) { $got = $true } else { Start-Sleep -Seconds 2 }
+    }
+    if (-not $got) { throw 'RocketMQ round-trip failed: sent message not received.' }
+    Write-Host 'PASS: RocketMQ round-trip (topic mes-smoke-test).'
+}
 Write-Host 'PASS: login, JWT verification, routing, Feign bearer relay, persistence and business errors.'

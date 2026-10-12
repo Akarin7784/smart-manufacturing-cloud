@@ -127,7 +127,7 @@ services:
       # 用 mqadmin clusterList 向 NameServer 查询，只有本 Broker（broker-a）已注册才算健康，避免仅端口监听就放行。
       # 每次探测会启动一个短命 JVM：堆压到 64M（覆盖容器里给 Broker 的 JAVA_OPT_EXT），间隔 30s 控制开销；
       # start_interval 让启动阶段每 5s 探测一次，尽快变为 healthy。
-      test: ["CMD", "bash", "-c", "JAVA_OPT_EXT='-Xms32m -Xmx64m -Xmn16m' \"$$ROCKETMQ_HOME/bin/mqadmin\" clusterList -n namesrv:9876 2>/dev/null | grep -q 'broker-a'"]
+      test: ["CMD", "bash", "-c", "JAVA_OPT_EXT='-Xms32m -Xmx64m -Xmn16m' \"$$ROCKETMQ_HOME/bin/mqadmin\" clusterList -n namesrv:9876 2>/dev/null | grep -qw 'broker-a'"]
       interval: 30s
       timeout: 20s
       retries: 5
@@ -215,9 +215,6 @@ services:
         condition: service_completed_successfully
       db-init:
         condition: service_completed_successfully
-      # 工单服务订阅库存预留事件，需等 Topic 创建完成。
-      rocketmq-init:
-        condition: service_completed_successfully
   workorder:
     profiles: ["app"]
     build:
@@ -236,6 +233,9 @@ services:
       nacos-config-init:
         condition: service_completed_successfully
       db-init:
+        condition: service_completed_successfully
+      # 工单服务订阅库存预留事件，需等 Topic 创建完成。
+      rocketmq-init:
         condition: service_completed_successfully
 volumes:
   auth-keys:
