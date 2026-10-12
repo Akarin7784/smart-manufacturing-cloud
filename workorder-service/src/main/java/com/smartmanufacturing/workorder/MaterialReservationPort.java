@@ -35,6 +35,7 @@ public interface MaterialReservationPort {
      * 释放整张预留单，返回库存答复的预留单状态（RELEASED 或 EXPIRED，二者都视为成功）。必须幂等：同一幂等键重放返回首次结果。
      * @throws ReservationConsumedException 预留已整单扣减（409 reservation-consumed），不可释放，调用方不应重试
      * @throws ReservationNotFoundException 库存不存在该预留单（404），调用方不应重试
+     * @throws ReservationGoneException 库存返回 410（契约外，正常应为 200）：占用已归还，调用方按终态处理，不重试
      * @throws InventoryAuthException 服务令牌被拒（401 / 403），可重试但需告警
      * @throws InventoryUnavailableException 库存不可用（5xx / 网络），退避重试
      */
@@ -55,6 +56,10 @@ public interface MaterialReservationPort {
 
     /** 库存侧预留已失效：调用方应按“预留过期”流程处理，而不是重试。 */
     class ReservationGoneException extends RuntimeException {
-        public ReservationGoneException(String reservationId) { super("预留已失效: " + reservationId); }
+        private final String status;
+        public ReservationGoneException(String reservationId) { this(reservationId, null); }
+        /** @param status 库存给出的终态（RELEASED / EXPIRED，取自 410 的 type），未知为 null */
+        public ReservationGoneException(String reservationId, String status) { super("预留已失效: " + reservationId); this.status = status; }
+        public String status() { return status; }
     }
 }

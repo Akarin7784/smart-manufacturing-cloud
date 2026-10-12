@@ -53,7 +53,15 @@ class ReservationEventHandler {
             String eventId = e.path("eventId").asText(null), reservationId = e.path("reservationId").asText(null);
             if (type == null || !type.equals(e.path("eventType").asText()) || eventId == null || reservationId == null || !e.path("aggregateVersion").canConvertToLong())
                 result = "invalid";
-            else result = tx.execute(s -> apply(eventId, type, reservationId, e.path("aggregateVersion").asLong()));
+            else {
+                result = tx.execute(s -> apply(eventId, type, reservationId, e.path("aggregateVersion").asLong()));
+                // 过期处理在独立事务中执行（自带乐观锁重试），不嵌套在本事务里：嵌套时内层版本冲突会把外层标记为
+                // rollback-only，提交时抛 UnexpectedRollbackException。onReservationExpired 自身按
+                // ReservationExpired:{reservationId} 幂等，所以重复投递（duplicate）时也再调用一次：若首次在去重提交后、
+                // 过期处理前失败，重投时仍能补上冻结。过时事件（stale）不处理。
+                if ("ReservationExpired".equals(type) && ("applied".equals(result) || "duplicate".equals(result)))
+                    releases.onReservationExpired(reservationId);
+            }
         } catch (java.io.IOException ex) {
             result = "invalid";
         }
@@ -82,8 +90,7 @@ class ReservationEventHandler {
             case "ReservationConsumed" -> terminal(reservationId, "CONSUMED");
             case "ReservationExpired" -> {
                 // 已取消（RELEASING）的预留不冻结工单，只更新镜像；释放任务随后会得到 200 EXPIRED 并完成
-                terminal(reservationId, "EXPIRED", "RELEASING");
-                releases.onReservationExpired(reservationId);
+                terminal(reservationId, "EXPIRED", "RELEASING"); // ACTIVE 的镜像由事务外的 onReservationExpired 处理
             }
             default -> { } // ReservationCreated：镜像已在下达事务中写入
         }

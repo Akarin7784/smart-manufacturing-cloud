@@ -14,7 +14,7 @@ import java.util.UUID;
  * 取消工单的事务内逻辑（由 {@link OperationReportingService#cancel} 在已锁定工单行、已检查幂等记录的事务中调用）：
  * <ol>
  *   <li>状态校验：CREATED / RELEASED / ON_HOLD 可取消；已 CANCELLED 返回 409 workorder-cancelled（不再释放）；
- *       CLOSED 返回 409 workorder-closed；IN_PROGRESS / COMPLETED 已有报工，返回 409 workorder-state-conflict。</li>
+ *       CLOSED 返回 409 workorder-closed；IN_PROGRESS / COMPLETED，或有过任何报工（含已冲销），返回 409 workorder-state-conflict（已有报工，请走完工或关闭）。</li>
  *   <li>同一事务内：工单置 CANCELLED、写状态审计与 WorkOrderCancelled 事件；如有 ACTIVE 预留，
  *       镜像置 RELEASING 并写入释放任务（reason=WORK_ORDER_CANCELLED，Idempotency-Key = cancel-{工单号}-{预留单号}）。</li>
  * </ol>
@@ -24,6 +24,8 @@ import java.util.UUID;
 class WorkOrderCancellation {
     /** 允许取消的状态。 */
     static final Set<String> CANCELLABLE = Set.of("CREATED", "RELEASED", "ON_HOLD");
+    /** 已有报工时的拒绝说明。 */
+    static final String HAS_REPORTS = "已有报工，请走完工或关闭";
     private final JdbcTemplate jdbc;
     private final WorkOrderJournal journal;
     private final Clock clock;
@@ -38,9 +40,12 @@ class WorkOrderCancellation {
             case "CLOSED" -> throw WorkOrderProblemType.WORKORDER_CLOSED.exception("工单已关闭，不能取消：" + orderId);
             default -> {
                 if (!CANCELLABLE.contains(status))
-                    throw WorkOrderProblemType.WORK_ORDER_STATE_CONFLICT.exception(status + " 状态的工单不能取消（已有报工）");
+                    throw WorkOrderProblemType.WORK_ORDER_STATE_CONFLICT.exception(HAS_REPORTS);
             }
         }
+        // 只要有过任何报工（含已冲销的）就不能取消：冲销不抹掉实物流转，应走完工或关闭（如由 IN_PROGRESS 冻结后的 ON_HOLD）
+        if (jdbc.queryForObject("select count(*) from wo_operation_report where order_id = ?", Integer.class, orderId) > 0)
+            throw WorkOrderProblemType.WORK_ORDER_STATE_CONFLICT.exception(HAS_REPORTS);
         Instant now = clock.instant();
         // 工单行已在调用方事务内 FOR UPDATE 锁定，这里的条件更新只是兜底
         if (jdbc.update("update work_order set status = 'CANCELLED', version = version + 1 where id = ? and status = ?", orderId, status) != 1)

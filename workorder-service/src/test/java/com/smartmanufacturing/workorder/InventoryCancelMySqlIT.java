@@ -48,6 +48,8 @@ class InventoryCancelMySqlIT {
         r.add("manufacturing.workorder.inventory.client-secret", () -> InventoryStub.SECRET);
         // 不连 RocketMQ：事件处理由用例直接调用 ReservationEventHandler
         r.add("manufacturing.workorder.reservation-events.enabled", () -> "false");
+        // 读超时缩短为 1 秒，用例以 2 秒延迟模拟库存超时
+        r.add("manufacturing.workorder.inventory.read-timeout", () -> "PT1S");
     }
 
     @AfterAll static void shutdown() { INVENTORY.stop(); }
@@ -239,6 +241,91 @@ class InventoryCancelMySqlIT {
         assertThat(events.handle("ReservationExpired", event("e1", "ReservationExpired", rid, 3))).isEqualTo("applied");
         assertThat(mirror(rid)).isEqualTo("EXPIRED");
         assertThat(status(id)).isEqualTo("ON_HOLD");
+    }
+
+    private int reports(String id, String type, String reversed) {
+        return jdbc.update("insert into wo_operation_report (report_id, order_id, op_no, type, good_qty, defect_qty, scrap_qty, uom, reversed_report_id, operator, created_at) values (?, ?, 'OP10', ?, 1, 0, 0, 'PCS', ?, 'op01', current_timestamp)",
+            java.util.UUID.randomUUID().toString(), id, type, reversed);
+    }
+
+    /** 报工后冻结（IN_PROGRESS → ON_HOLD）的工单不能取消；只有已冲销报工的 RELEASED 工单同样不能取消。 */
+    @Test void ordersWithAnyReportCannotBeCancelled() {
+        String held = released();
+        reports(held, "REPORT", null);
+        jdbc.update("update work_order set status = 'ON_HOLD' where id = ?", held);
+        assertThatThrownBy(() -> commands.cancel(held, null, "cancel-1", "planner"))
+            .isInstanceOfSatisfying(BusinessException.class, e -> {
+                assertThat(e.code()).isEqualTo(WorkOrderProblemType.WORK_ORDER_STATE_CONFLICT.code());
+                assertThat(e.getMessage()).isEqualTo("已有报工，请走完工或关闭");
+            });
+        String reversed = released();
+        String rid = java.util.UUID.randomUUID().toString();
+        jdbc.update("insert into wo_operation_report (report_id, order_id, op_no, type, good_qty, defect_qty, scrap_qty, uom, operator, created_at) values (?, ?, 'OP10', 'REPORT', 1, 0, 0, 'PCS', 'op01', current_timestamp)", rid, reversed);
+        reports(reversed, "REVERSAL", rid);
+        assertThatThrownBy(() -> commands.cancel(reversed, null, "cancel-1", "planner"))
+            .isInstanceOfSatisfying(BusinessException.class, e -> assertThat(e.getMessage()).isEqualTo("已有报工，请走完工或关闭"));
+        assertThat(status(held)).isEqualTo("ON_HOLD");
+        assertThat(status(reversed)).isEqualTo("RELEASED");
+        assertThat(jdbc.queryForObject("select count(*) from wo_reservation_release_task", Integer.class)).isZero();
+        // 无报工的 ON_HOLD 可以取消
+        String clean = released();
+        releases.hold(clean, com.smartmanufacturing.api.workorder.HoldReason.values()[0], null, "planner");
+        assertThat(commands.cancel(clean, null, "cancel-1", "planner").body()).contains("\"previousStatus\":\"ON_HOLD\"");
+    }
+
+    /** 下达时库存 5xx 或读超时：返回 503 inventory-service-unavailable，工单保持 CREATED，无任何下达数据。 */
+    @Test void releaseWhenInventoryFailsReturns503AndKeepsCreated() {
+        for (Runnable fault : List.<Runnable>of(() -> INVENTORY.createFailure = 503, () -> INVENTORY.createDelayMs = 2000)) {
+            INVENTORY.reset();
+            fault.run();
+            String id = ReleaseFixtures.createOrder(jdbc, 2);
+            assertThatThrownBy(() -> releases.release(id, "rel-1", "planner"))
+                .isInstanceOfSatisfying(InventoryUnavailableException.class, e -> {
+                    assertThat(e.status().value()).isEqualTo(503);
+                    assertThat(e.code()).isEqualTo(WorkOrderProblemType.INVENTORY_SERVICE_UNAVAILABLE.code());
+                });
+            assertThat(status(id)).isEqualTo("CREATED");
+            assertThat(jdbc.queryForObject("select count(*) from work_order_lifecycle where order_id = ?", Integer.class, id)).isZero();
+            assertThat(jdbc.queryForObject("select count(*) from wo_material_reservation where order_id = ?", Integer.class, id)).isZero();
+        }
+    }
+
+    /** 释放返回 410（契约外）：任务进入终态 DONE（GONE），计为 reservation_gone，不计为失败、不重试。 */
+    @Test void release410EndsTaskAsGone() {
+        String id = released();
+        String rid = reservationOf(id);
+        commands.cancel(id, null, "cancel-1", "planner");
+        INVENTORY.releaseGone = true;
+        double gone = counter("mes.workorder.reservation.release", "result", "reservation_gone");
+        double error = counter("mes.workorder.reservation.release", "result", "error");
+        assertThat(worker.runBatch()).isEqualTo(1);
+        assertThat(task(id)).isEqualTo("DONE");
+        assertThat(jdbc.queryForObject("select result_status from wo_reservation_release_task where order_id = ?", String.class, id)).isEqualTo("GONE");
+        assertThat(mirror(rid)).isEqualTo("RELEASED");
+        assertThat(counter("mes.workorder.reservation.release", "result", "reservation_gone")).isEqualTo(gone + 1);
+        assertThat(counter("mes.workorder.reservation.release", "result", "error")).isEqualTo(error);
+        due();
+        assertThat(worker.runBatch()).isZero();
+    }
+
+    /** 并发下达与取消同一 CREATED 工单：无论谁先提交，最终工单为 CANCELLED，且库存侧不残留 ACTIVE 预留。 */
+    @Test void concurrentReleaseAndCancelLeaveNoActiveReservation() throws Exception {
+        for (int round = 0; round < 5; round++) {
+            String id = ReleaseFixtures.createOrder(jdbc, 2);
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+            var rel = pool.submit(() -> { start.await(); try { releases.release(id, "rel-" + id, "planner"); return "ok"; } catch (BusinessException e) { return e.code(); } });
+            var can = pool.submit(() -> { start.await(); try { commands.cancel(id, null, "cancel-" + id, "planner"); return "ok"; } catch (BusinessException e) { return e.code(); } });
+            start.countDown();
+            String r1 = rel.get(30, java.util.concurrent.TimeUnit.SECONDS), r2 = can.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            pool.shutdown();
+            assertThat(r2).as("取消（CREATED 或 RELEASED 均可取消）").isEqualTo("ok");
+            assertThat(r1).isIn("ok", WorkOrderProblemType.WORK_ORDER_STATE_CONFLICT.code(), WorkOrderProblemType.WORKORDER_CANCELLED.code());
+            assertThat(status(id)).isEqualTo("CANCELLED");
+            worker.runBatch();
+        }
+        assertThat(INVENTORY.reservations.values()).allSatisfy(r -> assertThat(r.path("status").asText()).isEqualTo("RELEASED"));
+        assertThat(jdbc.queryForObject("select count(*) from wo_material_reservation where status in ('ACTIVE', 'RELEASING')", Integer.class)).isZero();
     }
 
     private static String event(String eventId, String type, String rid, long version) {

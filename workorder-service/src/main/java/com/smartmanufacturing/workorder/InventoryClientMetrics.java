@@ -13,7 +13,7 @@ import java.util.List;
 @Component
 class InventoryClientMetrics {
     /** 取消释放任务的结果取值。 */
-    static final List<String> RELEASE_RESULTS = List.of("released", "expired", "reservation_consumed", "reservation_not_found",
+    static final List<String> RELEASE_RESULTS = List.of("released", "expired", "reservation_gone", "reservation_consumed", "reservation_not_found",
         "auth_error", "unavailable", "error");
     /** 预留事件的处理结果取值。 */
     static final List<String> EVENT_RESULTS = List.of("applied", "duplicate", "stale", "unknown_reservation", "invalid");

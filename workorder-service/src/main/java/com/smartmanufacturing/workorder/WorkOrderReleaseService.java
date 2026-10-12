@@ -149,7 +149,8 @@ public class WorkOrderReleaseService {
     static final int QTY_SCALE = 6;
 
     /**
-     * 叶子件按物料汇总为预留行（虚拟件已由主数据展开为其子件；非叶子的自制件不预留）。
+     * 叶子件按物料汇总为预留行（虚拟件已由主数据展开为其子件；非叶子的自制件不预留）：一物料一行，数量为各展开行之和；
+     * 同一物料单位不一致返回 422 uom-mismatch。
      * 数量统一为 scale 6；超过 6 位小数直接拒绝（RoundingMode.UNNECESSARY），不静默截断。
      */
     static List<ReservationLineView> requirements(List<BomExplosionLine> lines) {
@@ -158,7 +159,9 @@ public class WorkOrderReleaseService {
             if (!l.leaf()) continue;
             sum.merge(l.componentCode(), new ReservationLineView(null, l.componentCode(), scale6(l.requiredQty()), l.uom()), (a, b) -> {
                 if (!a.uom().equals(b.uom()))
-                    throw new BusinessException("RELEASE_MASTERDATA_INVALID", "物料 " + a.materialCode() + " 在 BOM 中单位不一致", HttpStatus.UNPROCESSABLE_ENTITY);
+                    // 同一物料按单位汇总无意义：按 uom-mismatch 拒绝（与库存契约一致，见 inventory-openapi.yaml CreateReservationRequest.lines）
+                    throw WorkOrderProblemType.UOM_MISMATCH.exception("物料 " + a.materialCode() + " 在 BOM 中计量单位不一致：" + a.uom() + " / " + b.uom(),
+                        Map.of("materialCode", a.materialCode(), "expectedUom", a.uom(), "requestedUom", b.uom()));
                 return new ReservationLineView(null, a.materialCode(), a.quantity().add(b.quantity()), a.uom());
             });
         }

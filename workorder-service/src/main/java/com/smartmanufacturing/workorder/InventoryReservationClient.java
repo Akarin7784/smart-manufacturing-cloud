@@ -67,6 +67,7 @@ public class InventoryReservationClient implements MaterialReservationPort {
     }
 
     @Override public String release(String key, String reservationId, ReleaseReason reason) {
+        // 410（reservation-released / expired）抛 ReservationGoneException，由调用方按终态处理（释放作业记为 reservation_gone）
         Response r = call(HttpMethod.POST, BASE + "/" + reservationId + "/release", key, Map.of("reason", reason.name()), "release", reservationId);
         if (r.status() / 100 != 2) throw unexpected("release", r);
         String status = r.body() == null ? null : r.body().path("status").asText(null);
@@ -135,7 +136,8 @@ public class InventoryReservationClient implements MaterialReservationPort {
                 case INSUFFICIENT_STOCK -> new MaterialShortageException(shortages(r.body()));
                 case UOM_MISMATCH -> WorkOrderProblemType.UOM_MISMATCH.exception("物料计量单位与库存现存量单位不一致：" + detail,
                     Map.of("source", "inventory", "detail", detail));
-                case RESERVATION_EXPIRED, RESERVATION_RELEASED -> new ReservationGoneException(reservationId);
+                case RESERVATION_EXPIRED -> new ReservationGoneException(reservationId, "EXPIRED");
+                case RESERVATION_RELEASED -> new ReservationGoneException(reservationId, "RELEASED");
                 case RESERVATION_CONSUMED -> new ReservationConsumedException(reservationId);
                 case VALIDATION_ERROR, IDEMPOTENCY_KEY_CONFLICT, OVER_CONSUME, LINE_CLOSED -> {
                     LOG.error("库存 {} 返回 {} {}：{}（请求构造有误或契约不一致）", op, r.status(), t.type(), detail);

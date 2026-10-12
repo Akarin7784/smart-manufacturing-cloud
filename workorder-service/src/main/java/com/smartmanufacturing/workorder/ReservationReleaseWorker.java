@@ -16,7 +16,9 @@ import java.util.UUID;
 /**
  * 取消工单后的预留释放作业：执行 wo_reservation_release_task 中到期的 PENDING 任务（取消事务内写入，见 {@link WorkOrderCancellation}）。
  * <ul>
- *   <li>领取：{@code SELECT … FOR UPDATE SKIP LOCKED}，多实例不会同时执行同一任务；HTTP 调用在领取事务内同步进行（单次超时 3 秒，单批默认 20 条）。</li>
+ *   <li>领取：短事务内 {@code SELECT … FOR UPDATE SKIP LOCKED} 并把 next_attempt_at 推后一个租期（默认 60 秒），提交后再在事务外调用库存（单次超时 3 秒），
+ *       结果用短事务回写；不在持有行锁 / 连接时做 HTTP。</li>
+ *   <li>410（契约外）：占用已归还，任务 DONE（result_status=GONE），计为 reservation_gone。</li>
  *   <li>幂等：库存 Idempotency-Key 固定为 {@code cancel-{工单号}-{预留单号}}，重试与重复执行只生效一次，重放返回首次结果。</li>
  *   <li>成功：2xx 且预留为 RELEASED / EXPIRED → DONE，本地镜像同步为该状态。</li>
  *   <li>409 reservation-consumed 或 404：不可释放，任务 STOPPED，写 wo_inventory_audit，并告警（日志 ERROR + 指标）。</li>
@@ -33,42 +35,70 @@ public class ReservationReleaseWorker {
     private final InventoryClientMetrics metrics;
     private final Clock clock;
     private final int batchSize;
+    private final Duration lease;
 
     ReservationReleaseWorker(JdbcTemplate jdbc, TransactionTemplate tx, MaterialReservationPort materials, InventoryClientMetrics metrics,
-                             Clock clock, @Value("${manufacturing.workorder.reservation-release.batch-size:20}") int batchSize) {
+                             Clock clock, @Value("${manufacturing.workorder.reservation-release.batch-size:20}") int batchSize,
+                             @Value("${manufacturing.workorder.reservation-release.lease:PT60S}") Duration lease) {
+        this.lease = lease;
         this.jdbc = jdbc; this.tx = tx; this.materials = materials; this.metrics = metrics; this.clock = clock; this.batchSize = batchSize;
     }
 
     private record Task(String taskId, String orderId, String reservationId, String reason, String key, int attempts) {}
 
-    /** 执行一批到期任务，返回本批完成（DONE / STOPPED）的任务数。 */
+    /**
+     * 执行一批到期任务，返回本批进入终态（DONE / STOPPED）的任务数。
+     * 领取与回写各自是短事务，HTTP 调用在事务之外：领取事务用 SKIP LOCKED 选出到期任务并把 next_attempt_at 推后一个租期（lease），
+     * 提交后其他实例在租期内不会再领取；调用结束后按结果回写（条件 status = 'PENDING'）。实例在租期内崩溃时任务到期后被重新领取，
+     * 库存侧按同一 Idempotency-Key 幂等，重复调用安全。
+     */
     public int runBatch() {
-        Integer done = tx.execute(s -> {
-            List<Task> batch = jdbc.query("select task_id, order_id, reservation_id, reason, idempotency_key, attempts from wo_reservation_release_task"
+        List<Task> batch = tx.execute(s -> {
+            List<Task> tasks = jdbc.query("select task_id, order_id, reservation_id, reason, idempotency_key, attempts from wo_reservation_release_task"
                     + " where status = 'PENDING' and (next_attempt_at is null or next_attempt_at <= ?) order by created_at, task_id limit " + batchSize
                     + " for update skip locked",
                 (rs, i) -> new Task(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5), rs.getInt(6)),
                 Timestamp.from(clock.instant()));
-            int finished = 0;
-            for (Task t : batch) {
-                Boolean ok = execute(t);
-                if (ok == null) break;   // 可重试失败：结束本批
-                if (ok) finished++;
-            }
-            return finished;
+            Timestamp leaseUntil = Timestamp.from(clock.instant().plus(lease));
+            for (Task t : tasks) jdbc.update("update wo_reservation_release_task set next_attempt_at = ? where task_id = ?", leaseUntil, t.taskId());
+            return tasks;
         });
-        return done == null ? 0 : done;
+        int finished = 0;
+        for (Task t : batch == null ? List.<Task>of() : batch) {
+            Boolean ok = execute(t);
+            if (ok == null) {
+                // 可重试失败：结束本批，未尝试的任务释放租约，下一轮立即可领取
+                List<Task> rest = batch.subList(batch.indexOf(t) + 1, batch.size());
+                for (Task r : rest) jdbc.update("update wo_reservation_release_task set next_attempt_at = null where task_id = ? and status = 'PENDING'", r.taskId());
+                break;
+            }
+            finished++;
+        }
+        return finished;
     }
 
-    /** 执行单个任务：true = 已完成（DONE / STOPPED），false 不会出现，null = 可重试失败。 */
+    /** 执行单个任务（HTTP 在事务外），结果在短事务中回写：true = 进入终态，null = 可重试失败。 */
     private Boolean execute(Task t) {
         try {
             String status = materials.release(t.key(), t.reservationId(), MaterialReservationPort.ReleaseReason.valueOf(t.reason()));
-            finish(t, "DONE", status, null);
-            jdbc.update("update wo_material_reservation set status = ? where reservation_id = ? and status in ('RELEASING', 'ACTIVE')", status, t.reservationId());
-            audit(t, "RELEASE_" + status, null);
+            tx.executeWithoutResult(s -> {
+                finish(t, "DONE", status, null);
+                jdbc.update("update wo_material_reservation set status = ? where reservation_id = ? and status in ('RELEASING', 'ACTIVE')", status, t.reservationId());
+                audit(t, "RELEASE_" + status, null);
+            });
             metrics.releaseResult(status.toLowerCase());
             LOG.info("工单 {} 取消后释放预留 {} 完成：{}", t.orderId(), t.reservationId(), status);
+            return true;
+        } catch (MaterialReservationPort.ReservationGoneException e) {
+            // 410：契约外（正常应为 200），但占用已归还，任务进入终态 DONE，单独计为 reservation_gone，便于发现库存实现偏差
+            String mirror = e.status() == null ? "RELEASED" : e.status();
+            tx.executeWithoutResult(s -> {
+                finish(t, "DONE", "GONE", e.getMessage());
+                jdbc.update("update wo_material_reservation set status = ? where reservation_id = ? and status in ('RELEASING', 'ACTIVE')", mirror, t.reservationId());
+                audit(t, "RELEASE_GONE", "库存返回 410，终态 " + mirror);
+            });
+            metrics.releaseResult("reservation_gone");
+            LOG.warn("释放预留 {} 时库存返回 410（{}），按终态处理", t.reservationId(), mirror);
             return true;
         } catch (MaterialReservationPort.ReservationConsumedException e) {
             stop(t, "RESERVATION_CONSUMED", "CONSUMED", "reservation_consumed", e);
@@ -91,24 +121,26 @@ public class ReservationReleaseWorker {
 
     /** 不可释放：停止任务、写审计并告警，需要人工处理（例如核对已扣减物料的去向）。 */
     private void stop(Task t, String event, String mirrorStatus, String result, RuntimeException e) {
-        finish(t, "STOPPED", null, e.getMessage());
-        if (mirrorStatus != null)
-            jdbc.update("update wo_material_reservation set status = ? where reservation_id = ? and status in ('RELEASING', 'ACTIVE')", mirrorStatus, t.reservationId());
-        audit(t, event, e.getMessage());
+        tx.executeWithoutResult(s -> {
+            finish(t, "STOPPED", null, e.getMessage());
+            if (mirrorStatus != null)
+                jdbc.update("update wo_material_reservation set status = ? where reservation_id = ? and status in ('RELEASING', 'ACTIVE')", mirrorStatus, t.reservationId());
+            audit(t, event, e.getMessage());
+        });
         metrics.releaseResult(result);
         LOG.error("【告警】工单 {} 已取消，但预留 {} 不能释放（{}），任务已停止，请人工处理", t.orderId(), t.reservationId(), event);
     }
 
     private Boolean retry(Task t, String result, RuntimeException e) {
         Duration backoff = WorkOrderOutboxRelay.backoff(t.attempts() + 1);
-        jdbc.update("update wo_reservation_release_task set attempts = attempts + 1, next_attempt_at = ?, last_error = ? where task_id = ?",
+        jdbc.update("update wo_reservation_release_task set attempts = attempts + 1, next_attempt_at = ?, last_error = ? where task_id = ? and status = 'PENDING'",
             Timestamp.from(clock.instant().plus(backoff)), truncate(e.getMessage()), t.taskId());
         metrics.releaseResult(result);
         return null;
     }
 
     private void finish(Task t, String status, String resultStatus, String error) {
-        jdbc.update("update wo_reservation_release_task set status = ?, result_status = ?, attempts = attempts + 1, last_error = ?, completed_at = ? where task_id = ?",
+        jdbc.update("update wo_reservation_release_task set status = ?, result_status = ?, attempts = attempts + 1, last_error = ?, completed_at = ? where task_id = ? and status = 'PENDING'",
             status, resultStatus, truncate(error), Timestamp.from(clock.instant()), t.taskId());
     }
 

@@ -42,6 +42,12 @@ final class InventoryStub {
     volatile boolean renewForbidden;
     /** 非 null 时 release 返回该状态码（如 403、503）。 */
     volatile Integer releaseFailure;
+    /** release 返回 410 reservation-released（契约外行为）。 */
+    volatile boolean releaseGone;
+    /** 非 null 时创建预留返回该状态码（如 503）。 */
+    volatile Integer createFailure;
+    /** 创建预留前的延迟（毫秒），用于模拟读超时。 */
+    volatile long createDelayMs;
     private final Map<String, Boolean> tokens = new ConcurrentHashMap<>();
 
     InventoryStub() {
@@ -55,13 +61,14 @@ final class InventoryStub {
         try {
             server = HttpServer.create(new InetSocketAddress("localhost", port), 0);
             server.createContext("/", this::handle);
+            server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(4)); // 并发用例需要并行处理请求
             server.start();
         } catch (IOException e) { throw new IllegalStateException(e); }
     }
 
     void stop() { if (server != null) server.stop(0); server = null; }
 
-    void reset() { reservations.clear(); releaseReasons.clear(); idempotency.clear(); calls.clear(); renewForbidden = false; releaseFailure = null; }
+    void reset() { reservations.clear(); releaseReasons.clear(); idempotency.clear(); calls.clear(); renewForbidden = false; releaseFailure = null; releaseGone = false; createFailure = null; createDelayMs = 0; }
 
     private void handle(HttpExchange ex) throws IOException {
         try {
@@ -97,6 +104,8 @@ final class InventoryStub {
     }
 
     private Object[] create(JsonNode req) {
+        if (createDelayMs > 0) try { Thread.sleep(createDelayMs); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        if (createFailure != null) return new Object[]{createFailure, problem("about:blank", createFailure)};
         ArrayNode shortages = mapper.createArrayNode();
         for (JsonNode l : req.path("lines")) {
             if (l.path("uom").asText().equals("BAD-UOM")) return new Object[]{422, problem("uom-mismatch", 422)};
@@ -131,6 +140,7 @@ final class InventoryStub {
     }
 
     private Object[] release(String id, JsonNode req) {
+        if (releaseGone) return new Object[]{410, problem("reservation-released", 410)};
         if (releaseFailure != null) return new Object[]{releaseFailure, problem("about:blank", releaseFailure)};
         ObjectNode r = reservations.get(id);
         if (r == null) return new Object[]{404, problem("about:blank", 404)};

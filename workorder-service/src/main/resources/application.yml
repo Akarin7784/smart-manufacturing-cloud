@@ -64,6 +64,8 @@ manufacturing:
     reservation-release:
       interval: PT2S
       batch-size: 20
+      # 领取租期：领取后在此期间内其他实例不会重复领取（HTTP 在事务外执行）
+      lease: PT60S
 
 # 数据库迁移：表结构只由 Flyway 的 db/migration 管理，不再使用 spring.sql.init（schema.sql 已转为 V1__init.sql）。
 # 默认关闭 baseline-on-migrate：已有表但没有迁移历史的旧库（P2 之前由 schema.sql 创建）会让 Flyway 直接报错，

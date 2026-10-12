@@ -199,7 +199,8 @@ paths:
         并为有效（ACTIVE）库存预留登记释放任务；释放由后台异步执行（`reason=WORK_ORDER_CANCELLED`，
         库存 `Idempotency-Key: cancel-{工单号}-{预留单号}`），库存暂时不可用不影响取消，恢复后自动释放。
         同键重放原样返回首次结果且不再次释放；换键再次取消返回 409 `workorder-cancelled`。
-        已关闭 409 `workorder-closed`；IN_PROGRESS / COMPLETED（已有报工）409 `workorder-state-conflict`。需要 `workorder:write`。
+        已关闭 409 `workorder-closed`；工单只要有过任何报工（含已冲销的），无论当前状态（含由 IN_PROGRESS 冻结的 ON_HOLD）都返回
+        409 `workorder-state-conflict`（detail：已有报工，请走完工或关闭）。需要 `workorder:write`。
       parameters:
         - $ref: '#/components/parameters/WorkOrderNo'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -579,7 +580,7 @@ components:
         | `report-already-reversed` | 409 | 报工已被冲销（只允许冲销一次），或冲销对象本身是冲销记录 |
         | `operation-not-found` | 404 | 工序号不在下达时的工艺快照中 |
         | `report-not-found` | 404 | 该工单下不存在此报工记录 |
-        | `uom-mismatch` | 422 | 报工计量单位与本工单已有报工的单位不一致（`data` 含 expectedUom / requestedUom）；或下达预留时 BOM 单位与库存已登记的现存量单位不一致（`data.source=inventory`） |
+        | `uom-mismatch` | 422 | 报工计量单位与本工单已有报工的单位不一致（`data` 含 expectedUom / requestedUom）；或下达时同一物料在 BOM 展开中计量单位不一致（`data` 含 materialCode / expectedUom / requestedUom），或 BOM 单位与库存已登记的现存量单位不一致（`data.source=inventory`） |
         | `workorder-cancelled` | 409 | 工单已取消：重复取消（换键；同键为重放）以及取消后的下达、报工、冲销、完工、冻结、恢复 |
         | `inventory-service-unavailable` | 503 | 库存服务不可用或拒绝服务令牌（下达预留、恢复时重新预留） |
         | `validation-error` | 400 | 请求参数校验失败（格式、必填、范围、小数位超过 6 位等） |
