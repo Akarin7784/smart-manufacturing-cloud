@@ -51,6 +51,7 @@
     - HOLD 最终 `DONE` → 执行 VOID；
     - HOLD 因**明确拒绝**（400、422、409 `insufficient-stock`）`FAILED` → 库存确定未记账，VOID 自动 `CANCELLED`；
     - HOLD 因**结果不确定**（超时、5xx 重试耗尽）`FAILED` → VOID 保持 `PENDING` 排在其后；人工重试 HOLD 沿用同一幂等键（库存若已记账则重放首次结果），HOLD `DONE` 后执行 VOID；若人工确认库存未记账，对 HOLD 执行 `resolve`（`RESOLVED_MANUALLY`），其后的 VOID 自动 `CANCELLED`。
+    - HOLD 因**未约定 404 超过 `max-unknown-404-retries`**（gateway-not-found、about:blank、未定义 type）`FAILED` → 按结果不确定处理（#55 拍板），VOID 保持 `PENDING`、不自动取消；处理方式同 422 `idempotency-key-conflict`：人工查清后对 HOLD `resolve`（VOID 随之 `CANCELLED`），或用同一幂等键人工重试 HOLD（`DONE` 后执行 VOID）。
 - **已处置被冲销**：保持现行 `DISPOSED_REVERSAL_CONFLICT`，不自动回滚库存。
 - **关闭**：有 `PENDING`/`FAILED` 任务 → 409 `writeback-pending`；全部为终态 `DONE`/`CANCELLED`/`RESOLVED_MANUALLY` 才允许关闭。
 

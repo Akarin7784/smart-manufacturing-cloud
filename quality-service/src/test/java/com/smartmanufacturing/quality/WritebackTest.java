@@ -379,6 +379,26 @@ class WritebackTest {
         assertThat(registry.get("mes.quality.inventory.contract.mismatch").tag("operation", "hold").counter().count()).isEqualTo(mismatch + 1);
     }
 
+    /** HOLD 因未约定 404 超过上限 FAILED（不确定，#55 拍板）：处理同 422 idempotency-key-conflict，作废后追加的 VOID 保持 PENDING 不自动取消。 */
+    @Test void unknown404ExhaustedKeepsVoidPending() {
+        String r = rid();
+        String ncr = open(r, "1");
+        String key = "qc:" + ncr + ":hold";
+        for (int i = 0; i < 6; i++) inventory.script(key, new Retryable("HTTP 404 gateway-not-found", InventoryQcHoldClient.RetryReason.NOT_FOUND_UNKNOWN));
+        // 首次执行后作废：HOLD 已尝试过，追加 VOID 排在其后。
+        worker.runBatch();
+        reverse(r);
+        for (int i = 0; i < 5; i++) { clock.advance(Duration.ofMinutes(5)); worker.runBatch(); }
+        assertThat(task(ncr, Action.HOLD).status()).isEqualTo(WritebackStatus.FAILED);
+        assertThat(task(ncr, Action.HOLD).lastError()).contains("未约定的 404");
+        assertThat(task(ncr, Action.VOID).status()).isEqualTo(WritebackStatus.PENDING);
+        // 再跑调度：VOID 被前面的 FAILED HOLD 阻塞，不执行也不取消。
+        clock.advance(Duration.ofMinutes(5));
+        worker.runBatch();
+        assertThat(task(ncr, Action.VOID).status()).isEqualTo(WritebackStatus.PENDING);
+        assertThat(inventory.callsOf(ncr)).noneMatch(c -> c.action() == Action.VOID);
+    }
+
     // ---------------- 人工重试、结案与关闭 ----------------
 
     @Test void retryOnlyFailedAndWithinWindow() {
