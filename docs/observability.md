@@ -126,6 +126,8 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | `mes_workorder_inventory_auth_failure_total` | Counter | `operation`（`reserve`、`renew`、`release`、`get`、`token`） | 库存拒绝服务令牌（401/403）的次数；续约 403 表示本服务不是该预留的持有方 |
 | `mes_workorder_inventory_contract_mismatch_total` | Counter | `operation`（`reserve`、`renew`、`release`、`get`） | 库存调用结果不符合契约的次数，启动时四个 `operation` 全部以 0 预注册。计入：库存返回 422 `uom-mismatch`（BOM 单位与库存现存量单位不一致）；返回本服务不应收到的 Problem type（`validation-error`、`idempotency-key-conflict`、`over-consume`、`line-closed`）或未约定的状态码；2xx 响应体缺失或结构无法解析。不计入：网络错误、5xx（`inventory-service-unavailable`）、401/403（见 `auth_failure`）、409 缺料等正常业务结果。告警 `WorkorderReservationContractMismatch` 使用：`sum(increase(mes_workorder_inventory_contract_mismatch_total[10m])) > 0` |
 
+> 契约不一致的两个指标用途不同：`mes_workorder_inventory_contract_mismatch_total{operation}` 用于告警（`WorkorderReservationContractMismatch`）；`mes_workorder_reservation_release_total{result="contract_mismatch"}` 只用于释放结果统计面板。释放路径两个都计，这是有意为之，不是重复计数，请勿删除其中任何一个。
+
 计数只在事务提交后、且不是幂等重放时累加（重放计为 `result="replay"`）。
 
 ### 库存服务（inventory-service）
