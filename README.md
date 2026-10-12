@@ -229,7 +229,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\security-smoke-test.ps1
 - `GET /api/workorders/{id}/release`：下达快照、生命周期版本、冻结原因与当前预留。
 - 预留归库存服务所有（TTL 15 分钟）：本服务每 5 分钟批量续约（`manufacturing.workorder.reservation-renew-*`），不自行判定过期；
   过期由库存的 `ReservationExpired` 事件或续约答复“已失效”驱动（`consumed_event` 去重后冻结工单）。
-  库存服务就绪前使用本地替身适配器 `manufacturing.workorder.material-reservation=local`（总是成功，不检查库存）。
-- 事件：`WorkOrderReleased/Held/Resumed` 与业务变更同事务写入 `outbox_event`；**RocketMQ 中继与 `ReservationExpired` 订阅尚未接入**
-  （等待运维分支 `ops/rocketmq` 的 Nacos 共享配置），当前事件只入库不发布。
-- 新表全部在 `db/migration/V2__workorder_release.sql`（V1 由运维维护）。
+  compose 演示环境使用真实库存（`WORKORDER_MATERIAL_RESERVATION=inventory`）：经 Nacos 服务发现直连 `inventory-service`（不经网关），
+  服务身份 client_credentials（`WORKORDER_CLIENT_SECRET`），库存 9 种 Problem type 全部显式映射；本地直跑缺省仍为替身 `local`（总是成功，不检查库存）。
+- `POST /api/workorders/{id}/cancel`：CREATED / RELEASED / ON_HOLD → CANCELLED，同一事务登记预留释放任务，后台以
+  `reason=WORK_ORDER_CANCELLED`、`Idempotency-Key: cancel-{工单号}-{预留单号}` 释放；库存不可用时退避重试，恢复后自动完成。重复取消返回 409 `workorder-cancelled`。
+- 事件：生命周期事件与业务变更同事务写入 `outbox_event`，由中继投递到 RocketMQ；订阅库存预留事件（`CG_WORKORDER_RESERVATION`），按 `eventId` 去重、按 `aggregateVersion` 丢弃过时事件。
+- 表结构：`db/migration/V2__workorder_release.sql`、`V3__operation_reporting.sql`、`V4__inventory_client_and_cancel.sql`（V1 由运维维护）。

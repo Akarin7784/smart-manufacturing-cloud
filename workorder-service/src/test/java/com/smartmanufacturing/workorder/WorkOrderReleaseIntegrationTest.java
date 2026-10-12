@@ -103,7 +103,8 @@ class WorkOrderReleaseIntegrationTest {
         // 消耗工序不在路线中之前已校验；这里模拟快照写入失败：预先占用该工单的工序任务主键。
         jdbc.update("insert into operation_task (order_id, op_no, seq, name, work_center_code, setup_minutes, run_seconds_per_unit, report_point, first_article_required, inspection_point_codes, status) values (?, 'OP10', 1, 'x', 'x', 0, 0, false, false, '', 'READY')", id);
         assertThatThrownBy(() -> service.release(id, "k", "u")).isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
-        verify(materials).release(eq("release:" + id + ":k"), anyString());
+        // 补偿释放复用取消释放的幂等键 cancel-{工单号}-{预留单号}
+        verify(materials).release(org.mockito.ArgumentMatchers.startsWith("cancel-" + id + "-"), anyString(), eq(MaterialReservationPort.ReleaseReason.COMPENSATION));
         assertThat(jdbc.queryForObject("select status from work_order where id = ?", String.class, id)).isEqualTo("CREATED");
         assertThat(count("select count(*) from work_order_lifecycle where order_id = ?", id)).isZero();
     }
@@ -193,7 +194,7 @@ class WorkOrderReleaseIntegrationTest {
             .isInstanceOfSatisfying(BusinessException.class, e -> assertThat(e.code()).isEqualTo("CONCURRENT_MODIFICATION"));
         assertThat(service.view(id).holdReasons()).containsExactly("MATERIAL_RESERVATION_EXPIRED");
         // 新预留已补偿释放
-        verify(materials).release(eq("rereserve:" + id + ":2"), anyString());
+        verify(materials).release(startsWith("cancel-" + id + "-"), anyString(), eq(MaterialReservationPort.ReleaseReason.COMPENSATION));
     }
 
     /** 3：续约按批循环取尽，批大小小于活动预留数时也能一轮覆盖全部。 */
