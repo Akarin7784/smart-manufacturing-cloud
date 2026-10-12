@@ -35,4 +35,28 @@ Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/devices/missing" -Headers $h
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"missing","product":"bearing","quantity":10}' } 404
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D002","product":"bearing","quantity":10}' } 409
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":0}' } 400
+# 主数据（经网关）：演示 BOM 已发布且 10 台展开结果与演示数据一致（20CrMnTi 圆钢合计 10.5 kg）。
+$bom = Invoke-RestMethod "$BaseUrl/api/boms/FG-GR60-20/effective?date=2026-10-12" -Headers $headers
+if ($bom.data.version -ne 'A01' -or $bom.data.status -ne 'RELEASED') { throw 'Demo BOM FG-GR60-20/A01 not released.' }
+$explosion = Invoke-RestMethod "$BaseUrl/api/boms/FG-GR60-20/explosion?date=2026-10-12&quantity=10" -Headers $headers
+$steel = ($explosion.data.lines | Where-Object componentCode -eq 'RM-20CRMNTI-D30' | Measure-Object -Property requiredQty -Sum).Sum
+if ([decimal]$steel -ne [decimal]10.5) { throw "Unexpected BOM explosion result: steel=$steel" }
+# RocketMQ 收发回环（与 smoke-test.sh 对等）：在 broker 容器内用自带 mqadmin 发一条唯一标记消息，再以新消费组拉回比对。
+# 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。设置环境变量 SKIP_MQ_SMOKE=1 可跳过。
+if ($env:SKIP_MQ_SMOKE -ne '1') {
+    $marker = "smoke-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())-$PID"
+    $group = "CG_SMOKE_$PID"
+    # 参数经 -e 环境变量传入容器，避免 PowerShell 与容器内 sh 两层转义。
+    $mqBase = @('compose', '--profile', 'app', 'exec', '-T', '-e', 'JAVA_OPT_EXT=-Xms64m -Xmx128m -Xmn32m', '-e', "MARKER=$marker", '-e', "GROUP=$group", 'broker', 'sh', '-c')
+    $sent = & docker @mqBase '"$ROCKETMQ_HOME/bin/mqadmin" sendMessage -n namesrv:9876 -t mes-smoke-test -p "$MARKER" -k "$MARKER"' 2>$null
+    if (-not ($sent -match 'SEND_OK')) { throw 'RocketMQ send failed.' }
+    # 最多重试约 30 秒，拉到刚发送的唯一标记即视为成功。
+    $got = $false
+    for ($j = 0; $j -lt 15 -and -not $got; $j++) {
+        $out = & docker @mqBase '"$ROCKETMQ_HOME/bin/mqadmin" consumeMessage -n namesrv:9876 -t mes-smoke-test -g "$GROUP" -c 1000' 2>$null
+        if ($out -match [regex]::Escape($marker)) { $got = $true } else { Start-Sleep -Seconds 2 }
+    }
+    if (-not $got) { throw 'RocketMQ round-trip failed: sent message not received.' }
+    Write-Host 'PASS: RocketMQ round-trip (topic mes-smoke-test).'
+}
 Write-Host 'PASS: login, JWT verification, routing, Feign bearer relay, persistence and business errors.'

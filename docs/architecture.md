@@ -7,16 +7,16 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 | 环境变量 | 默认值 / 说明 |
 | --- | --- |
 | SPRING_PROFILES_ACTIVE | local；部署 Alibaba 环境设置 cloud |
-| SERVER_PORT | 8080 / 8081 / 8082 / 8083 |
+| SERVER_PORT | 8080 / 8081 / 8082 / 8083 / 8084（主数据） |
 | NACOS_ADDR | localhost:8848，容器内为 nacos:8848 |
 | NACOS_NAMESPACE | 空字符串 = public，填写 namespace ID |
 | NACOS_USERNAME / NACOS_PASSWORD | 默认空，开发 Nacos 关闭鉴权；启用鉴权时设置 |
 | SENTINEL_DASHBOARD | localhost:8858 |
-| SENTINEL_CLIENT_PORT | 网关 9080、设备 9081、工单 9082、认证 9083 |
+| SENTINEL_CLIENT_PORT | 网关 9080、设备 9081、工单 9082、认证 9083、主数据 9084 |
 | MYSQL_HOST / MYSQL_PORT | localhost / 3306 |
-| MYSQL_USERNAME | device_app / workorder_app / auth_app |
+| MYSQL_USERNAME | device_app / workorder_app / auth_app / masterdata_app |
 | MYSQL_PASSWORD | 容器环境取 .env 的 MYSQL_APP_PASSWORD（随机生成）；本机默认 local-demo-password |
-| DEVICE_SERVICE_URL / WORKORDER_SERVICE_URL | 仅 local 网关的固定目标 |
+| DEVICE_SERVICE_URL / WORKORDER_SERVICE_URL / MASTERDATA_SERVICE_URL | 仅 local 网关的固定目标 |
 | CLIENTS_DEVICE_URL | 仅明确需要绕过发现时覆盖 Feign 目标 URL |
 
 多实例启动时为每个 Java 进程分配唯一 SERVER_PORT 与 SENTINEL_CLIENT_PORT。跨机器注册需保证 Nacos 注册的实例地址可被网关、Feign、Sentinel 控制台访问。Nacos 客户端还要连通 9848 gRPC 端口，不能只转发 8848。
@@ -34,6 +34,8 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 配置中心保存规则 JSON，客户端订阅生效。原版控制台推送规则不会自动写入 Nacos，需改造控制台规则仓库或以 Nacos 配置发布作为规则管理入口。先在测试环境验证规则资源名称与 QPS，再启用生产规则。
 
 ## RocketMQ 扩展
+
+演示环境已接入 RocketMQ 5.5.0（namesrv + broker，随 `make demo` 启动），Topic、Tag 与地址见 [messaging.md](messaging.md)。
 
 建议工单模块采用本地事务写入工单与 outbox 事件，再异步发布 WorkOrderCreated。消息包含 eventId / orderId；消费者按 eventId 幂等，重试与死信队列可观测。不要简单地“写库后发消息”并把两个动作宣称为原子操作。
 
