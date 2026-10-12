@@ -14,7 +14,8 @@ case "${1:-up}" in
     echo "演示环境已就绪：网关 http://localhost:8080 ，Nacos 控制台 http://localhost:8849 ；管理员 admin，密码见 .env 中 AUTH_BOOTSTRAP_PASSWORD"
     ;;
   down) $compose down ;;
-  # reset 会删除数据卷（数据库、Nacos、认证私钥）和本项目构建的镜像，用于回到干净状态并释放共享机器磁盘；.env 保留。
+  # reset 会删除数据卷（数据库、Nacos、认证私钥）和本项目构建的本地镜像（--rmi local，不删除拉取的公共镜像），
+  # 用于回到干净状态并释放磁盘；.env 保留。
   reset) $compose down -v --rmi local && exec sh "$0" up ;;
   smoke) sh scripts/smoke-test.sh ;;
   *) echo "用法：$0 [up|down|reset|smoke]" >&2; exit 2 ;;

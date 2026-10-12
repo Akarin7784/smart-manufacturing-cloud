@@ -5,13 +5,13 @@ set -eu
 : "${MYSQL_ROOT_PASSWORD:?}" "${MYSQL_APP_PASSWORD:?}"
 # 通过环境变量传递 root 密码，避免出现在进程参数中。
 export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"
-# 对单引号转义，防止密码中含特殊字符时破坏 SQL。
 # 再做一次连接等待，防御 MySQL 刚通过健康检查但尚未接受远程连接的短暂窗口。
 i=0
 until mysqladmin ping -h "${MYSQL_HOST:-mysql}" -uroot --silent 2>/dev/null; do
   i=$((i+1)); [ "$i" -le 60 ] || { echo "MySQL 不可连接" >&2; exit 1; }
   sleep 2
 done
+# 对单引号转义，防止密码中含特殊字符时破坏 SQL。
 app=$(printf '%s' "$MYSQL_APP_PASSWORD" | sed "s/'/''/g")
 mysql -h "${MYSQL_HOST:-mysql}" -uroot <<SQL
 CREATE DATABASE IF NOT EXISTS manufacturing_auth CHARACTER SET utf8mb4;

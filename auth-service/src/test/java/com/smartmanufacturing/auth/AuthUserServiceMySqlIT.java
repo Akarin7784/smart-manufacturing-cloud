@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * 认证用户服务的真实 MySQL 8.4 集成测试（Testcontainers）。
  * 保护 H2 无法可靠验证的行为：SELECT ... FOR UPDATE 行锁下并发失败计数不丢失、唯一键冲突翻译为 409。
- * 表结构沿用服务自身 schema.sql（不含演示数据）。
+ * 表结构由 Flyway 执行服务自身 db/migration/V1__init.sql 创建（与生产同一套迁移脚本，test profile 不加载 db/demo）。
  * 不使用 disabledWithoutDocker：Docker 不可用时必须失败而非静默跳过，避免 Linux CI 假绿；
  * 无法运行 Linux 容器的环境（Windows CI、本地无 Docker）请显式使用 -DskipITs 跳过。
  */
@@ -57,6 +57,13 @@ class AuthUserServiceMySqlIT {
     @Test @DisplayName("数据源为真实 MySQL 8.4")
     void runsOnRealMySql() {
         assertThat(jdbc.queryForObject("select version()", String.class)).startsWith("8.4");
+    }
+
+    /** 表结构必须来自 Flyway 迁移（V1 成功执行），防止回退到 spring.sql.init 而使迁移脚本未经真实 MySQL 验证。 */
+    @Test @DisplayName("表结构由 Flyway V1 创建")
+    void schemaComesFromFlywayV1() {
+        assertThat(jdbc.queryForObject(
+            "select count(*) from flyway_schema_history where version = '1' and success = 1", Integer.class)).isEqualTo(1);
     }
 
     /**

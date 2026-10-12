@@ -1,5 +1,5 @@
 -- GR-60 二级圆柱斜齿轮减速机演示主数据（与 docs/mes-product-domain-design.md 第 4 节一致）。
--- 仅在 demo profile 加载；运维引入 Flyway 后作为 db/demo 下的可重复迁移（R__）执行，文件无需改名。
+-- 仅在 demo profile 由 Flyway 作为 db/demo 下的可重复迁移（R__）执行；脚本校验和变化时自动重放，INSERT IGNORE 保证重放无副作用。
 -- 幂等约定：固定业务编码 + INSERT IGNORE（只补缺失行、从不覆盖已有行），不依赖自增 ID、不做无条件 DELETE。
 -- 不使用 ON DUPLICATE KEY UPDATE：重跑会绕过物料乐观锁版本、覆盖已发布（只读）BOM/工艺行，违反发布后不可变约束。
 -- 代价：修改演示数据需新增版本（如 BOM A02）或重建演示库（make demo-reset），不能靠改本文件就地更新。

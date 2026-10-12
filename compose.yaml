@@ -9,6 +9,8 @@ x-cloud-env: &cloud-env
   NACOS_USERNAME: ${NACOS_USERNAME:-nacos}
   NACOS_PASSWORD: ${NACOS_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
   SENTINEL_DASHBOARD: sentinel:8858
+  # 默认 false：旧库（无迁移历史）启动直接失败，需 make demo-reset；仅确认结构与 V1 一致时才在 .env 中开启。
+  FLYWAY_BASELINE_ON_MIGRATE: ${FLYWAY_BASELINE_ON_MIGRATE:-false}
   # RocketMQ NameServer 地址；Topic 名称见 Nacos 公共配置 common.yml。
   ROCKETMQ_NAMESRV_ADDR: namesrv:9876
   AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
@@ -206,6 +208,8 @@ services:
         MODULE: device-service
     environment:
       <<: *cloud-env
+      # 叠加 demo profile：Flyway 追加 db/demo，加载冒烟测试依赖的演示设备 D001/D002。
+      SPRING_PROFILES_ACTIVE: cloud,demo
       AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
       MYSQL_HOST: mysql
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
