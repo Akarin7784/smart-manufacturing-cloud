@@ -2,7 +2,7 @@ package com.smartmanufacturing.inventory;
 import org.springframework.http.HttpStatus;
 
 /**
- * 契约中固定的 8 种业务错误类型（OpenAPI components.schemas.ProblemType），每种绑定唯一 HTTP 状态。
+ * 契约中固定的 9 种业务错误类型（OpenAPI components.schemas.ProblemType），每种绑定唯一 HTTP 状态。
  * 调用方按 type 分支，不解析 detail；新增类型必须先修改契约。
  */
 public enum ProblemType {
@@ -13,7 +13,9 @@ public enum ProblemType {
     RESERVATION_RELEASED("reservation-released", HttpStatus.GONE, "预留单已释放"),
     RESERVATION_CONSUMED("reservation-consumed", HttpStatus.CONFLICT, "预留单已整单扣减"),
     LINE_CLOSED("line-closed", HttpStatus.CONFLICT, "预留行已关闭"),
-    VALIDATION_ERROR("validation-error", HttpStatus.BAD_REQUEST, "请求参数校验失败");
+    VALIDATION_ERROR("validation-error", HttpStatus.BAD_REQUEST, "请求参数校验失败"),
+    /** 请求计量单位与该物料已登记的现存量单位不一致：请求格式合法但业务上不可处理，故为 422 而非 400。 */
+    UOM_MISMATCH("uom-mismatch", HttpStatus.UNPROCESSABLE_ENTITY, "计量单位与现存量单位不一致");
 
     private final String value;
     private final HttpStatus status;

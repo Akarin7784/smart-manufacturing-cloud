@@ -49,6 +49,8 @@ public class IdempotencyService {
         // 普通读沿用事务首次读取时的快照，排队等到现存量行锁后仍看不到前一个事务刚提交的预留，会导致超卖
         // （ReservationMySqlIT 的并发用例可复现）。READ COMMITTED 下每条语句读取最新已提交数据；
         // 同一物料的预留、出库、扣减都持有该物料现存量行锁，因此读到的有效预留量是准确的。同时减少间隙锁与死锁。
+        // 适用范围：READ COMMITTED 只用于经本模板执行的幂等写事务（入库、出库、预留、扣减、释放等扣减类操作）；
+        // 其余数据库访问（查询接口、定时清理、过期扫描等）不经过本模板，仍使用 MySQL 默认的 REPEATABLE READ。
         this.tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     }
 

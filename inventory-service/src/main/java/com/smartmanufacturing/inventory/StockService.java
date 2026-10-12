@@ -88,14 +88,14 @@ public class StockService {
                 existing = jdbc.queryForObject("select uom from inventory_material where material_code = ? for update", String.class, material);
             }
         }
-        if (!existing.equals(uom)) throw ProblemException.validation("物料 " + material + " 的计量单位为 " + existing + "，与请求的 " + uom + " 不一致");
+        if (!existing.equals(uom)) throw ProblemException.uomMismatch(material, existing, uom);
     }
 
     /** 出库、预留使用：物料必须已登记，单位必须一致；未登记的物料不可能有库存，视为请求错误。 */
     String requireUom(String material, String uom) {
         String existing = findUom(material);
         if (existing == null) throw ProblemException.validation("物料 " + material + " 没有库存记录");
-        if (!existing.equals(uom)) throw ProblemException.validation("物料 " + material + " 的计量单位为 " + existing + "，与请求的 " + uom + " 不一致");
+        if (!existing.equals(uom)) throw ProblemException.uomMismatch(material, existing, uom);
         return existing;
     }
 

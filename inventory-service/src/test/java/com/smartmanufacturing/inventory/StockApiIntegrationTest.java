@@ -111,12 +111,23 @@ class StockApiIntegrationTest {
             .andExpect(status().isCreated()).andExpect(jsonPath("$.qty").value("-3")).andExpect(jsonPath("$.balanceAfter").value("7"));
     }
 
-    /** 同一物料必须使用首次入库登记的计量单位；不存在或停用的库位、非法数量都是 400 validation-error。 */
+    /** 入库单位与该物料已登记的现存量单位不一致：422 uom-mismatch（不是 400），且不写余额与流水。 */
+    @Test void inboundUomMismatchIs422() throws Exception {
+        location("T-UOM-01");
+        send("/inventory/inbound", key(), movement("M-UOM", "kg", "T-UOM-01", "L1", "1"), keeper()).andExpect(status().isCreated());
+        send("/inventory/inbound", key(), movement("M-UOM", "件", "T-UOM-01", "L1", "1"), keeper())
+            .andExpect(status().isUnprocessableEntity())
+            .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+            .andExpect(jsonPath("$.type").value("uom-mismatch")).andExpect(jsonPath("$.detail", containsString("kg")));
+        // 被拒的请求不能改动余额：现存量仍为首次入库的 1。
+        assertThat(jdbc.queryForObject("select sum(qty) from stock_on_hand where material_code = 'M-UOM'", java.math.BigDecimal.class))
+            .isEqualByComparingTo("1");
+    }
+
+    /** 不存在或停用的库位、非法数量、缺字段都是 400 validation-error（validation-error 只对应 400）。 */
     @Test void validationErrors() throws Exception {
         location("T-VAL-01");
         send("/inventory/inbound", key(), movement("M-VAL", "kg", "T-VAL-01", "L1", "1"), keeper()).andExpect(status().isCreated());
-        send("/inventory/inbound", key(), movement("M-VAL", "件", "T-VAL-01", "L1", "1"), keeper())
-            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.type").value("validation-error")).andExpect(jsonPath("$.detail", containsString("kg")));
         send("/inventory/inbound", key(), movement("M-VAL", "kg", "NO-SUCH", "L1", "1"), keeper())
             .andExpect(status().isBadRequest()).andExpect(jsonPath("$.type").value("validation-error"));
         send("/inventory/inbound", key(), movement("M-VAL", "kg", "T-VAL-01", "L1", "1.0000001"), keeper())

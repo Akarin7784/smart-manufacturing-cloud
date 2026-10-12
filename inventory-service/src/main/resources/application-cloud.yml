@@ -26,3 +26,9 @@ spring:
     hikari:
       maximum-pool-size: 10
       minimum-idle: 2
+
+# 容器环境把 actuator 迁到独立管理端口 18085（按 #21 约定接着 1808x 编号）：只在内网可达、不映射到宿主机，
+# Prometheus 匿名抓取 /actuator/prometheus；业务端口上的 actuator 仍需 metrics:read。
+management:
+  server:
+    port: ${MANAGEMENT_PORT:18085}
