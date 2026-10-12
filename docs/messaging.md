@@ -26,13 +26,26 @@
 | --- | --- | --- |
 | `rocketmq.name-server` | `${ROCKETMQ_NAMESRV_ADDR:localhost:9876}` | compose 统一注入 `namesrv:9876` |
 | `manufacturing.mq.topics.inventory-reservation` | `mes-inventory-reservation` | 库存预留事件，库存服务经 outbox 发布 |
-| `manufacturing.mq.topics.workorder-event` | `mes-workorder-event` | 工单状态事件 |
+| `manufacturing.mq.topics.workorder-event` | `mes-workorder-event` | 工单状态事件（Tag：`WorkOrderStarted` / `WorkOrderCompleted`） |
 | `manufacturing.mq.topics.workorder-quality` | `mes-workorder-quality` | 工单不良品待质检事件，工单服务经 outbox 发布 |
-| `manufacturing.mq.tags.*` | `ReservationCreated` / `ReservationReleased` / `ReservationConsumed` / `ReservationExpired`；`DefectReported` / `DefectReversed` | 同一 Topic 按 Tag 区分事件类型 |
+| `manufacturing.mq.tags.*` | `ReservationCreated` / `ReservationReleased` / `ReservationConsumed` / `ReservationExpired`；`WorkOrderStarted` / `WorkOrderCompleted`；`DefectReported` / `DefectReversed` | 同一 Topic 按 Tag 区分事件类型 |
 | `manufacturing.mq.consumer-groups.workorder-reservation` | `CG_WORKORDER_RESERVATION` | 工单服务订阅预留事件 |
 | `manufacturing.mq.consumer-groups.quality-defect` | `CG_QUALITY_DEFECT` | 质检服务订阅不良品事件 |
 
 `ReservationExpired` 由库存服务定时任务判定后发布，工单服务只订阅、不自行计算过期。服务代码通过 `@ConfigurationProperties("manufacturing.mq")` 引用，禁止硬编码 Topic。
+
+## 工单状态事件（`mes-workorder-event`）
+
+工单服务经 outbox 向本 Topic 发布工单生命周期状态事件。
+
+| 项 | 值 |
+| --- | --- |
+| Topic | `mes-workorder-event` |
+| Tag | `WorkOrderStarted`（首笔报工，状态转 `IN_PROGRESS`）、`WorkOrderCompleted`（状态转 `COMPLETED`） |
+| 生产者 | workorder-service（业务数据与 outbox 同事务写入，投递成功后再标记已发送） |
+| 幂等 | 消费端按 `eventId` 去重，重复投递无副作用 |
+
+`WorkOrderCompleted` 在末道工序累计合格数达到计划数时自动发出；也支持人工确认完工。人工完工时事件会带上完工方式（自动或人工）以及与计划数的差额，具体字段名由工单服务实现 PR 确定。
 
 ## 工单不良品待质检（`mes-workorder-quality`）
 

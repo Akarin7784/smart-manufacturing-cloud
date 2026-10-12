@@ -31,6 +31,9 @@ manufacturing:
       reservation-consumed: ReservationConsumed
       # 预留过期由库存服务定时任务判定后发布，工单服务只订阅，不自行计算过期。
       reservation-expired: ReservationExpired
+      # 工单状态事件 Tag：首笔报工转 IN_PROGRESS；末道合格数达计划或人工确认完工转 COMPLETED。
+      workorder-started: WorkOrderStarted
+      workorder-completed: WorkOrderCompleted
       # 报工不良数 > 0 时发布；冲销带不良数的报工时发布。
       defect-reported: DefectReported
       defect-reversed: DefectReversed
