@@ -37,6 +37,10 @@ auth:
   bootstrap:
     username: ${AUTH_BOOTSTRAP_USERNAME:admin}
     password: ${AUTH_BOOTSTRAP_PASSWORD:}
+  # 演示账号密码（init-env 生成）；为空则不创建对应账号。
+  demo-users:
+    qc01-password: ${AUTH_DEMO_QC01_PASSWORD:}
+    op01-password: ${AUTH_DEMO_OP01_PASSWORD:}
 spring.cloud.sentinel:
   eager: true
   transport:

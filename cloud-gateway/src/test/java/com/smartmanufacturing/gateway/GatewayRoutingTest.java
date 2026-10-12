@@ -184,4 +184,27 @@ class GatewayRoutingTest {
         // 契约之外的写路径一律拒绝。
         client().post().uri("/api/quality/ncrs").headers(h -> h.setBearerAuth(writer)).exchange().expectStatus().isForbidden();
     }
+
+    // 以下权限清单与 auth-service 的 Role 枚举一致（网关模块不依赖认证服务，这里按角色复制；契约变更时同步）。
+    static final List<String> OPERATOR = List.of("device:read", "workorder:read", "workorder:write", "masterdata:read", "inventory:read", "inventory:write", "quality:read");
+    static final List<String> QUALITY_INSPECTOR = List.of("device:read", "workorder:read", "masterdata:read", "inventory:read", "quality:read", "quality:write");
+    static final List<String> ADMIN = List.of("device:read", "workorder:read", "workorder:write", "config:read", "metrics:read", "user:manage",
+        "masterdata:read", "masterdata:write", "masterdata:release", "inventory:read", "inventory:write", "quality:read", "quality:write");
+
+    private String as(List<String> role) { return token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), role); }
+
+    /** 操作员只读质检：查询放行，处置 403。 */
+    @Test void operatorMayReadButNotDisposeQuality() {
+        client().get().uri("/api/quality/ncrs").headers(h -> h.setBearerAuth(as(OPERATOR))).exchange().expectStatus().isOk();
+        client().post().uri("/api/quality/ncrs/NCR-1/dispositions").headers(h -> h.setBearerAuth(as(OPERATOR))).exchange().expectStatus().isForbidden();
+    }
+
+    /** 质检员与管理员：查询、评审、处置、关闭均放行。 */
+    @Test void inspectorAndAdminMayReadAndDisposeQuality() {
+        for (List<String> role : List.of(QUALITY_INSPECTOR, ADMIN)) {
+            client().get().uri("/api/quality/ncrs/NCR-1").headers(h -> h.setBearerAuth(as(role))).exchange().expectStatus().isOk();
+            for (String action : List.of("review", "dispositions", "close"))
+                client().post().uri("/api/quality/ncrs/NCR-1/" + action).headers(h -> h.setBearerAuth(as(role))).exchange().expectStatus().isOk();
+        }
+    }
 }

@@ -14,15 +14,19 @@
 
 ## 角色权限
 
-| 操作 | ADMIN 管理员 | OPERATOR 操作员 | VIEWER 查看者 |
-| --- | --- | --- | --- |
-| 查询设备 | 允许 | 允许 | 允许 |
-| 查询工单 | 允许 | 允许 | 允许 |
-| 创建工单 | 允许 | 允许 | 拒绝 |
-| 查看动态配置演示 | 允许 | 拒绝 | 拒绝 |
-| 读取监控指标 | 允许 | 拒绝 | 拒绝 |
-| 用户列表、创建、角色及状态修改 | 允许 | 拒绝 | 拒绝 |
-| 查看当前身份 | 允许 | 允许 | 允许 |
+| 操作 | ADMIN 管理员 | OPERATOR 操作员 | VIEWER 查看者 | QUALITY_INSPECTOR 质检员 |
+| --- | --- | --- | --- | --- |
+| 查询设备 | 允许 | 允许 | 允许 | 允许 |
+| 查询工单 | 允许 | 允许 | 允许 | 允许 |
+| 创建工单 | 允许 | 允许 | 拒绝 | 拒绝 |
+| 查看动态配置演示 | 允许 | 拒绝 | 拒绝 | 拒绝 |
+| 读取监控指标 | 允许 | 拒绝 | 拒绝 | 拒绝 |
+| 用户列表、创建、角色及状态修改 | 允许 | 拒绝 | 拒绝 | 拒绝 |
+| 查询质检（`quality:read`） | 允许 | 允许 | 允许 | 允许 |
+| NCR 评审、处置、关闭（`quality:write`） | 允许 | 拒绝 | 拒绝 | 允许 |
+| 查看当前身份 | 允许 | 允许 | 允许 | 允许 |
+
+`QUALITY_INSPECTOR` 由 Flyway `V2__quality_roles.sql` 引入：角色名为 17 个字符，迁移把 `auth_user.role` 从 VARCHAR(16) 加宽到 VARCHAR(32)。
 
 角色在 auth-service 的 Role.java 中映射为细分权限。登录请求不能自行指定权限。新增业务接口需要同时维护网关授权规则、服务方法授权及对应越权测试。
 
@@ -107,6 +111,8 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 | AUTH_PRIVATE_KEY_PATH | 仅认证服务私钥文件路径，本机 .runtime/auth/signing-key.json，容器 /home/app/security/signing-key.json |
 | AUTH_BOOTSTRAP_USERNAME | 首次管理员用户名，默认 admin |
 | AUTH_BOOTSTRAP_PASSWORD | 首次管理员密码，只在认证库为空时使用 |
+| AUTH_DEMO_QC01_PASSWORD | 演示账号 qc01（QUALITY_INSPECTOR）密码，init-env 生成；为空不创建，已存在不重置 |
+| AUTH_DEMO_OP01_PASSWORD | 演示账号 op01（OPERATOR）密码，init-env 生成；冒烟用它验证"只读质检、处置 403"；为空不创建，已存在不重置 |
 | AUTH_TOKEN_TTL_SECONDS | 令牌有效期，默认 900 秒，配置范围 60 至 3600 秒 |
 
 现有启动与冒烟脚本默认使用 admin；如改用其他引导用户名，需相应调整调用凭据。认证服务启动时读取 TTL 与签发参数，修改后应重启认证服务。

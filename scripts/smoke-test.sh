@@ -164,6 +164,27 @@ after=$(avail)
 echo "PASS: 库存预留与释放（服务令牌直连、可用量往返一致）"
 
 
+# 质检权限（网关层）：用 init-env 生成的演示账号真实登录，验证角色映射。
+# quality-service 尚未部署时网关找不到实例会返回 503，因此这里只断言"网关放行（非 401/403）"或"网关拒绝（403）"，
+# 不断言业务结果；服务上线后放行路径会变为 200/404/422 等，断言依然成立。
+demo_login() {
+  # 环境变量优先，其次读 .env（与管理员密码的取法一致）。
+  dpw=$(printenv "$1" || sed -n "s/^$1=//p" "$root/.env" 2>/dev/null || true)
+  [ -n "$dpw" ] || fail "缺少 $1（请运行 scripts/init-env.sh）"
+  curl -fsS -m 5 -H 'Content-Type: application/json' -d "$(jq -nc --arg u "$2" --arg p "$dpw" '{username:$u,password:$p}')" "$base/api/auth/login" \
+    | jq -r '.data.accessToken // empty'
+}
+qcode() { _qt=$1; shift; curl -s -o /dev/null -w '%{http_code}' -m 10 -H "Authorization: Bearer $_qt" -H 'Content-Type: application/json' "$@"; }
+qc=$(demo_login AUTH_DEMO_QC01_PASSWORD qc01); [ -n "$qc" ] || fail "qc01 登录失败"
+op=$(demo_login AUTH_DEMO_OP01_PASSWORD op01); [ -n "$op" ] || fail "op01 登录失败"
+allowed() { case "$1" in 401|403) return 1 ;; *) return 0 ;; esac; }
+c=$(qcode "$op" -X POST -d '{}' "$base/api/quality/ncrs/NCR-SMOKE/dispositions"); [ "$c" = 403 ] || fail "操作员处置应被网关拒绝 403，实际 $c"
+c=$(qcode "$op" "$base/api/quality/ncrs"); allowed "$c" || fail "操作员查询质检应被网关放行，实际 $c"
+c=$(qcode "$qc" "$base/api/quality/ncrs"); allowed "$c" || fail "qc01 查询质检应被网关放行，实际 $c"
+c=$(qcode "$qc" -X POST -d '{}' "$base/api/quality/ncrs/NCR-SMOKE/dispositions"); allowed "$c" || fail "qc01 处置应被网关放行，实际 $c"
+c=$(qcode "$token" -X POST -d '{}' "$base/api/quality/ncrs/NCR-SMOKE/dispositions"); allowed "$c" || fail "管理员处置应被网关放行，实际 $c"
+echo "PASS: 质检权限（op01 处置 403、查询放行；qc01 与 admin 查询和处置放行）"
+
 # RocketMQ 收发回环：用 Broker 镜像自带的 mqadmin 发一条带唯一标记的消息，再以新消费组拉回，确认 NameServer→Broker→消费链路可用。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。SKIP_MQ_SMOKE=1 可跳过（如未启动 app profile）。
 if [ "${SKIP_MQ_SMOKE:-0}" != 1 ]; then
