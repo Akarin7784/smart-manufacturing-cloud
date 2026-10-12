@@ -41,11 +41,28 @@
 | 项 | 值 |
 | --- | --- |
 | Topic | `mes-workorder-event` |
-| Tag | `WorkOrderStarted`（首笔报工，状态转 `IN_PROGRESS`）、`WorkOrderCompleted`（状态转 `COMPLETED`） |
-| 生产者 | workorder-service（业务数据与 outbox 同事务写入，投递成功后再标记已发送） |
+| Tag | `WorkOrderStarted`（首笔报工，状态转 `IN_PROGRESS`）、`WorkOrderCompleted`（状态转 `COMPLETED`）、`WorkOrderReopened`（冲销使 `COMPLETED` 退回 `IN_PROGRESS`）；生命周期 `WorkOrderReleased`、`WorkOrderHeld`、`WorkOrderResumed`、`WorkOrderHoldReasonCleared` |
+| 生产者 | workorder-service（业务数据与 outbox 同事务写入，由 outbox 中继投递，见下文“工单服务 outbox 中继”） |
 | 幂等 | 消费端按 `eventId` 去重，重复投递无副作用 |
 
-`WorkOrderCompleted` 在末道工序累计合格数达到计划数时自动发出；也支持人工确认完工。人工完工时事件会带上完工方式（自动或人工）以及与计划数的差额，具体字段名由工单服务实现 PR 确定。
+`WorkOrderCompleted` 在末道工序累计合格数达到计划数时自动发出（`completionMode=AUTO`），也可经 `POST /api/workorders/{no}/complete` 人工确认完工（`completionMode=MANUAL`，允许短缺）。
+
+**顺序与版本**：Topic 为普通消息（非顺序），同一工单的事件可能乱序到达。所有工单状态事件都带 `aggregateVersion`，即工单行的乐观锁版本（`work_order.version`），每次状态变更（含下达、冻结、恢复）递增。消费端按工单记录已处理的最大版本，**丢弃版本不高于本地版本的事件**；`occurredAt` 仅用于展示与审计，不能用于排序。
+
+数量均为 `DECIMAL(18,6)` 十进制字符串；`completedQty` 在所有事件中都是**末道工序累计合格数**。
+
+### 事件字段
+
+| Tag | 字段 |
+| --- | --- |
+| `WorkOrderStarted` | `eventId`、`workOrderNo`、`occurredAt`、`aggregateVersion` |
+| `WorkOrderCompleted` | `eventId`、`workOrderNo`、`uom`、`occurredAt`、`completionMode`（`AUTO` / `MANUAL`）、`plannedQty`、`completedQty`、`shortfallQty`（AUTO 固定为 `"0"`；恒有 `plannedQty = completedQty + shortfallQty`）、`reason`（仅 MANUAL）、`aggregateVersion` |
+| `WorkOrderReopened` | `eventId`、`workOrderNo`、`occurredAt`、`reversedReportId`（被冲销的原报工）、`completedQty`（冲销后）、`uom`、`aggregateVersion` |
+| `WorkOrderReleased` / `WorkOrderHeld` / `WorkOrderResumed` / `WorkOrderHoldReasonCleared` | `eventId`、`orderId`（兼容 V2，同 `workOrderNo`）、`workOrderNo`、业务字段（下达：`productCode`、`quantity`、`bomVersion`、`routingVersion`、`reservationId`；冻结：`reason`、`resumeTarget`；恢复 / 解除原因：`reason`、`status`）、`occurredAt`、`aggregateVersion` |
+
+`WorkOrderHoldReasonCleared`（多个冻结原因中解除一个，工单仍为 ON_HOLD）不改变状态，携带的是当前版本，按版本去重的消费者会将其丢弃，这是预期行为。V3 之前写入、经回填补发的生命周期事件不含 `aggregateVersion`，消费端按版本 0 处理。
+
+**ID 命名约定**（本文件所有事件通用）：`reversedReportId` 一律指被冲销的**原报工**记录；需要冲销记录本身的 ID 时使用 `reversalId`。
 
 ## 库存预留事件（`mes-inventory-reservation`）
 
@@ -74,7 +91,7 @@
 | --- | --- |
 | Topic | `mes-workorder-quality` |
 | Tag | `DefectReported`（报工不良数 > 0）、`DefectReversed`（冲销带不良数的报工） |
-| 生产者 | workorder-service（业务数据与 outbox 同事务写入，投递成功后再标记已发送） |
+| 生产者 | workorder-service（业务数据与 outbox 同事务写入，由 outbox 中继投递，见下文“工单服务 outbox 中继”） |
 | 消费组 | `CG_QUALITY_DEFECT`（质检侧） |
 | 幂等 | 消费端按 `eventId` 去重，重复投递无副作用 |
 
@@ -89,9 +106,33 @@
 | `lotNo` | 批次号 |
 | `uom` | 计量单位 |
 | `defectQty` | 不良数量，`DECIMAL(18,6)`，JSON 中用十进制字符串表示，避免浮点精度丢失 |
-| `reportId` | 报工记录 ID |
+| `reportId` | 仅 `DefectReported`：本次报工记录 ID（`DefectReversed` 不含该字段） |
 | `occurredAt` | 事件发生时间 |
 | `reversedReportId` | 仅 `DefectReversed`：被冲销的原报工记录 ID |
+| `reversalId` | 仅 `DefectReversed`：本次冲销记录 ID |
+
+`DefectReversed` 的 `defectQty` 为原报工的不良数（正数），表示需撤销的数量。
+
+## 工单服务 outbox 中继
+
+`WorkOrderOutboxRelay` 沿用库存服务（#18）的模式，投递语义为**至少一次**：
+
+- 每秒一批（`workorder.outbox.interval`），每批最多 50 条（`workorder.outbox.batch-size`），按 `occurred_at` 顺序用 `SELECT … FOR UPDATE SKIP LOCKED` 领取 `status = NEW` 且已到期（`next_attempt_at` 为空或已过）的行，多实例不会重复领取。
+- 按行上的 `topic` / `tag` 同步发送（生产者组 `PG_WORKORDER_EVENT`，单条超时 3 秒，客户端不重试），消息键为工单号，消息属性 `eventId` 与消息体一致。
+- 成功：`status = SENT`，写 `published_at`。失败：只有该行 `attempts + 1`，按指数退避（1s、2s、4s…上限 5 分钟）写 `next_attempt_at` 与 `last_error`；**本批随即结束**，剩余行不尝试、`attempts` 不变。
+- 重发时 `eventId` 不变；Broker 已确认但标记前进程崩溃会导致重复投递，消费端必须按 `eventId` 幂等。
+
+### V3 对 V2 遗留事件的回填
+
+V2 写入的 outbox 行没有投递目标。V3 迁移按事件类型回填：
+
+| V2 事件类型 | 回填结果 |
+| --- | --- |
+| `WorkOrderReleased`、`WorkOrderHeld`、`WorkOrderResumed`、`WorkOrderHoldReasonCleared` | `topic = mes-workorder-event`，`tag` = 事件类型，保持 `NEW`，由中继补发 |
+| 已有 `published_at` 的行 | `status = SENT` |
+| 其他无法映射的事件类型 | `status = DISCARDED`，`discard_reason = V3_UNMAPPED_EVENT_TYPE`，**永不投递**，也不计入 `mes_workorder_outbox_pending` |
+
+迁移脚本无法读取 Nacos，回填使用的 Topic / Tag 与 `infra/nacos/common.yml` 当前值一致；修改这些配置值时需同步评估历史数据。
 
 ## 冒烟检查
 
