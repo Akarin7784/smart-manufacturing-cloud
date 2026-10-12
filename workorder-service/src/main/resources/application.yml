@@ -6,7 +6,8 @@ spring:
     name: workorder-service
   profiles:
     default: local
-  # 建表顺序：V1 基线（schema.sql，运维将迁移为 V1__init.sql）→ V2 工单下达；Flyway 落地后改由 spring.flyway.locations 管理。
+  # 过渡：V1 基线（schema.sql）之后由 sql.init 执行 V2。本服务改用独立 Flyway 历史（workorder：V1__init + V2__workorder_release，
+  # 见 ops/p2-flyway PR #11）后删除此段，由 spring.flyway.locations=classpath:db/migration 管理；V2 文件名与内容保持不变。
   sql:
     init:
       schema-locations: classpath:schema.sql,classpath:db/migration/V2__workorder_release.sql

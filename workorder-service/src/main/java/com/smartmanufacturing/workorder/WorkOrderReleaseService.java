@@ -88,8 +88,9 @@ public class WorkOrderReleaseService {
         List<ReservationLineView> lines = requirements(bom.lines());
         validateConsumeOps(bom.lines(), routing.operations());
 
-        // 预留键由工单号与下达幂等键派生：同键并发重试拿到同一张预留单，不同键各自独立。
-        String reservationKey = "wo-release:" + orderId + ":" + key;
+        // 预留幂等键 = release:{工单号}:{下达 Idempotency-Key}（与库存约定）：同键重试 / 并发拿到同一张预留单，不同键各自独立。
+        // 预留 409（缺料）由适配器抛出 MaterialShortageException，此时尚未写本地任何数据，工单保持 CREATED，缺料明细原样返回。
+        String reservationKey = reservationKey(orderId, key);
         MaterialReservationPort.Reservation reservation = materials.reserve(reservationKey, orderId, lines);
         try {
             tx.executeWithoutResult(s -> persistRelease(order, key, operator, bom, routing, reservation));
@@ -101,12 +102,17 @@ public class WorkOrderReleaseService {
             if (winner.isPresent() && winner.get().releaseKey().equals(key))
                 return new ReleaseResult(view(orderId), true); // 同键：与胜者共用预留，不释放
             compensate(reservationKey, reservation.reservationId(), race);
+            // 没有胜者说明是其他唯一约束冲突（非下达竞争），按原始异常抛出，不误报为状态冲突。
+            if (winner.isEmpty()) throw race;
             throw new BusinessException("WORK_ORDER_STATE_CONFLICT", "工单已被其他请求下达", HttpStatus.CONFLICT);
         } catch (RuntimeException e) {
             compensate(reservationKey, reservation.reservationId(), e);
             throw e;
         }
     }
+
+    /** 下达预留的幂等键：由工单号与下达请求的 Idempotency-Key 确定性派生。 */
+    static String reservationKey(String orderId, String releaseKey) { return "release:" + orderId + ":" + releaseKey; }
 
     private void persistRelease(Order order, String key, String operator, BomExplosion bom, Routing routing,
                                 MaterialReservationPort.Reservation reservation) {
@@ -141,10 +147,10 @@ public class WorkOrderReleaseService {
         Map<String, ReservationLineView> sum = new TreeMap<>();
         for (BomExplosionLine l : lines) {
             if (!l.leaf()) continue;
-            sum.merge(l.componentCode(), new ReservationLineView(l.componentCode(), l.requiredQty(), l.uom()), (a, b) -> {
+            sum.merge(l.componentCode(), new ReservationLineView(null, l.componentCode(), l.requiredQty(), l.uom()), (a, b) -> {
                 if (!a.uom().equals(b.uom()))
                     throw new BusinessException("RELEASE_MASTERDATA_INVALID", "物料 " + a.materialCode() + " 在 BOM 中单位不一致", HttpStatus.UNPROCESSABLE_ENTITY);
-                return new ReservationLineView(a.materialCode(), a.quantity().add(b.quantity()), a.uom());
+                return new ReservationLineView(null, a.materialCode(), a.quantity().add(b.quantity()), a.uom());
             });
         }
         if (sum.isEmpty())
@@ -178,6 +184,9 @@ public class WorkOrderReleaseService {
         return response.data();
     }
 
+    /**
+     * 补偿释放预留。释放失败不抛出、不覆盖原始异常（作为 suppressed 附加并记日志），由库存 TTL（15 分钟）回收。
+     */
     private void compensate(String key, String reservationId, RuntimeException cause) {
         try { materials.release(key, reservationId); }
         catch (RuntimeException e) { cause.addSuppressed(e); LOG.warn("Reservation release failed, inventory TTL will reclaim {}", reservationId, e); }
@@ -223,7 +232,7 @@ public class WorkOrderReleaseService {
         if (reason == HoldReason.MATERIAL_RESERVATION_EXPIRED) {
             nextSeq = jdbc.queryForObject("select coalesce(max(seq), 0) + 1 from wo_material_reservation where order_id = ?", Integer.class, orderId);
             // 预留键与新序号绑定：并发 / 重试的恢复请求拿到同一张新预留单。
-            reservationKey = "wo-rereserve:" + orderId + ":" + nextSeq;
+            reservationKey = "rereserve:" + orderId + ":" + nextSeq;
             renewed = materials.reserve(reservationKey, orderId, snapshotRequirements(orderId));
         }
         MaterialReservationPort.Reservation reservation = renewed;
@@ -231,7 +240,17 @@ public class WorkOrderReleaseService {
         try {
             retrying(() -> { tx.executeWithoutResult(s -> resumeInTx(orderId, reason, note, operator, reservation, seq)); return null; });
         } catch (DuplicateKeyException race) {
-            // 并发恢复同一原因：另一请求已写入同序号的预留，结果一致，直接返回。
+            // 并发恢复同一 MATERIAL_RESERVATION_EXPIRED 原因：两个请求计算出同一 nextSeq，因而使用同一预留幂等键、拿到同一张
+            // 预留单；后提交者在 (order_id, seq) / reservation_id 唯一约束上失败。胜者已删除原因并写入这张预留，
+            // 结果与本请求期望一致，因此不释放（释放会撤销胜者的预留），直接返回当前视图。
+            // 但只有在原因确实已被解除时才能这样认定；否则（唯一约束冲突另有来源）返回 409 让调用方重试，而不是静默成功。
+            // 用例：WorkOrderReleaseIntegrationTest.resumeDuplicateWithoutWinnerIsNotSwallowed。
+            if (reasons(orderId).contains(reason.name())) {
+                BusinessException conflict = new BusinessException("CONCURRENT_MODIFICATION", "恢复与其他操作冲突，请重试", HttpStatus.CONFLICT);
+                // 本次新预留未被任何本地记录引用，补偿释放
+                if (reservation != null) compensate(reservationKey, reservation.reservationId(), conflict);
+                throw conflict;
+            }
             LOG.debug("Concurrent resume of {} on {}", reason, orderId);
         } catch (RuntimeException e) {
             if (reservation != null) compensate(reservationKey, reservation.reservationId(), e);
@@ -260,13 +279,17 @@ public class WorkOrderReleaseService {
     /** 待续约的预留：工单仍在生命周期内（含 ON_HOLD，质量冻结期间物料仍需保留）。 */
     public record RenewalCandidate(String orderId, String reservationId) {}
 
-    /** 按到期时间升序取一批需续约的 ACTIVE 预留。 */
-    public List<RenewalCandidate> renewalCandidates(int batchSize) {
+    /**
+     * 取一批需续约的 ACTIVE 预留：只取本轮开始前未续约过的（last_renewed_at 为空或早于 roundStart），按预留单号游标分页，
+     * 续约作业据此循环取批直至取空，保证每轮覆盖全部活动预留。
+     */
+    public List<RenewalCandidate> renewalCandidates(Instant roundStart, String afterReservationId, int batchSize) {
         return jdbc.query("""
             select r.order_id, r.reservation_id from wo_material_reservation r join work_order w on w.id = r.order_id
             where r.status = 'ACTIVE' and w.status in ('RELEASED', 'IN_PROGRESS', 'ON_HOLD')
-            order by r.expires_at limit ?""",
-            (rs, i) -> new RenewalCandidate(rs.getString(1), rs.getString(2)), batchSize);
+              and (r.last_renewed_at is null or r.last_renewed_at < ?) and r.reservation_id > ?
+            order by r.reservation_id limit ?""",
+            (rs, i) -> new RenewalCandidate(rs.getString(1), rs.getString(2)), Timestamp.from(roundStart), afterReservationId, batchSize);
     }
 
     /**
@@ -281,21 +304,22 @@ public class WorkOrderReleaseService {
                 Timestamp.from(expiresAt), Timestamp.from(clock.instant()), c.reservationId());
             return true;
         } catch (MaterialReservationPort.ReservationGoneException gone) {
-            onReservationExpired("renew-gone:" + c.reservationId(), c.reservationId());
+            onReservationExpired(c.reservationId());
             return false;
         }
     }
 
     /**
-     * 处理库存的 ReservationExpired 事件（或续约时发现的失效）：按 eventId 幂等，将预留镜像标为 EXPIRED，
+     * 处理库存的 ReservationExpired 事件（或续约时发现的失效）：按预留单号幂等（与库存约定，consumed_event 键为
+     * {@code ReservationExpired:{reservationId}}，重复投递与续约发现的失效只处理一次），将预留镜像标为 EXPIRED，
      * 工单以 MATERIAL_RESERVATION_EXPIRED 原因冻结。已完工 / 取消的工单只标记预留，不冻结。
      *
      * @return 是否首次处理该事件
      */
-    public boolean onReservationExpired(String eventId, String reservationId) {
+    public boolean onReservationExpired(String reservationId) {
         return retrying(() -> tx.execute(s -> {
             try {
-                jdbc.update("insert into consumed_event (event_id, event_type) values (?, 'ReservationExpired')", eventId);
+                jdbc.update("insert into consumed_event (event_id, event_type) values (?, 'ReservationExpired')", "ReservationExpired:" + reservationId);
             } catch (DuplicateKeyException duplicate) {
                 return false;
             }
@@ -331,14 +355,14 @@ public class WorkOrderReleaseService {
     }
 
     private List<ReservationLineView> reservationLines(String reservationId) {
-        return jdbc.query("select material_code, quantity, uom from wo_material_reservation_line where reservation_id = ? order by material_code",
-            (rs, i) -> new ReservationLineView(rs.getString(1), rs.getBigDecimal(2), rs.getString(3)), reservationId);
+        return jdbc.query("select line_id, material_code, quantity, uom from wo_material_reservation_line where reservation_id = ? order by material_code",
+            (rs, i) -> new ReservationLineView(rs.getString(1), rs.getString(2), rs.getBigDecimal(3), rs.getString(4)), reservationId);
     }
 
     /** 由冻结的 BOM 快照重新计算预留需求（重新预留不回查主数据，保持下达时的版本）。 */
     private List<ReservationLineView> snapshotRequirements(String orderId) {
         return jdbc.query("select component_code, sum(required_qty), min(uom) from wo_bom_snapshot where order_id = ? and leaf = true group by component_code order by component_code",
-            (rs, i) -> new ReservationLineView(rs.getString(1), rs.getBigDecimal(2), rs.getString(3)), orderId);
+            (rs, i) -> new ReservationLineView(null, rs.getString(1), rs.getBigDecimal(2), rs.getString(3)), orderId);
     }
 
     private void insertReservation(String orderId, int seq, MaterialReservationPort.Reservation r) {
@@ -346,8 +370,8 @@ public class WorkOrderReleaseService {
         jdbc.update("insert into wo_material_reservation (order_id, seq, reservation_id, status, expires_at) values (?, ?, ?, 'ACTIVE', ?)",
             orderId, seq, r.reservationId(), Timestamp.from(r.expiresAt()));
         for (ReservationLineView l : r.lines())
-            jdbc.update("insert into wo_material_reservation_line (reservation_id, material_code, quantity, uom) values (?, ?, ?, ?)",
-                r.reservationId(), l.materialCode(), l.quantity(), l.uom());
+            jdbc.update("insert into wo_material_reservation_line (reservation_id, line_id, material_code, quantity, uom) values (?, ?, ?, ?, ?)",
+                r.reservationId(), l.lineId(), l.materialCode(), l.quantity(), l.uom());
     }
 
     /** 乐观锁：版本匹配才更新，否则抛 VersionConflict 回滚整笔事务。 */

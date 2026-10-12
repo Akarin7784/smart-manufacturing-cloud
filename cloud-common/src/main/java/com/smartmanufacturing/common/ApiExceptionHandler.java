@@ -10,10 +10,10 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 @RestControllerAdvice
 public class ApiExceptionHandler {
     private static final Logger LOG = LoggerFactory.getLogger(ApiExceptionHandler.class);
-    /** 保留业务异常的 HTTP 状态及可对外展示的提示。 */
+    /** 保留业务异常的 HTTP 状态及可对外展示的提示；有结构化明细时原样放入 data（如缺料行）。 */
     @ExceptionHandler(BusinessException.class)
-    ResponseEntity<ApiResponse<Void>> business(BusinessException e) {
-        return ResponseEntity.status(e.status()).body(ApiResponse.error(e.code(), e.getMessage()));
+    ResponseEntity<ApiResponse<Object>> business(BusinessException e) {
+        return ResponseEntity.status(e.status()).body(new ApiResponse<>(e.code(), e.getMessage(), e.details()));
     }
     /** 汇总并排序字段错误，返回稳定的参数校验提示。 */
     @ExceptionHandler(MethodArgumentNotValidException.class)

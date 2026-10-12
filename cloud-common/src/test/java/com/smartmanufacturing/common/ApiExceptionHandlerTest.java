@@ -22,7 +22,7 @@ class ApiExceptionHandlerTest {
     /** 业务异常必须原样保留业务码、提示和 HTTP 状态。 */
     @Test @DisplayName("业务异常保留业务码与状态")
     void businessExceptionKeepsCodeAndStatus() {
-        ResponseEntity<ApiResponse<Void>> r = handler.business(
+        ResponseEntity<ApiResponse<Object>> r = handler.business(
             new BusinessException("DEVICE_OFFLINE", "设备离线，无法创建工单", HttpStatus.CONFLICT));
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(r.getBody()).isEqualTo(ApiResponse.error("DEVICE_OFFLINE", "设备离线，无法创建工单"));

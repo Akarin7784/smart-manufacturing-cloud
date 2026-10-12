@@ -98,8 +98,8 @@ class ConcurrentReleaseMySqlIT {
                 () -> service.hold(id, HoldReason.MANUAL, null, "u"),
                 () -> service.hold(id, HoldReason.LOT_HELD, null, "u"),
                 () -> service.hold(id, HoldReason.FAI_FAILED, null, "u"),
-                () -> service.onReservationExpired("evt-" + id, reservationId),
-                () -> service.onReservationExpired("evt-" + id, reservationId));
+                () -> service.onReservationExpired(reservationId),
+                () -> service.onReservationExpired(reservationId));
             List<Object> results = race(tasks);
             assertThat(results).as(results.toString()).doesNotContain("CONCURRENT_MODIFICATION");
             var view = service.view(id);
@@ -107,7 +107,7 @@ class ConcurrentReleaseMySqlIT {
             assertThat(view.resumeTarget()).isEqualTo("RELEASED");
             assertThat(view.holdReasons()).containsExactlyInAnyOrder("FAI_FAILED", "LOT_HELD", "MANUAL", "MATERIAL_RESERVATION_EXPIRED");
             assertThat(view.version()).isEqualTo(4);
-            assertThat(jdbc.queryForObject("select count(*) from consumed_event where event_id = ?", Integer.class, "evt-" + id)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("select count(*) from consumed_event where event_id = ?", Integer.class, "ReservationExpired:" + reservationId)).isEqualTo(1);
         }
     }
 }

@@ -39,7 +39,8 @@ class WorkOrderReleaseIntegrationTest {
     @MockitoSpyBean MaterialReservationPort materials;
     @MockitoBean org.springframework.security.oauth2.jwt.JwtDecoder decoder;
 
-    @BeforeEach void setUp() { ReleaseFixtures.clear(jdbc); ReleaseFixtures.stubMasterdata(masterdata); }
+    @Autowired LocalMaterialReservation stub;
+    @BeforeEach void setUp() { ReleaseFixtures.clear(jdbc); ReleaseFixtures.stubMasterdata(masterdata); stub.reset(); }
 
     private RequestPostProcessor operator() { return jwt().authorities(new SimpleGrantedAuthority("workorder:write"), new SimpleGrantedAuthority("workorder:read")); }
     private int count(String sql, Object... args) { return jdbc.queryForObject(sql, Integer.class, args); }
@@ -101,8 +102,8 @@ class WorkOrderReleaseIntegrationTest {
         String id = ReleaseFixtures.createOrder(jdbc, 1);
         // 消耗工序不在路线中之前已校验；这里模拟快照写入失败：预先占用该工单的工序任务主键。
         jdbc.update("insert into operation_task (order_id, op_no, seq, name, work_center_code, setup_minutes, run_seconds_per_unit, report_point, first_article_required, inspection_point_codes, status) values (?, 'OP10', 1, 'x', 'x', 0, 0, false, false, '', 'READY')", id);
-        assertThatThrownBy(() -> service.release(id, "k", "u")).isInstanceOf(BusinessException.class);
-        verify(materials).release(eq("wo-release:" + id + ":k"), anyString());
+        assertThatThrownBy(() -> service.release(id, "k", "u")).isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
+        verify(materials).release(eq("release:" + id + ":k"), anyString());
         assertThat(jdbc.queryForObject("select status from work_order where id = ?", String.class, id)).isEqualTo("CREATED");
         assertThat(count("select count(*) from work_order_lifecycle where order_id = ?", id)).isZero();
     }
@@ -147,8 +148,8 @@ class WorkOrderReleaseIntegrationTest {
     @Test void expiryHoldsOrderAndResumeReReserves() {
         String id = ReleaseFixtures.createOrder(jdbc, 2);
         String reservationId = service.release(id, "k", "u").view().reservation().reservationId();
-        assertThat(service.onReservationExpired("evt-1", reservationId)).isTrue();
-        assertThat(service.onReservationExpired("evt-1", reservationId)).isFalse();
+        assertThat(service.onReservationExpired(reservationId)).isTrue();
+        assertThat(service.onReservationExpired(reservationId)).isFalse();
         var held = service.view(id);
         assertThat(held.status()).isEqualTo("ON_HOLD");
         assertThat(held.holdReasons()).containsExactly("MATERIAL_RESERVATION_EXPIRED");
@@ -170,5 +171,48 @@ class WorkOrderReleaseIntegrationTest {
         doThrow(new MaterialReservationPort.ReservationGoneException("x")).when(materials).renew(anyString(), anyString());
         assertThat(renewalJob.renewBatch()).isZero();
         assertThat(service.view(id).status()).isEqualTo("ON_HOLD");
+    }
+
+    /** C：预留幂等键 = release:{工单号}:{下达 Idempotency-Key}；预留行带库存返回的 lineId。 */
+    @Test void reservationKeyDerivesFromReleaseKey() {
+        String id = ReleaseFixtures.createOrder(jdbc, 2);
+        var view = service.release(id, "abc-1", "u").view();
+        verify(materials).reserve(eq("release:" + id + ":abc-1"), eq(id), anyList());
+        assertThat(view.reservation().lines()).allSatisfy(l -> assertThat(l.lineId()).startsWith(view.reservation().reservationId()));
+    }
+
+    /** 5：恢复时的唯一约束冲突若并非并发胜者造成（原因仍在），返回 409，不静默吞掉。 */
+    @Test void resumeDuplicateWithoutWinnerIsNotSwallowed() {
+        String id = ReleaseFixtures.createOrder(jdbc, 2);
+        String rid = service.release(id, "k", "u").view().reservation().reservationId();
+        service.onReservationExpired(rid);
+        // 预先让另一工单占用恢复将得到的预留单号（唯一约束冲突），模拟冲突但没有任何请求解除原因
+        String collide = "LR-" + java.util.UUID.nameUUIDFromBytes(("rereserve:" + id + ":2").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        jdbc.update("insert into wo_material_reservation (order_id, seq, reservation_id, status, expires_at) values ('other', 1, ?, 'RELEASED', current_timestamp)", collide);
+        assertThatThrownBy(() -> service.resume(id, HoldReason.MATERIAL_RESERVATION_EXPIRED, null, "u"))
+            .isInstanceOfSatisfying(BusinessException.class, e -> assertThat(e.code()).isEqualTo("CONCURRENT_MODIFICATION"));
+        assertThat(service.view(id).holdReasons()).containsExactly("MATERIAL_RESERVATION_EXPIRED");
+        // 新预留已补偿释放
+        verify(materials).release(eq("rereserve:" + id + ":2"), anyString());
+    }
+
+    /** 3：续约按批循环取尽，批大小小于活动预留数时也能一轮覆盖全部。 */
+    @Test void renewalLoopsOverAllBatches() {
+        for (int i = 0; i < 5; i++) service.release(ReleaseFixtures.createOrder(jdbc, 1), "k", "u");
+        var job = new ReservationRenewalJob(service, java.time.Clock.systemUTC(), java.time.Duration.ofMinutes(5), 2);
+        assertThat(job.renewBatch()).isEqualTo(5);
+    }
+
+    /** B（HTTP）：预留 409 时响应体 code=MATERIAL_SHORTAGE，data 为缺料明细原样；工单仍为 CREATED。 */
+    @Test void shortageReturns409WithDetails() throws Exception {
+        String id = ReleaseFixtures.createOrder(jdbc, 2);
+        stub.simulateShortage(java.util.List.of(new com.smartmanufacturing.api.workorder.MaterialShortage("RM-STEEL", new BigDecimal("2.1"), new BigDecimal("0.5"), "KG")));
+        mvc.perform(post("/workorders/" + id + "/release").with(operator()).header("Idempotency-Key", "s1"))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("MATERIAL_SHORTAGE"))
+            .andExpect(jsonPath("$.data[0].materialCode").value("RM-STEEL"))
+            .andExpect(jsonPath("$.data[0].requested").value(2.1))
+            .andExpect(jsonPath("$.data[0].available").value(0.5))
+            .andExpect(jsonPath("$.data[0].uom").value("KG"));
+        assertThat(jdbc.queryForObject("select status from work_order where id = ?", String.class, id)).isEqualTo("CREATED");
     }
 }

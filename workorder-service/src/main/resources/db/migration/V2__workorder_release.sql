@@ -1,11 +1,10 @@
--- 工单下达与物料预留（设计文档 3.1 状态机、2.3 事件）。约定：本功能新增的全部表都在 V2，V1__init.sql 由运维维护
--- （即 main 上已有的 work_order / work_order_request）。引入 Flyway 前由 spring.sql.init 在 schema.sql 之后执行，
--- 因此全部语句必须可重复执行（CREATE TABLE IF NOT EXISTS），且不对 V1 的表做 ALTER（MySQL 不支持 ADD COLUMN IF NOT EXISTS）。
--- 生命周期字段因此放在独立的 work_order_lifecycle 表，work_order.status 仍同步维护以兼容现有列表接口。
+-- 工单下达与物料预留（设计文档 3.1 状态机、2.3 事件）。workorder 服务独立 Flyway 历史：V1__init（运维维护）+ 本 V2。
+-- 团队约定：迁移不使用 IF NOT EXISTS（重复执行应失败而不是静默跳过），不对 V1 的表做 ALTER。
+-- 由于不 ALTER V1，生命周期字段放在独立的 work_order_lifecycle 表，work_order.status 仍同步维护以兼容现有列表接口。
 
 -- 工单生命周期：乐观锁版本、冻结后的恢复目标、冻结的 BOM / 工艺版本、下达幂等键。
 -- 主键即工单号：并发下达同一工单时只有一个事务能插入成功（唯一约束裁决）。
-CREATE TABLE IF NOT EXISTS work_order_lifecycle (
+CREATE TABLE work_order_lifecycle (
   order_id VARCHAR(64) PRIMARY KEY,
   version BIGINT NOT NULL,
   resume_target VARCHAR(16) NULL,
@@ -18,7 +17,7 @@ CREATE TABLE IF NOT EXISTS work_order_lifecycle (
 );
 
 -- 冻结原因集合：可多原因并存，主键去重使同一原因重复冻结幂等。
-CREATE TABLE IF NOT EXISTS work_order_hold_reason (
+CREATE TABLE work_order_hold_reason (
   order_id VARCHAR(64) NOT NULL,
   reason VARCHAR(32) NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -26,7 +25,7 @@ CREATE TABLE IF NOT EXISTS work_order_hold_reason (
 );
 
 -- BOM 展开快照：下达时冻结，之后不再回查主数据；source_bom_version 记录每行来源版本。
-CREATE TABLE IF NOT EXISTS wo_bom_snapshot (
+CREATE TABLE wo_bom_snapshot (
   order_id VARCHAR(64) NOT NULL,
   seq INT NOT NULL,
   level INT NOT NULL,
@@ -44,7 +43,7 @@ CREATE TABLE IF NOT EXISTS wo_bom_snapshot (
 );
 
 -- 工序任务：由工艺路线快照生成；version 供后续报工乐观锁使用。
-CREATE TABLE IF NOT EXISTS operation_task (
+CREATE TABLE operation_task (
   order_id VARCHAR(64) NOT NULL,
   op_no VARCHAR(8) NOT NULL,
   seq INT NOT NULL,
@@ -64,7 +63,7 @@ CREATE TABLE IF NOT EXISTS operation_task (
 
 -- 工单级物料预留镜像：预留归库存服务所有，此处只记录库存返回的预留单号与到期时间，不自行判定过期。
 -- 一张工单同一时刻至多一条 ACTIVE 预留；重新预留时旧记录转为 EXPIRED/RELEASED 并以 seq 递增保留历史。
-CREATE TABLE IF NOT EXISTS wo_material_reservation (
+CREATE TABLE wo_material_reservation (
   order_id VARCHAR(64) NOT NULL,
   seq INT NOT NULL,
   reservation_id VARCHAR(64) NOT NULL,
@@ -74,12 +73,13 @@ CREATE TABLE IF NOT EXISTS wo_material_reservation (
   CONSTRAINT pk_wo_material_reservation PRIMARY KEY (order_id, seq),
   CONSTRAINT uk_wo_material_reservation_id UNIQUE (reservation_id),
   -- 续约作业按状态批量扫描。
-  INDEX idx_wo_material_reservation_status (status, expires_at)
+  INDEX idx_wo_material_reservation_status (status, reservation_id)
 );
 
--- 预留行：按物料汇总的叶子件需求。
-CREATE TABLE IF NOT EXISTS wo_material_reservation_line (
+-- 预留行：按物料汇总的叶子件需求；line_id 为库存返回的预留行号，后续按行、按批次消耗时引用。
+CREATE TABLE wo_material_reservation_line (
   reservation_id VARCHAR(64) NOT NULL,
+  line_id VARCHAR(64) NULL,
   material_code VARCHAR(64) NOT NULL,
   quantity DECIMAL(16,4) NOT NULL,
   uom VARCHAR(16) NOT NULL,
@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS wo_material_reservation_line (
 );
 
 -- 状态转换审计日志：只追加；记录前后状态、原因、操作人与请求号。
-CREATE TABLE IF NOT EXISTS work_order_status_log (
+CREATE TABLE work_order_status_log (
   id VARCHAR(36) PRIMARY KEY,
   order_id VARCHAR(64) NOT NULL,
   from_status VARCHAR(16) NOT NULL,
@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS work_order_status_log (
 
 -- 事务性发件箱：与业务变更同事务写入；中继（RocketMQ，运维分支 ops/rocketmq）落地前事件只入库不发布，
 -- published_at 为空表示待发布。消费方按 event_id 幂等。
-CREATE TABLE IF NOT EXISTS outbox_event (
+CREATE TABLE outbox_event (
   event_id VARCHAR(36) PRIMARY KEY,
   aggregate_id VARCHAR(64) NOT NULL,
   event_type VARCHAR(64) NOT NULL,
@@ -112,8 +112,8 @@ CREATE TABLE IF NOT EXISTS outbox_event (
   INDEX idx_outbox_event_pending (published_at, occurred_at)
 );
 
--- 已消费事件（如库存的 ReservationExpired）：以 event_id 主键保证重复投递只处理一次。
-CREATE TABLE IF NOT EXISTS consumed_event (
+-- 已消费事件：主键保证重复投递只处理一次。库存 ReservationExpired 按预留单号去重，键为 ReservationExpired:{reservationId}。
+CREATE TABLE consumed_event (
   event_id VARCHAR(64) PRIMARY KEY,
   event_type VARCHAR(64) NOT NULL,
   consumed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
