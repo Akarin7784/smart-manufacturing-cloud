@@ -25,6 +25,8 @@ manufacturing:
       workorder-event: mes-workorder-event
       # 工单不良品待质检事件：工单服务经 outbox 发布，质检服务订阅。
       workorder-quality: mes-workorder-quality
+      # 质检 NCR 事件：质检服务经 outbox 发布，本期只发不消费。
+      quality-event: mes-quality-event
     tags:
       reservation-created: ReservationCreated
       reservation-released: ReservationReleased
@@ -37,6 +39,11 @@ manufacturing:
       # 报工不良数 > 0 时发布；冲销带不良数的报工时发布。
       defect-reported: DefectReported
       defect-reversed: DefectReversed
+      # 质检 NCR 事件 Tag（mes-quality-event），事件带 aggregateVersion（取 ncr.version）用于消费方排序。
+      ncr-opened: NcrOpened
+      ncr-disposed: NcrDisposed
+      ncr-closed: NcrClosed
+      ncr-voided: NcrVoided
     consumer-groups:
       # 工单服务订阅库存预留事件的消费组。
       workorder-reservation: CG_WORKORDER_RESERVATION
