@@ -140,4 +140,18 @@ class GatewayRoutingTest {
         String releaser = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("masterdata:release"));
         client().post().uri("/api/routings/FG-GR60-20/R02/release").headers(h -> h.setBearerAuth(releaser)).exchange().expectStatus().isOk();
     }
+
+    /** 服务令牌端点无需 JWT 即可转发到认证服务（凭据由认证服务校验），但仅放行 POST，其他方法仍被拒绝。 */
+    @Test void tokenEndpointIsPublicForPostOnly() {
+        client().post().uri("/api/auth/oauth2/token").header("Content-Type", "application/x-www-form-urlencoded")
+            .bodyValue("grant_type=client_credentials").exchange()
+            .expectStatus().isOk().expectBody(String.class).value(body -> Assertions.assertTrue(body.startsWith("/auth/oauth2/token|")));
+        client().get().uri("/api/auth/oauth2/token").exchange().expectStatus().isUnauthorized();
+    }
+
+    /** 服务令牌（受众 inventory-service、无 permissions）不能经网关访问面向用户的接口。 */
+    @Test void serviceTokenRejectedOnUserRoutes() {
+        String service = token("http://localhost:8080", "inventory-service", Instant.now().plusSeconds(300), List.of());
+        client().get().uri("/api/workorders").header("Authorization", "Bearer " + service).exchange().expectStatus().isUnauthorized();
+    }
 }

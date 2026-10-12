@@ -41,8 +41,9 @@ class ConcurrentReleaseMySqlIT {
     void schemaComesFromFlywayV1() {
         assertThat(jdbc.queryForObject(
             "select count(*) from flyway_schema_history where version = '1' and success = 1", Integer.class)).isEqualTo(1);
-        assertThat(jdbc.queryForObject("select count(*) from information_schema.statistics where table_schema = database()"
-            + " and index_name in ('uk_bom_header_current', 'uk_routing_header_current')", Integer.class)).isPositive();
+        // 按索引名去重计数：复合唯一索引每列一行，直接 count(*) 会掩盖其中一个索引丢失的情况。
+        assertThat(jdbc.queryForObject("select count(distinct index_name) from information_schema.statistics where table_schema = database()"
+            + " and index_name in ('uk_bom_header_current', 'uk_routing_header_current')", Integer.class)).isEqualTo(2);
     }
 
     /** 两个线程在栅栏处同时发布，收集成功/失败，任何非业务异常都会让测试失败。 */
