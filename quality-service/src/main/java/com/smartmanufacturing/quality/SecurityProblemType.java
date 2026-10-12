@@ -9,6 +9,8 @@ import org.springframework.http.HttpStatus;
  * 同一 type 的 title 固定为中文短语，调用方只按 type 分支，不解析 title/detail。
  * 网关拦截的同类错误为 gateway-* 前缀，据此区分是网关还是服务本身拒绝。
  * 这两种类型不属于业务错误枚举 ProblemType，契约中单独列出。
+ * <p>
+ * 临时实现：#48 合入后，本枚举将被 cloud-common 的 SecurityProblem 替换并删除。
  */
 public enum SecurityProblemType {
     /** 未携带令牌，或令牌签名、签发者、受众、有效期校验失败；响应附带 WWW-Authenticate: Bearer。 */
