@@ -133,12 +133,12 @@ docker run --rm -v "$PWD":/src -v <m2缓存>:/root/.m2 -w /src maven:3.9-eclipse
 
 ### 3.5 端到端场景（小型齿轮减速机演示工艺）
 
-使用 `make demo`（运维 P1）启动完整环境，加载 demo 数据后通过网关以 REST Assured 执行：
+使用运维 P1 计划提供的 `make demo`（**尚未实现**，见 `docs/deployment-ops-plan.md`；在其落地前 E2E 暂不进入 CI）启动完整环境，加载 demo 数据后通过网关以 REST Assured 执行：
 
 1. **登录**：ADMIN/OPERATOR/VIEWER 分别获取令牌；VIEWER 下单应返回 403。
-2. **下工单**：计划员为“小型齿轮减速机”成品下达工单（带幂等键），校验多层 BOM 展开（箱体、输入轴、齿轮副、轴承、端盖）与工艺路线（机加工→装配→测试包装）生成工序任务；重复提交同一幂等键只生成一条；设备离线时拒绝。
-3. **报工**：操作员按工序报工（合格数/不良数），校验报工数量不超过上道工序完工数、并发报工无丢失更新。
-4. **质检**：首检/过程检/终检（如噪声、温升测试）录入结果；不合格品触发处置，工单不能在质检未通过时完工。
+2. **下工单**：计划员为 FG-GR60-20 创建并下达工单（带 `Idempotency-Key`），CREATED→RELEASED 时冻结 BOM A01 / 工艺 R01 快照并生成 OperationTask；下达后修改 BOM 不影响该工单；重复提交同一幂等键只生成一条；并发下达只有一个成功、其余 409。
+3. **开工与报工**：OP30 开工需设备预留成功（离线设备 D002 开工被拒，不乐观开工）；报工校验 `good(n)+scrap(n) ≤ good(n-1)+返工回流数(n)`，超出返回 422 `QTY_EXCEEDS_INPUT`；并发报工无丢失更新。
+4. **质检门禁**：OP70 跑合 FAIL → 工序进入 WAITING_INSPECTION → NC 处置返工回流至 READY → 复测 PASS → DONE；存在 RUNNING/WAITING_INSPECTION 任务时工单不能完工；LotHeld 使 RELEASED/IN_PROGRESS 工单进入 ON_HOLD，解除后回到 `resume_target`。
 5. **追溯**：按成品序列号反查批次、所用物料批次、工序、设备、操作人与质检记录（正向/反向追溯）。
 
 具体物料编码、BOM 与工艺路线以 MES业务开发的领域设计文档为准，E2E 数据与 `db/demo` 保持同一份来源。
@@ -156,7 +156,9 @@ docker run --rm -v "$PWD":/src -v <m2缓存>:/root/.m2 -w /src maven:3.9-eclipse
 
 JaCoCo 门禁（根 pom `jacoco:check`，按模块 BUNDLE 统计）：
 
-- 初始：行覆盖 ≥ **70%**、分支覆盖 ≥ **60%**（不低于当前最低模块实测值，device-service 行 66.7% 需先补测试达标）。
+- 分两步启用，避免当前构建直接失败：
+  1. **第一步（随测试分层 PR 引入）**：门禁以 `haltOnFailure=false` 仅报告；同一 PR 为 device-service 补测试至行 ≥ 70%。
+  2. **第二步**：全部模块达标后改为强制，行覆盖 ≥ **70%**、分支覆盖 ≥ **60%**，不达标则 CI 失败。
 - 领域服务（工单、计划、质检等）落地后：行 ≥ **80%**、分支 ≥ **70%**。
 - 排除：`*Application`、纯 record DTO、配置类。
 - PR 新增代码覆盖不得低于 80%（可用 diff-cover 或 Codecov patch 检查）。
