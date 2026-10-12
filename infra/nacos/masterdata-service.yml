@@ -1,4 +1,5 @@
-# 主数据服务的 Nacos 配置占位：当前无动态业务参数，保留文件以便统一导入与后续扩展（如编码规则）。
+# 主数据服务独立配置；Group = MANUFACTURING，由 nacos-config-init 自动导入。
+# explosion-max-depth：BOM 多层展开的最大层级（防脏数据导致无限递归），BomService 启动时读取，修改后需重启生效。
 manufacturing:
   masterdata:
     explosion-max-depth: 20
