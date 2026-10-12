@@ -134,7 +134,7 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | --- | --- | --- | --- |
 | `mes_inventory_reservation_total` | Counter | `result` | 预留相关请求结果。`result` 的取值是 `ok`、`replay`（幂等重放），9 种 Problem type 的下划线写法（`insufficient_stock`、`uom_mismatch`（单位与主数据不一致，422）、`over_consume`、`idempotency_key_conflict`、`reservation_expired`、`reservation_released`、`reservation_consumed`、`line_closed`、`validation_error`，见 `docs/api/inventory-openapi.yaml` 的 `ProblemType`），再加 `error` |
 | `mes_inventory_reservation_transition_total` | Counter | `to`（`RELEASED`/`EXPIRED`/`CONSUMED` 等） | 预留单状态迁移次数 |
-| `mes_inventory_movement_qty`（导出名 `mes_inventory_movement_qty_total`） | Counter | `kind`（出入库类型）、`uom` | 出入库数量累计，不同 `uom` 不能相加 |
+| `mes_inventory_movement_qty`（导出名 `mes_inventory_movement_qty_total`） | Counter | `kind`（流水类型：`INBOUND`/`OUTBOUND`/`CONSUME`，以及质检隔离的 `QC_HOLD_IN`/`QC_HOLD_RELEASE`/`SCRAP`）、`uom` | 出入库数量累计（带符号），不同 `uom` 不能相加；QC-HOLD 不新增独立指标，按 `kind` 区分隔离入出 |
 | `mes_inventory_outbox_pending` | Gauge | — | 待投递的 outbox 事件数（对应告警 `OutboxBacklog`） |
 | `mes_inventory_stock_lock_wait` | Timer | — | 扣减或预留时锁库存行的等待时间 |
 

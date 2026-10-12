@@ -36,11 +36,14 @@ public final class InventoryDtos {
     /** 批次视图。 */
     public record Lot(String materialCode, String lotNo, Instant createdAt) {}
 
-    /** 现存量视图：version 每次变更加一，可用于客户端判断数据是否已变化。 */
-    public record Stock(String materialCode, String uom, String locationCode, String lotNo, String qty, long version) {}
+    /** 现存量视图：version 每次变更加一，可用于客户端判断数据是否已变化；inQcHold 标明该行位于质检隔离库位 QC-HOLD。 */
+    public record Stock(String materialCode, String uom, String locationCode, String lotNo, String qty, boolean inQcHold, long version) {}
 
-    /** 可用量视图：available = onHand - reserved，reserved 为 ACTIVE 预留单未扣减部分之和。 */
-    public record Availability(String materialCode, String uom, String onHand, String reserved, String available) {}
+    /**
+     * 可用量视图：available = onHand - reserved，reserved 为 ACTIVE 预留单未扣减部分之和。
+     * onHand 不含隔离量；quarantined 为 QC-HOLD 库位余额合计，单独返回，不可用、不可预留。
+     */
+    public record Availability(String materialCode, String uom, String onHand, String reserved, String available, String quarantined) {}
 
     /** 出入库流水视图：qty 带符号（入库为正、出库与扣减为负），balanceAfter 为该库位批次变更后的余额。 */
     public record StockTxn(long txnId, String txnType, String materialCode, String uom, String locationCode, String lotNo,
