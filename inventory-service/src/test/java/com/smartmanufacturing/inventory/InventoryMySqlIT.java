@@ -51,6 +51,20 @@ class InventoryMySqlIT {
     }
 
     /** 精度边界：最大值入库、最小单位逐笔累加与出库都必须精确，不得丢失第 6 位小数。 */
+    /** V2 在 MySQL 上建立系统库位 QC-HOLD；隔离入库与出隔离按 DECIMAL 精确记账，隔离量不进入出库可用量。 */
+    @Test void v2SeedsQcHoldAndQuarantineIsNotAvailable() {
+        assertThat(jdbc.queryForObject("select count(*) from flyway_schema_history where version = '2' and success = 1", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select system_location from warehouse_location where code = 'QC-HOLD'", Boolean.class)).isTrue();
+        idempotency.execute("quality-service", "qc:IT-QH:hold", "qc-hold.receipt", "IT-QH", 201,
+            () -> stock.qcHoldIn("quality-service", "IT-QH", "pcs", "B1", new BigDecimal("2.5"), "NCR-20261012-0001"));
+        idempotency.execute("quality-service", "qc:IT-QH:scrap", "qc-hold.scrap", "IT-QH", 201,
+            () -> stock.qcHoldOut("quality-service", "IT-QH", "pcs", "B1", new BigDecimal("0.5"), StockService.SCRAP, "NCR-20261012-0001"));
+        assertThat(onHand("IT-QH")).isEqualByComparingTo("2");
+        var a = stock.availability("IT-QH");
+        assertThat(a.onHand()).isEqualTo("0");
+        assertThat(a.quarantined()).isEqualTo("2");
+    }
+
     @Test void decimalPrecisionIsExact() {
         location("IT-P-01");
         inbound(UUID.randomUUID().toString(), new Movement("IT-P-MAX", "kg", "IT-P-01", "L1", "999999999999.999999", null));
