@@ -206,11 +206,12 @@ foreach ($case in @(@($qcToken, 'qc01'), @($adminToken, 'admin'))) {
 }
 Write-Host 'PASS: quality permissions (op01 dispose 403, op01/qc01 read 200, qc01/admin dispose reach service).'
 
-# 质检告警计数器：经 inv_call 的 curl 容器在 compose 内网读取 quality:18086（不发布到宿主机），断言两条告警序列已以 0 预注册。
+# 质检告警计数器：经 inv_call 的 curl 容器在 compose 内网读取 quality:18086（不发布到宿主机），断言三条告警序列（冲突、孤儿冲销、坏消息）已以 0 预注册。
 $env:INV_TOKEN = ''; $env:INV_IDEM_KEY = ''; $env:INV_BASE = 'http://quality-service:18086'
 try { $qm = inv_call GET /actuator/prometheus } finally { $env:INV_BASE = '' }
 if ((Get-InvStatus $qm) -ne 200) { throw 'quality-service /actuator/prometheus on 18086 should be 200.' }
 if ($qm -notmatch '(?m)^mes_quality_event_consumed_total\{[^}]*result="disposed_reversal_conflict"[^}]*\} 0(\.0)?\r?$') { throw 'disposed_reversal_conflict counter not pre-registered at 0.' }
+if ($qm -notmatch '(?m)^mes_quality_event_consumed_total\{[^}]*result="invalid"[^}]*\} 0(\.0)?\r?$') { throw 'invalid counter not pre-registered at 0.' }
 if ($qm -notmatch '(?m)^mes_quality_pending_reversal_expired_total(\{[^}]*\})? 0(\.0)?\r?$') { throw 'pending_reversal_expired counter not pre-registered at 0.' }
 Write-Host 'PASS: quality alert counters pre-registered at 0 (internal 18086).'
 # RocketMQ 收发回环（与 smoke-test.sh 对等）：在 broker 容器内用自带 mqadmin 发一条唯一标记消息，再以新消费组拉回比对。

@@ -187,11 +187,13 @@ c=$(qcode "$token" -X POST -d '{}' "$dispose"); rejected "$c" || fail "管理员
 echo "PASS: 质检权限（op01 处置 403、查询 200；qc01 查询 200；qc01 与 admin 处置到达服务）"
 
 # 质检告警计数器：在 compose 内网经 inv_call 的 curl 容器读取 quality:18086（管理端口不发布到宿主机），
-# 断言两条告警依赖的序列已以 0 预注册；否则 increase() 计不到第一次增量，告警会漏报。
+# 断言三条告警依赖的序列（冲突、孤儿冲销、坏消息）已以 0 预注册；否则 increase() 计不到第一次增量，告警会漏报。
 qm=$(INV_BASE=http://quality-service:18086 INV_TOKEN= INV_IDEM_KEY= inv_call GET /actuator/prometheus) || fail "读取质检服务指标失败"
 [ "$(printf '%s' "$qm" | tail -n1)" = 200 ] || fail "质检服务管理端口 /actuator/prometheus 应返回 200"
 printf '%s\n' "$qm" | grep -Eq '^mes_quality_event_consumed_total\{[^}]*result="disposed_reversal_conflict"[^}]*\} 0(\.0)?$' \
   || fail "缺少 mes_quality_event_consumed_total{result=\"disposed_reversal_conflict\"} 0"
+printf '%s\n' "$qm" | grep -Eq '^mes_quality_event_consumed_total\{[^}]*result="invalid"[^}]*\} 0(\.0)?$' \
+  || fail "缺少 mes_quality_event_consumed_total{result=\"invalid\"} 0"
 printf '%s\n' "$qm" | grep -Eq '^mes_quality_pending_reversal_expired_total(\{[^}]*\})? 0(\.0)?$' || fail "缺少 mes_quality_pending_reversal_expired_total 0"
 echo "PASS: 质检告警计数器已以 0 预注册（内网 18086）"
 
