@@ -196,6 +196,23 @@ $opToken = Get-DemoToken 'op01' 'AUTH_DEMO_OP01_PASSWORD'
 $adminToken = $login.data.accessToken
 $disposePath = '/api/quality/ncrs/NCR-SMOKE/dispositions'
 if ((Get-QualityStatus $opToken 'Post' $disposePath) -ne 403) { throw 'op01 dispose should be 403.' }
+# 网关拒绝必须是 RFC 9457 problem+json（type=gateway-access-denied），且不再带旧的 code 字段。
+try {
+    Invoke-WebRequest -Uri "$BaseUrl$disposePath" -Method Post -Headers @{ Authorization = "Bearer $opToken" } -ContentType 'application/json' -Body '{}' -UseBasicParsing -TimeoutSec 10 | Out-Null
+    throw 'op01 dispose should be rejected.'
+} catch {
+    $resp = $_.Exception.Response
+    if (-not $resp) { throw }
+    $ct = [string]$resp.Content.Headers.ContentType
+    if (-not $ct) { $ct = [string]$resp.ContentType }
+    if ($ct -notlike 'application/problem+json*') { throw "Gateway 403 Content-Type should be application/problem+json, got $ct." }
+    $raw = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else {
+        (New-Object System.IO.StreamReader($resp.GetResponseStream())).ReadToEnd() }
+    $p = $raw | ConvertFrom-Json
+    if ($p.type -ne 'gateway-access-denied' -or $p.status -ne 403 -or -not $p.title -or -not $p.detail -or $p.instance -ne $disposePath -or ($p.PSObject.Properties.Name -contains 'code')) {
+        throw "Gateway 403 body is not the expected problem+json: $raw"
+    }
+}
 foreach ($case in @(@($opToken, 'op01'), @($qcToken, 'qc01'))) {
     $code = Get-QualityStatus $case[0] 'Get' '/api/quality/ncrs'
     if ($code -ne 200) { throw "$($case[1]) GET /api/quality/ncrs should be 200, got $code." }
