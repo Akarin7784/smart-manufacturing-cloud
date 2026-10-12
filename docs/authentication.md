@@ -137,6 +137,40 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 - 角色和权限是签发时快照。禁用用户或调整角色会阻止后续登录或改变新令牌，但已有令牌仍可能使用到过期。
 - 本阶段没有刷新令牌、服务端即时吊销、密码修改、找回密码或 MFA。客户端退出应清除访问令牌；这不等于服务端即时撤销。
 
+### 工单服务 Problem 标题（RFC 9457）
+
+workorder-service 的每个 `type` 对应唯一固定的中文 `title`（`WorkOrderProblemType#title`），具体原因放在 `detail`。401/403 与上表 cloud-common 的 `SecurityProblem` 文案一致。状态码与含义见 `docs/api/workorder-openapi.yaml` 的 `ProblemType`；`WorkOrderProblemTypeTest` 按本表与契约表双向断言，修改时三处同步。
+
+| type | title（固定中文） |
+| --- | --- |
+| `over-report` | 报工数量超限 |
+| `downstream-reported` | 下游工序已报工 |
+| `workorder-closed` | 工单已关闭 |
+| `operations-unreported` | 存在未报工工序 |
+| `report-already-reversed` | 报工已冲销 |
+| `operation-not-found` | 工序不存在 |
+| `report-not-found` | 报工记录不存在 |
+| `uom-mismatch` | 计量单位不一致 |
+| `workorder-cancelled` | 工单已取消 |
+| `inventory-service-unavailable` | 库存服务不可用 |
+| `validation-error` | 请求参数无效 |
+| `idempotency-key-required` | 缺少幂等键 |
+| `idempotency-key-conflict` | 幂等键冲突 |
+| `idempotency-in-progress` | 请求正在处理 |
+| `authentication-required` | 需要认证 |
+| `access-denied` | 没有访问权限 |
+| `workorder-not-found` | 工单不存在 |
+| `workorder-not-released` | 工单未下达 |
+| `workorder-state-conflict` | 工单状态冲突 |
+| `concurrent-modification` | 并发修改冲突 |
+| `device-not-found` | 设备不存在 |
+| `device-offline` | 设备离线 |
+| `device-service-unavailable` | 设备服务不可用 |
+| `masterdata-service-unavailable` | 主数据服务不可用 |
+| `release-masterdata-invalid` | 下达主数据无效 |
+| `material-shortage` | 物料短缺 |
+| `internal-error` | 内部错误 |
+
 ## 安全配置
 
 | 环境变量 | 用途 |
