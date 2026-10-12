@@ -6,7 +6,13 @@ import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.sun.net.httpserver.HttpServer;
 import java.net.*;
 import java.time.Instant;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.UncheckedIOException;
+import java.nio.file.*;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import org.junit.jupiter.api.*;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -196,11 +202,31 @@ class GatewayRoutingTest {
         client().post().uri("/api/quality/ncrs").headers(h -> h.setBearerAuth(writer)).exchange().expectStatus().isForbidden();
     }
 
-    // 以下权限清单与 auth-service 的 Role 枚举一致（网关模块不依赖认证服务，这里按角色复制；契约变更时同步）。
-    static final List<String> OPERATOR = List.of("device:read", "workorder:read", "workorder:write", "masterdata:read", "inventory:read", "inventory:write", "quality:read");
-    static final List<String> QUALITY_INSPECTOR = List.of("device:read", "workorder:read", "masterdata:read", "inventory:read", "quality:read", "quality:write");
-    static final List<String> ADMIN = List.of("device:read", "workorder:read", "workorder:write", "config:read", "metrics:read", "user:manage",
-        "masterdata:read", "masterdata:write", "masterdata:release", "inventory:read", "inventory:write", "quality:read", "quality:write");
+    /**
+     * 各角色权限取自仓库根目录的契约文件 contracts/auth/role-permissions.json（由 auth-service 的
+     * RolePermissionContractTest 保证与 Role 枚举一致），网关模块不依赖认证服务代码，也不再手工复制权限清单（issue #28）。
+     */
+    static final Map<String, List<String>> ROLES = loadRolePermissions();
+    static final List<String> OPERATOR = role("OPERATOR");
+    static final List<String> QUALITY_INSPECTOR = role("QUALITY_INSPECTOR");
+    static final List<String> ADMIN = role("ADMIN");
+
+    /** 从模块目录向上查找契约文件；surefire 的工作目录是模块目录，IDE 中也可能是仓库根目录。 */
+    static Map<String, List<String>> loadRolePermissions() {
+        for (Path dir = Path.of("").toAbsolutePath(); dir != null; dir = dir.getParent()) {
+            Path candidate = dir.resolve("contracts/auth/role-permissions.json");
+            if (Files.isRegularFile(candidate)) {
+                try {
+                    return new ObjectMapper().readValue(candidate.toFile(), new TypeReference<Map<String, List<String>>>() { });
+                } catch (java.io.IOException e) { throw new UncheckedIOException(e); }
+            }
+        }
+        throw new IllegalStateException("未找到 contracts/auth/role-permissions.json");
+    }
+    /** 取契约中的角色权限；角色缺失直接失败，避免拿到空权限导致"拒绝"类断言误通过。 */
+    static List<String> role(String name) {
+        return Objects.requireNonNull(ROLES.get(name), "契约文件缺少角色 " + name);
+    }
 
     private String as(List<String> role) { return token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), role); }
 
