@@ -31,4 +31,10 @@ Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/devices/missing" -Headers $h
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"missing","product":"bearing","quantity":10}' } 404
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"D002","product":"bearing","quantity":10}' } 409
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":0}' } 400
+# 主数据（经网关）：演示 BOM 已发布且 10 台展开结果与演示数据一致（20CrMnTi 圆钢合计 10.5 kg）。
+$bom = Invoke-RestMethod "$BaseUrl/api/boms/FG-GR60-20/effective?date=2026-10-12" -Headers $headers
+if ($bom.data.version -ne 'A01' -or $bom.data.status -ne 'RELEASED') { throw 'Demo BOM FG-GR60-20/A01 not released.' }
+$explosion = Invoke-RestMethod "$BaseUrl/api/boms/FG-GR60-20/explosion?date=2026-10-12&quantity=10" -Headers $headers
+$steel = ($explosion.data.lines | Where-Object componentCode -eq 'RM-20CRMNTI-D30' | Measure-Object -Property requiredQty -Sum).Sum
+if ([decimal]$steel -ne [decimal]10.5) { throw "Unexpected BOM explosion result: steel=$steel" }
 Write-Host 'PASS: login, JWT verification, routing, Feign bearer relay, persistence and business errors.'
