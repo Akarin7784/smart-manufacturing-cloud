@@ -139,9 +139,10 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | `mes_quality_api_total` | Counter | `result` | 修改类接口结果。`result` 的取值是 `ok`、`replay`（幂等重放），7 种 Problem type 的下划线写法（`validation_error`、`idempotency_key_conflict`、`uom_mismatch`、`over_dispose`、`invalid_status_transition`、`ncr_voided`、`ncr_not_found`，见 `quality-openapi.yaml` 的 `ProblemType`），再加 `error` |
 | `mes_quality_ncr_transition_total` | Counter | `from`、`to`（`OPEN`/`UNDER_REVIEW`/`DISPOSED`/`CLOSED`/`VOIDED`；新建 NCR 的 `from` 为 `NONE`） | NCR 状态迁移次数，事务提交后计数；按 `from`→`to` 区分正常作废与冲销对冲等路径 |
 | `mes_quality_disposition_qty_total` | Counter | `type`（`REWORK`/`SCRAP`/`CONCESSION`）、`uom` | 处置数量累计，不同 `uom` 不能相加 |
-| `mes_quality_event_consumed_total` | Counter | `tag`、`result`（`ok`/`duplicate`/`pending`/`matched`/`disposed_reversal_conflict`/`error`） | 消费 `mes-workorder-quality` 的结果；`disposed_reversal_conflict` 即已处置 NCR 被冲销（不对应 HTTP Problem type） |
+| `mes_quality_event_consumed_total` | Counter | `tag`、`result`（`ok`/`duplicate`/`pending`/`matched`/`disposed_reversal_conflict`/`invalid`/`error`） | 消费 `mes-workorder-quality` 的结果；`disposed_reversal_conflict` 即已处置 NCR 被冲销（不对应 HTTP Problem type）；`invalid` 为不可恢复的坏消息（JSON 解析失败、缺 eventId 或必填字段等），已写入 `invalid_event` 表并直接 ACK、不重投；`error` 为可恢复错误（数据库、网络），回滚后由 Broker 重投。启动时预注册为 0 的序列：`{tag="DefectReversed",result="disposed_reversal_conflict"}`，以及 `DefectReported`、`DefectReversed` 两个 tag 的 `result="invalid"` |
 | `mes_quality_pending_reversal_expired_total` | Counter | — | 暂存冲销超过 TTL（默认 24h）未对冲的次数 |
+| `mes_quality_cleanup_deleted_total` | Counter | `table`（`consumed_event`/`defect_report_lock`） | 去重表与报工锁表按保留期（`quality.dedup.retention`，默认 30 天）清理的删除行数，两个 `table` 序列启动预注册为 0 |
 | `mes_quality_outbox_pending` | Gauge | — | 待投递的 outbox 事件数（自动匹配告警 `OutboxBacklog`） |
 | `mes_quality_ncr_open` | Gauge | — | 未关闭（OPEN/UNDER_REVIEW/DISPOSED）的 NCR 数 |
 
-告警已在 `alerts.yml` 落地（见第 3 节）：`QualityDisposedReversalConflict`（`disposed_reversal_conflict` 增量 > 0 即告警）、`QualityReversalOrphan`（`pending_reversal_expired_total` 增量 > 0）。
+告警已在 `alerts.yml` 落地（见第 3 节）：`QualityDisposedReversalConflict`（`disposed_reversal_conflict` 增量 > 0 即告警）、`QualityReversalOrphan`（`pending_reversal_expired_total` 增量 > 0）。坏消息告警 `QualityInvalidEvent`（建议 `sum by (application) (increase(mes_quality_event_consumed_total{result="invalid"}[15m])) > 0`）由运维另行添加到 `alerts.yml`。
