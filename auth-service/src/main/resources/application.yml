@@ -15,9 +15,21 @@ manufacturing:
     resource-server: false
     issuer: ${AUTH_ISSUER:http://localhost:8080}
     audience: ${AUTH_AUDIENCE:manufacturing-api}
+  # 服务间调用的客户端注册表：只保存 BCrypt 散列，明文密钥仅交给调用方（workorder-service）。
+  # 散列取自 .env 的 WORKORDER_CLIENT_SECRET_HASH（init-env 生成）；local/test 未配置时该客户端被禁用，
+  # cloud profile 设置 require-secrets=true，缺失则启动失败。不提供任何默认密钥。
+  auth:
+    require-secrets: false
+    clients:
+      - client-id: workorder-service
+        secret-hash: ${WORKORDER_CLIENT_SECRET_HASH:}
+        scopes: [ "inventory:reserve" ]
+        audience: inventory-service
 auth:
   private-key-path: ${AUTH_PRIVATE_KEY_PATH:.runtime/auth/signing-key.json}
   token-ttl-seconds: ${AUTH_TOKEN_TTL_SECONDS:900}
+  # 服务令牌（client_credentials）有效期，团队约定 5 分钟；调用方缓存并在临近过期时刷新。
+  client-token-ttl-seconds: ${AUTH_CLIENT_TOKEN_TTL_SECONDS:300}
   bootstrap:
     username: ${AUTH_BOOTSTRAP_USERNAME:admin}
     password: ${AUTH_BOOTSTRAP_PASSWORD:}

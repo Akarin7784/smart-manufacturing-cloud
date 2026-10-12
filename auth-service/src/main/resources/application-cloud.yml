@@ -26,3 +26,5 @@ spring:
     hikari:
       maximum-pool-size: 10
       minimum-idle: 2
+# 容器/真实中间件环境必须配置服务客户端密钥散列，缺失时启动即失败，避免服务身份被静默禁用。
+manufacturing.auth.require-secrets: true
