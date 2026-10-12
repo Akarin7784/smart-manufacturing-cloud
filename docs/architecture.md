@@ -89,3 +89,14 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 ## 认证数据与密钥边界
 
 认证服务维护独立 manufacturing_auth 数据库，只存储 BCrypt 密码散列。RSA 私钥只由认证服务持有，网关和业务服务通过 JWKS 公钥校验令牌。Feign 调用从已验证的安全上下文传播 Bearer 令牌。角色与权限是短期 JWT 的签发快照；账号变更不立即吊销已有令牌。详见 authentication.md。
+
+## 服务身份（OAuth2 client_credentials）
+
+服务间调用（如工单服务调用库存服务预留物料、续期定时任务、补偿释放）没有用户 JWT，统一使用服务身份：
+
+- **令牌端点**：认证服务 `POST /auth/oauth2/token`（经网关为 `/api/auth/oauth2/token`），按 RFC 6749 4.4 实现，仅支持 `grant_type=client_credentials`。客户端凭据优先用 HTTP Basic，也接受表单 `client_id`/`client_secret`（二者不能同时出现）。可选 `scope` 必须是该客户端允许范围的子集，省略时签发全部允许值。成功响应 `{access_token, token_type: "Bearer", expires_in, scope}` 且 `Cache-Control: no-store`；错误按 RFC 6749 5.2 返回 `{error, error_description}`：凭据错误或客户端不存在统一 401 `invalid_client`（带 `WWW-Authenticate: Basic`），`invalid_request`/`unsupported_grant_type`/`invalid_scope` 为 400。
+- **服务间直连**：容器内工单服务通过 Nacos 发现直接调用 `auth-service`，不经过网关；网关入口免 JWT，主要用于冒烟测试和外部集成。生产环境应对该入口配置 Sentinel 限流（BCrypt 校验每次约数十毫秒，防止被用作暴力破解或 CPU 消耗入口）。
+- **令牌声明**：与用户令牌使用同一把 RSA 私钥签名，资源服务继续用 `/auth/jwks` 验签。声明为 `iss`、`sub=client_id`、`client_id`、`scope`（空格分隔）、`aud`（按客户端配置，工单客户端为 `inventory-service`）、`iat`/`nbf`/`exp`（默认 5 分钟，`AUTH_CLIENT_TOKEN_TTL_SECONDS` 可调，范围 60–600 秒）、`jti`，以及 `token_type=service`。调用方缓存令牌，临近过期再刷新。
+- **与用户令牌的区分**：服务令牌不含 `username`/`roles`/`permissions`，受众不是 `manufacturing-api`，因此网关和现有业务服务（按 `manufacturing-api` 校验受众）会直接拒绝它，不能冒充用户。接受服务令牌的资源服务（库存服务）须：校验 `aud` 包含自身服务名、`token_type == service`、`scope` 包含所需权限（如 `inventory:reserve`）；幂等作用域按 `client_id` 划分。需要用户身份的接口不得接受 `token_type=service` 的令牌。
+- **客户端注册表**：`auth-service` 的 `manufacturing.auth.clients[]`（client-id、secret-hash、scopes、audience）。目前只注册 `workorder-service`（scope `inventory:reserve`，audience `inventory-service`）。认证服务**只保存密钥的 BCrypt 散列**，格式不是 BCrypt 时拒绝启动；cloud profile 设置 `manufacturing.auth.require-secrets=true`，缺少散列时启动失败；local/test 缺少散列时仅禁用该客户端。未知客户端也执行一次假散列比对，避免通过耗时枚举客户端。
+- **密钥分发**：`scripts/init-env.sh` / `init-env.ps1` 在被 Git 忽略的 `.env` 中生成随机明文 `WORKORDER_CLIENT_SECRET`（只注入 workorder 容器）及其 BCrypt 散列 `WORKORDER_CLIENT_SECRET_HASH`（只注入 auth 容器，单引号包裹避免 compose 插值 `$`）。BCrypt 依次使用 htpasswd、python3 bcrypt 或一次性 `httpd:2.4-alpine` 容器生成。明文与散列都不写入仓库或 Nacos。轮换方法：删除 `.env` 中这两行后重新运行 init-env，并重启 auth 与 workorder。

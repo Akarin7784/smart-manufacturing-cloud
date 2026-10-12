@@ -163,6 +163,8 @@ services:
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
       AUTH_BOOTSTRAP_PASSWORD: ${AUTH_BOOTSTRAP_PASSWORD:-}
       AUTH_PRIVATE_KEY_PATH: /home/app/security/signing-key.json
+      # 认证服务只拿工单客户端密钥的 BCrypt 散列，不接触明文；缺失时 compose 直接报错。
+      WORKORDER_CLIENT_SECRET_HASH: ${WORKORDER_CLIENT_SECRET_HASH:?请先运行 scripts/init-env.sh 生成 .env}
     volumes:
       - auth-keys:/home/app/security
     # 运行镜像无 curl：用构建阶段编译的 JDK HttpClient 探针检查就绪端点。
@@ -230,6 +232,8 @@ services:
     environment:
       <<: *cloud-env
       AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
+      # 服务身份：调用库存服务时用 client_credentials 向 auth-service 换取服务令牌（明文密钥只给调用方）。
+      WORKORDER_CLIENT_SECRET: ${WORKORDER_CLIENT_SECRET:?请先运行 scripts/init-env.sh 生成 .env}
       MYSQL_HOST: mysql
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
     healthcheck:
