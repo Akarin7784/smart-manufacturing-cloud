@@ -96,13 +96,15 @@ class GatewayRoutingTest {
     /** 无令牌及伪造角色请求头不会授予访问权限。 */
     @Test void rejectsAnonymousAndForgedIdentity() {
         client().get().uri("/api/devices").header("X-Role", "ADMIN").exchange()
-            .expectStatus().isUnauthorized().expectBody().jsonPath("$.code").isEqualTo("AUTHENTICATION_REQUIRED");
+            .expectStatus().isUnauthorized().expectHeader().contentType("application/problem+json")
+            .expectBody().jsonPath("$.type").isEqualTo("gateway-authentication-required").jsonPath("$.code").doesNotExist();
     }
 
     /** 已认证的只读身份也不能调用工单写接口。 */
     @Test void readerCannotWriteOrders() {
         client().post().uri("/api/workorders").headers(h -> h.setBearerAuth(reader())).exchange()
-            .expectStatus().isForbidden().expectBody().jsonPath("$.code").isEqualTo("ACCESS_DENIED");
+            .expectStatus().isForbidden().expectHeader().contentType("application/problem+json")
+            .expectBody().jsonPath("$.type").isEqualTo("gateway-access-denied").jsonPath("$.code").doesNotExist();
     }
 
     /** 验证过期、错误签发者和错误受众的令牌均被拒绝。 */

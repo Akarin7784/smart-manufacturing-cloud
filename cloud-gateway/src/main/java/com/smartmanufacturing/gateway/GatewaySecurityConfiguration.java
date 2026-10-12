@@ -1,7 +1,6 @@
 package com.smartmanufacturing.gateway;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.smartmanufacturing.api.ApiResponse;
 import com.smartmanufacturing.security.ManagementPortAccess;
 import com.smartmanufacturing.security.SecurityClaims;
 import org.springframework.beans.factory.annotation.Value;
@@ -82,20 +81,9 @@ public class GatewaySecurityConfiguration {
             .build();
     }
 
-    /** 在过滤链返回统一错误体，不将验签内部异常暴露给调用者。 */
+    /** 在过滤链返回 problem+json 错误体，不将验签内部异常暴露给调用者。 */
     private Mono<Void> writeError(ObjectMapper mapper, ServerWebExchange exchange, int status) {
-        var response = exchange.getResponse();
-        response.setStatusCode(HttpStatus.valueOf(status));
-        response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
-        if (status == 401) response.getHeaders().set(HttpHeaders.WWW_AUTHENTICATE, "Bearer");
-        try {
-            byte[] body = mapper.writeValueAsBytes(ApiResponse.error(
-                status == 401 ? "AUTHENTICATION_REQUIRED" : "ACCESS_DENIED",
-                status == 401 ? "请登录或重新获取令牌" : "没有访问权限"));
-            return response.writeWith(Mono.just(response.bufferFactory().wrap(body)));
-        } catch (java.io.IOException e) {
-            return Mono.error(e);
-        }
+        return (status == 401 ? GatewayProblem.AUTHENTICATION_REQUIRED : GatewayProblem.ACCESS_DENIED).write(mapper, exchange);
     }
 
     /** 判定请求是否为落在独立管理端口上的 Prometheus 抓取；端口取自本地套接字地址，无法通过请求头伪造。 */
