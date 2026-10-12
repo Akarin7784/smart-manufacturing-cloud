@@ -1,6 +1,7 @@
 package com.smartmanufacturing.inventory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.smartmanufacturing.security.ManagementPortAccess;
 import com.smartmanufacturing.security.SecurityClaims;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -8,6 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.core.env.Environment;
 import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.security.authorization.AuthorizationManager;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -68,12 +70,16 @@ public class InventorySecurityConfiguration {
         return http.build();
     }
 
-    /** 其他接口过滤链：健康探针公开，指标需 metrics:read，其余需认证后由 @PreAuthorize 细分 inventory:read / inventory:write。 */
+    /** 其他接口过滤链：健康探针公开，管理端口上的 Prometheus 匿名可抓，其余指标需 metrics:read，其余需认证后由 @PreAuthorize 细分 inventory:read / inventory:write。 */
     @Bean @Order(2)
-    SecurityFilterChain userChain(HttpSecurity http, ObjectMapper mapper) throws Exception {
+    SecurityFilterChain userChain(HttpSecurity http, ObjectMapper mapper, Environment environment) throws Exception {
         common(http, mapper)
             .authorizeHttpRequests(rules -> rules
                 .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                // 仅当请求落在独立管理端口（按本地套接字端口判断，不看 Host 头）时匿名放开 Prometheus 抓取；
+                // 业务端口上的 /actuator/** 仍需 metrics:read，与 #21 中其他服务口径一致。
+                .requestMatchers(request -> ManagementPortAccess.PROMETHEUS_PATH.equals(request.getRequestURI())
+                    && ManagementPortAccess.isManagementPort(environment, request.getLocalPort())).permitAll()
                 .requestMatchers("/actuator/**").hasAuthority("metrics:read")
                 .anyRequest().authenticated())
             .oauth2ResourceServer(resource -> resource
