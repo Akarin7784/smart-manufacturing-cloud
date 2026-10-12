@@ -100,13 +100,15 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 
 网关自身产生的错误一律返回 `Content-Type: application/problem+json`，字段固定为 `type`、`title`、`status`、`detail`、`instance`，不再有旧的 `{code,message}` 结构：
 
-| 状态 | type | 触发条件 |
-| --- | --- | --- |
-| 401 | `gateway-authentication-required` | 无令牌或令牌校验失败 |
-| 403 | `gateway-access-denied` | 缺少接口权限 |
-| 429 | `gateway-rate-limited` | 命中 Sentinel 网关限流规则 |
-| 404 | `gateway-not-found` | 命中服务间内部路径清单（预留、QC-HOLD），或路径含点段、反斜杠、双重编码；不论有无令牌 |
-| 503 | `gateway-service-unavailable` | 路由的下游服务没有可用实例或无法连接 |
+| 状态 | type | title（固定中文） | 触发条件 |
+| --- | --- | --- | --- |
+| 401 | `gateway-authentication-required` | 需要认证 | 无令牌或令牌校验失败 |
+| 403 | `gateway-access-denied` | 没有访问权限 | 缺少接口权限 |
+| 404 | `gateway-not-found` | 资源不存在 | 命中服务间内部路径清单（预留、QC-HOLD），或路径含点段、反斜杠、双重编码；不论有无令牌 |
+| 429 | `gateway-rate-limited` | 请求过于频繁 | 命中 Sentinel 网关限流规则 |
+| 503 | `gateway-service-unavailable` | 下游服务不可用 | 路由的下游服务没有可用实例或无法连接 |
+
+每个 `type` 对应唯一固定的中文 `title`，调用方可直接展示；`GatewayProblemJsonTest` 按本表断言，修改时两处同步。
 
 `type` 与各业务服务一样采用相对引用，`gateway-` 前缀表示由网关拦截；`instance` 为请求路径（不含查询串）。示例：
 

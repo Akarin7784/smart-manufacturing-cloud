@@ -69,12 +69,32 @@ class GatewayProblemJsonTest {
     }
 
     /** 统一断言 problem+json 的五个字段，且不再输出 code。 */
+    /** 文档 docs/authentication.md 网关 Problem 表中的 type → 固定中文 title，测试按此断言，不从枚举反推。 */
+    static final Map<String, String> TITLES = Map.of(
+        "gateway-authentication-required", "需要认证",
+        "gateway-access-denied", "没有访问权限",
+        "gateway-not-found", "资源不存在",
+        "gateway-rate-limited", "请求过于频繁",
+        "gateway-service-unavailable", "下游服务不可用");
+
+    /** 枚举与文档表一一对应：type 集合一致、title 与表中固定值一致且为中文。 */
+    @Test void everyTypeHasFixedChineseTitle() {
+        Map<String, String> actual = new java.util.HashMap<>();
+        for (GatewayProblem p : GatewayProblem.values()) {
+            String title = (String) p.body("/x").get("title");
+            Assertions.assertTrue(title.codePoints().anyMatch(c -> Character.UnicodeScript.of(c) == Character.UnicodeScript.HAN),
+                p + " 的 title 必须是中文：" + title);
+            actual.put(p.type(), title);
+        }
+        Assertions.assertEquals(TITLES, actual);
+    }
+
     private void assertProblem(WebTestClient.ResponseSpec spec, int status, String type, String instance) {
         spec.expectStatus().isEqualTo(status)
             .expectHeader().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
             .expectBody()
             .jsonPath("$.type").isEqualTo(type)
-            .jsonPath("$.title").isNotEmpty()
+            .jsonPath("$.title").isEqualTo(TITLES.get(type))
             .jsonPath("$.status").isEqualTo(status)
             .jsonPath("$.detail").isNotEmpty()
             .jsonPath("$.instance").isEqualTo(instance)

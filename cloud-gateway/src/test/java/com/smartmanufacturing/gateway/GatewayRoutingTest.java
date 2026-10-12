@@ -97,14 +97,16 @@ class GatewayRoutingTest {
     @Test void rejectsAnonymousAndForgedIdentity() {
         client().get().uri("/api/devices").header("X-Role", "ADMIN").exchange()
             .expectStatus().isUnauthorized().expectHeader().contentType("application/problem+json")
-            .expectBody().jsonPath("$.type").isEqualTo("gateway-authentication-required").jsonPath("$.code").doesNotExist();
+            .expectBody().jsonPath("$.type").isEqualTo("gateway-authentication-required")
+            .jsonPath("$.title").isEqualTo(GatewayProblemJsonTest.TITLES.get("gateway-authentication-required")).jsonPath("$.code").doesNotExist();
     }
 
     /** 已认证的只读身份也不能调用工单写接口。 */
     @Test void readerCannotWriteOrders() {
         client().post().uri("/api/workorders").headers(h -> h.setBearerAuth(reader())).exchange()
             .expectStatus().isForbidden().expectHeader().contentType("application/problem+json")
-            .expectBody().jsonPath("$.type").isEqualTo("gateway-access-denied").jsonPath("$.code").doesNotExist();
+            .expectBody().jsonPath("$.type").isEqualTo("gateway-access-denied")
+            .jsonPath("$.title").isEqualTo(GatewayProblemJsonTest.TITLES.get("gateway-access-denied")).jsonPath("$.code").doesNotExist();
     }
 
     /** 验证过期、错误签发者和错误受众的令牌均被拒绝。 */
@@ -215,7 +217,7 @@ class GatewayRoutingTest {
                 .expectHeader().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
                 .expectHeader().doesNotExist("WWW-Authenticate")
                 .expectBody().jsonPath("$.type").isEqualTo("gateway-not-found").jsonPath("$.status").isEqualTo(404)
-                .jsonPath("$.title").exists().jsonPath("$.detail").exists().jsonPath("$.instance").exists().jsonPath("$.code").doesNotExist();
+                .jsonPath("$.title").isEqualTo(GatewayProblemJsonTest.TITLES.get("gateway-not-found")).jsonPath("$.detail").exists().jsonPath("$.instance").exists().jsonPath("$.code").doesNotExist();
             for (String t : List.of(all, noPerm, "not-a-jwt"))
                 client().method(HttpMethod.valueOf(method)).uri(uri).headers(h -> h.setBearerAuth(t)).exchange()
                     .expectStatus().isNotFound().expectBody().jsonPath("$.type").isEqualTo("gateway-not-found");
@@ -241,7 +243,8 @@ class GatewayRoutingTest {
         for (String path : paths) {
             URI uri = URI.create("http://localhost:" + port + path);
             client().post().uri(uri).exchange().expectStatus().isNotFound()
-                .expectBody().jsonPath("$.type").isEqualTo("gateway-not-found").jsonPath("$.code").doesNotExist();
+                .expectBody().jsonPath("$.type").isEqualTo("gateway-not-found").jsonPath("$.title").isEqualTo(GatewayProblemJsonTest.TITLES.get("gateway-not-found"))
+                .jsonPath("$.code").doesNotExist();
             client().get().uri(uri).headers(h -> h.setBearerAuth(all)).exchange().expectStatus().isNotFound()
                 .expectBody().jsonPath("$.type").isEqualTo("gateway-not-found");
         }
