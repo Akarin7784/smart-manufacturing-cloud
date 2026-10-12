@@ -4,7 +4,7 @@
 openapi: 3.1.0
 info:
   title: 库存服务预留接口（inventory-service）
-  version: 1.0.0
+  version: 1.1.0
   contact:
     name: smart-manufacturing-cloud 维护者
     url: https://github.com/Akarin7784/smart-manufacturing-cloud
@@ -30,6 +30,11 @@ info:
       续期作业、补偿释放等无用户上下文的系统调用同样使用该服务身份，不透传终端用户令牌。
     - 网关与库存服务分别校验令牌；所有接口均要求 `inventory:reserve`。
     - 调用方身份取自已验证令牌中的客户端标识（client_id），不信任任何请求头声明的身份。
+
+    ## 质检隔离库位 QC-HOLD（质检回写库存，设计见 docs/quality-inventory-writeback-design.md）
+    - 系统库位 `QC-HOLD` 由迁移种子创建，只能经 `/inventory/qc-hold/**` 变动；通用出入库对它返回 400（type=validation-error）。
+    - 隔离量不计入现存量合计与可用量，不可预留；现存量与可用量查询单独返回隔离量。
+    - 标记 `x-planned: true` 的接口与字段为本契约新增、待实现部分，契约测试在实现 PR 前跳过它们。
 
     ## 幂等
     - 所有修改类接口必须携带 `Idempotency-Key` 请求头。
@@ -65,6 +70,8 @@ servers:
   - url: http://localhost:8080
     description: 本地经网关访问
 tags:
+  - name: qc-hold
+    description: 质检隔离库位 QC-HOLD（内部接口，仅质检服务的服务令牌）
   - name: reservation
     description: 物料预留单
   - name: stock
@@ -387,7 +394,7 @@ paths:
       tags: [stock]
       operationId: getAvailability
       summary: 查询物料可用量
-      description: 可用量 = 现存量合计 − ACTIVE 预留单未扣减量。快照读，仅供展示；预留与出库以加锁后的计算为准。需要 `inventory:read`。
+      description: 可用量 = 现存量合计（不含 QC-HOLD 隔离量）− ACTIVE 预留单未扣减量；隔离量单独以 `quarantined` 返回。快照读，仅供展示；预留与出库以加锁后的计算为准。需要 `inventory:read`。
       security:
         - userBearer: []
       parameters:
@@ -525,6 +532,138 @@ paths:
         '422':
           $ref: '#/components/responses/MovementUnprocessable'
 
+  /api/inventory/qc-hold/receipts:
+    post:
+      tags: [qc-hold]
+      operationId: qcHoldReceipts
+      summary: 不良品入隔离库位 QC-HOLD
+      description: |
+        质检服务在 NCR 以 `OPEN` 建成后调用，把不良数量记入 `QC-HOLD`（物料为工单产品编码，批次与单位取自不良事件）。
+        幂等键：`qc:{ncrNo}:hold`。物料首次入库时按现有规则登记计量单位。
+        - 库位由服务端固定为 `QC-HOLD`，请求体**不得**携带库位字段（携带即 400，type=validation-error）。
+        - 流水 `txnType=QC_HOLD_IN`，`refType=NCR`，`refNo=ncrNo`，`operator` 为服务 client_id。
+        - 必须携带 `Idempotency-Key`（作用域为 client_id），键格式见请求体说明；重放语义同预留接口。
+        - 仅接受服务令牌：`aud=inventory-service` 且 scope 含 `inventory:qc-hold`；用户令牌或 scope 不足分别返回 401/403。
+        - 本接口为内部接口，质检服务经服务发现直连库存服务，网关不对外暴露 `/api/inventory/qc-hold/**`。
+      x-planned: true
+      security:
+        - serviceClient: [inventory:qc-hold]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QcHoldReceiptRequest'
+      responses:
+        '201':
+          description: 已记账，返回流水。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockTxn'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/MovementUnprocessable'
+
+  /api/inventory/qc-hold/releases:
+    post:
+      tags: [qc-hold]
+      operationId: qcHoldReleases
+      summary: 隔离品放行出库（返工/让步接收/NCR 作废）
+      description: |
+        从 `QC-HOLD` 出库，不指定目标库位（返工、让步接收后的实物去向由工单/后续单据处理）。
+        - `reason=REWORK` / `CONCESSION`：处置行回写，幂等键 `qc:{ncrNo}:disp:{dispositionId}:release`。
+        - `reason=NCR_VOIDED`：已入 QC-HOLD 的 NCR 因冲销作废，扣回全部隔离量，幂等键 `qc:{ncrNo}:void`，`dispositionId` 不填。
+        - 库位由服务端固定为 `QC-HOLD`，请求体**不得**携带库位字段（携带即 400，type=validation-error）。
+        - 流水 `txnType=QC_HOLD_RELEASE`，`refType=NCR`，`refNo=ncrNo`，`operator` 为服务 client_id。
+        - 必须携带 `Idempotency-Key`（作用域为 client_id），键格式见请求体说明；重放语义同预留接口。
+        - 仅接受服务令牌：`aud=inventory-service` 且 scope 含 `inventory:qc-hold`；用户令牌或 scope 不足分别返回 401/403。
+        - 本接口为内部接口，质检服务经服务发现直连库存服务，网关不对外暴露 `/api/inventory/qc-hold/**`。
+      x-planned: true
+      security:
+        - serviceClient: [inventory:qc-hold]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QcHoldReleaseRequest'
+      responses:
+        '201':
+          description: 已记账，返回流水。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockTxn'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: QC-HOLD 中该（物料、批次）的隔离量不足（type=insufficient-stock），说明质检与库存数据不一致，需人工核对。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/OutboundShortageProblem'
+        '422':
+          $ref: '#/components/responses/MovementUnprocessable'
+
+  /api/inventory/qc-hold/scraps:
+    post:
+      tags: [qc-hold]
+      operationId: qcHoldScraps
+      summary: 隔离品报废出库
+      description: |
+        SCRAP 处置行回写，从 `QC-HOLD` 报废出库。幂等键 `qc:{ncrNo}:disp:{dispositionId}:scrap`。
+        - 库位由服务端固定为 `QC-HOLD`，请求体**不得**携带库位字段（携带即 400，type=validation-error）。
+        - 流水 `txnType=SCRAP`，`refType=NCR`，`refNo=ncrNo`，`operator` 为服务 client_id。
+        - 必须携带 `Idempotency-Key`（作用域为 client_id），键格式见请求体说明；重放语义同预留接口。
+        - 仅接受服务令牌：`aud=inventory-service` 且 scope 含 `inventory:qc-hold`；用户令牌或 scope 不足分别返回 401/403。
+        - 本接口为内部接口，质检服务经服务发现直连库存服务，网关不对外暴露 `/api/inventory/qc-hold/**`。
+      x-planned: true
+      security:
+        - serviceClient: [inventory:qc-hold]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QcHoldScrapRequest'
+      responses:
+        '201':
+          description: 已记账，返回流水。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockTxn'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: QC-HOLD 中该（物料、批次）的隔离量不足（type=insufficient-stock），说明质检与库存数据不一致，需人工核对。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/OutboundShortageProblem'
+        '422':
+          $ref: '#/components/responses/MovementUnprocessable'
+
 components:
   securitySchemes:
     userBearer:
@@ -538,7 +677,7 @@ components:
         服务间调用使用 OAuth2 客户端凭证模式（RFC 6749 client_credentials）。
         - 令牌端点：经网关访问 `POST /api/auth/oauth2/token`，转发到认证服务 `POST /auth/oauth2/token`。
         - 签名与校验：令牌与用户 JWT 使用同一把 RSA 私钥签名，网关与库存服务通过现有 JWKS 端点获取公钥并分别校验。
-        - 库存服务同时校验 scope 包含 `inventory:reserve` 且 `aud=inventory-service`。令牌无效、过期或 aud 不匹配返回 401，scope 不足返回 403。
+        - 库存服务同时校验 `aud=inventory-service` 与对应 scope：预留接口要求 `inventory:reserve`，隔离接口要求 `inventory:qc-hold`。服务令牌不能调用通用出入库接口（`/inventory/inbound`、`/inventory/outbound`），它们只认用户令牌。令牌无效、过期或 aud 不匹配返回 401，scope 不足返回 403。
         - 令牌有效期 5 分钟；调用方必须缓存令牌并在临近过期时提前刷新，不得每次请求都重新申请。
         - 幂等作用域取自令牌中的 client_id。
       flows:
@@ -546,6 +685,7 @@ components:
           tokenUrl: /api/auth/oauth2/token
           scopes:
             inventory:reserve: 物料预留的创建、查询、续期、释放与扣减。
+            inventory:qc-hold: 仅限 `/inventory/qc-hold/**`：不良品入隔离库位、放行出库与报废出库（质检服务专用）。
 
   parameters:
     MaterialCodeQuery:
@@ -621,6 +761,63 @@ components:
             $ref: '#/components/schemas/MovementUnprocessableProblem'
 
   schemas:
+    QcHoldBase:
+      type: object
+      description: 隔离接口公共字段；库位由服务端固定为 QC-HOLD，不接受库位字段（各请求以 unevaluatedProperties=false 拒绝多余字段）。
+      required: [ncrNo, materialCode, uom, lotNo, qty]
+      properties:
+        ncrNo:
+          type: string
+          maxLength: 32
+          description: NCR 编号，写入流水 refNo。
+        materialCode:
+          type: string
+          maxLength: 64
+          description: 物料编码（工单产品编码，取自不良事件）。
+        uom:
+          type: string
+          maxLength: 16
+          description: 计量单位，必须与该物料已登记单位一致。
+        lotNo:
+          type: string
+          maxLength: 64
+          description: 批次号（取自不良事件）。
+        qty:
+          $ref: '#/components/schemas/Quantity'
+    QcHoldReceiptRequest:
+      description: 不良品入 QC-HOLD。
+      unevaluatedProperties: false
+      allOf:
+        - $ref: '#/components/schemas/QcHoldBase'
+    QcHoldReleaseRequest:
+      description: 从 QC-HOLD 放行出库；REWORK/CONCESSION 必填 dispositionId，NCR_VOIDED 不填。
+      unevaluatedProperties: false
+      allOf:
+        - $ref: '#/components/schemas/QcHoldBase'
+        - type: object
+          required: [reason]
+          properties:
+            reason:
+              type: string
+              enum: [REWORK, CONCESSION, NCR_VOIDED]
+              description: 放行原因。
+            dispositionId:
+              type: integer
+              format: int64
+              description: 质检处置行 ID。
+    QcHoldScrapRequest:
+      description: 从 QC-HOLD 报废出库。
+      unevaluatedProperties: false
+      allOf:
+        - $ref: '#/components/schemas/QcHoldBase'
+        - type: object
+          required: [dispositionId]
+          properties:
+            dispositionId:
+              type: integer
+              format: int64
+              description: 质检处置行（type=SCRAP）ID。
+
     CreateLocationRequest:
       type: object
       description: 新建库位请求。
@@ -693,6 +890,10 @@ components:
           description: 批次号。
         qty:
           $ref: '#/components/schemas/Quantity'
+        quarantined:
+          type: boolean
+          description: 是否为隔离库存（库位为 QC-HOLD 时为 true）；隔离行的 qty 即隔离量。实现 PR 中加入 required。
+          x-planned: true
         version:
           type: integer
           format: int64
@@ -715,6 +916,10 @@ components:
           $ref: '#/components/schemas/Quantity'
         available:
           $ref: '#/components/schemas/SignedQuantity'
+        quarantined:
+          $ref: '#/components/schemas/Quantity'
+          description: 隔离量（QC-HOLD 库位余额合计）。不计入 onHand 与 available，不可预留、不可通用出库。实现 PR 中加入 required。
+          x-planned: true
 
     MovementRequest:
       type: object
@@ -755,8 +960,8 @@ components:
           description: 流水号。
         txnType:
           type: string
-          enum: [INBOUND, OUTBOUND, CONSUME]
-          description: 流水类型；CONSUME 为预留扣减。
+          enum: [INBOUND, OUTBOUND, CONSUME, QC_HOLD_IN, QC_HOLD_RELEASE, SCRAP]
+          description: 流水类型；CONSUME 为预留扣减；QC_HOLD_IN / QC_HOLD_RELEASE / SCRAP 为质检隔离入库、放行出库与报废出库（refType=NCR）。
         materialCode:
           type: string
           description: 物料编码。

@@ -98,9 +98,18 @@ final class OpenApiContract {
             errors.stream().map(ValidationMessage::getMessage).collect(Collectors.joining("; ")), body).isEmpty();
     }
 
-    /** 契约中 ProblemType 枚举的全部取值（用于断言测试覆盖了每一种业务错误）。 */
+    /**
+     * 契约中 ProblemType 枚举的已实现取值（用于断言测试覆盖了每一种业务错误）。
+     * 扣除 {@code x-planned} 中列出的类型：契约 PR 先于实现合入，这些类型由实现 PR 移出 x-planned 后再纳入覆盖断言。
+     */
     static Set<String> problemTypes() {
-        return MAPPER.convertValue(DOC.path("components").path("schemas").path("ProblemType").path("enum"), new com.fasterxml.jackson.core.type.TypeReference<Set<String>>() {});
+        var schema = DOC.path("components").path("schemas").path("ProblemType");
+        var type = new com.fasterxml.jackson.core.type.TypeReference<Set<String>>() {};
+        Set<String> all = new java.util.TreeSet<>(MAPPER.convertValue(schema.path("enum"), type));
+        // 未声明 x-planned 时 path() 返回缺失节点，转换结果为 null，此时不扣除任何类型。
+        Set<String> planned = MAPPER.convertValue(schema.path("x-planned"), type);
+        if (planned != null) all.removeAll(planned);
+        return all;
     }
 
 }
