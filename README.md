@@ -171,7 +171,7 @@ Invoke-RestMethod http://localhost:8080/api/workorders -Headers $headers
 {"code":"OK","message":"success","data":{"id":"uuid","deviceId":"D001","product":"bearing","quantity":10,"status":"CREATED"}}
 ```
 
-所有业务 API 先校验 Bearer JWT；未登录或令牌无效返回 401，权限不足返回 403。身份与权限通过后，无效数量返回 400；设备不存在返回 404；设备离线返回 409；设备服务故障返回 503，且不插入工单。网关生成 X-Request-Id，跨 Feign 调用传播，服务日志可按 ID 关联。它是请求关联 ID，尚未接入完整分布式 tracing。
+所有业务 API 先校验 Bearer JWT；未登录或令牌无效返回 401，权限不足返回 403（网关错误为 application/problem+json，见 docs/authentication.md）。身份与权限通过后，无效数量返回 400；设备不存在返回 404；设备离线返回 409；设备服务故障返回 503，且不插入工单。网关生成 X-Request-Id，跨 Feign 调用传播，服务日志可按 ID 关联。它是请求关联 ID，尚未接入完整分布式 tracing。
 
 工单只写本服务数据库，因此不使用分布式事务。设备查询与工单插入之间不保证设备状态原子性；未来若要占用设备或扣库存，应采用资源预留、幂等处理及明确的补偿/事务方案。
 
@@ -185,7 +185,7 @@ Invoke-RestMethod http://localhost:8080/api/devices/config -Headers $headers
 ```
 在 Nacos 修改 device-service.yml 的 demo.welcome 后，无需重启服务，接口会读到新值。
 
-Sentinel 控制台展示 cloud 服务；先请求接口产生资源。可为网关路由 device-service / workorder-service 添加 QPS 规则，或为业务 HTTP 资源添加限流规则。阻断返回 HTTP 429 与 RATE_LIMITED。Feign 启用 Sentinel fallbackFactory，设备服务异常时拒绝创建工单。
+Sentinel 控制台展示 cloud 服务；先请求接口产生资源。可为网关路由 device-service / workorder-service 添加 QPS 规则，或为业务 HTTP 资源添加限流规则。网关阻断返回 HTTP 429 problem+json（`type=gateway-rate-limited`，见 docs/authentication.md）。Feign 启用 Sentinel fallbackFactory，设备服务异常时拒绝创建工单。
 
 **控制台规则默认在内存中，重启会丢失。** 若需要持久化规则，见 docs/architecture.md；本骨架没有把控制台规则自动同步到 Nacos。
 
