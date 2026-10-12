@@ -43,6 +43,18 @@ jobs:
       - name: Verify all modules (unit + integration)
         if: runner.os == 'Linux'
         run: bash mvnw -B -ntp verify
+      # 防止集成测试被静默跳过：Linux 上必须实际执行至少一个 *IT，且不允许有跳过的用例。
+      - name: Assert integration tests executed
+        if: runner.os == 'Linux'
+        run: |
+          total=0
+          for f in $(find . -path '*/target/failsafe-reports/failsafe-summary.xml'); do
+            c=$(sed -n 's:.*<completed>\([0-9]*\)</completed>.*:\1:p' "$f"); s=$(sed -n 's:.*<skipped>\([0-9]*\)</skipped>.*:\1:p' "$f")
+            total=$((total + ${c:-0}))
+            if [ "${s:-0}" -ne 0 ]; then echo "::error::$f 中有 ${s} 个集成测试被跳过"; exit 1; fi
+          done
+          echo "已执行集成测试数：$total"
+          if [ "$total" -eq 0 ]; then echo "::error::未执行任何集成测试（Docker 不可用或 *IT 被跳过）"; exit 1; fi
       # Windows 运行器无法运行 Linux 容器：只跑单测，跳过依赖 Testcontainers 的 *IT。
       - name: Verify all modules (unit only)
         if: runner.os != 'Linux'
