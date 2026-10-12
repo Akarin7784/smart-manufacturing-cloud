@@ -6,6 +6,10 @@ spring:
     name: workorder-service
   profiles:
     default: local
+  # 建表顺序：V1 基线（schema.sql，运维将迁移为 V1__init.sql）→ V2 工单下达；Flyway 落地后改由 spring.flyway.locations 管理。
+  sql:
+    init:
+      schema-locations: classpath:schema.sql,classpath:db/migration/V2__workorder_release.sql
 management:
   endpoints:
     web:
@@ -36,6 +40,15 @@ manufacturing:
     issuer: ${AUTH_ISSUER:http://localhost:8080}
     audience: ${AUTH_AUDIENCE:manufacturing-api}
     jwk-set-uri: ${AUTH_JWK_SET_URI:http://localhost:8083/auth/jwks}
+
+  # 工单下达与物料预留：预留由库存服务所有（TTL 15 分钟），本服务每 5 分钟批量续约；
+  # material-reservation=local 为库存服务就绪前的本地替身适配器，生产改为 inventory。
+  workorder:
+    material-reservation: ${WORKORDER_MATERIAL_RESERVATION:local}
+    reservation-renew-interval: PT5M
+    reservation-renew-batch-size: 200
+    scheduling-enabled: true
+    zone: Asia/Shanghai
 
 # 数据库迁移：表结构只由 Flyway 的 db/migration 管理，不再使用 spring.sql.init（schema.sql 已转为 V1__init.sql）。
 # 默认关闭 baseline-on-migrate：已有表但没有迁移历史的旧库（P2 之前由 schema.sql 创建）会让 Flyway 直接报错，
