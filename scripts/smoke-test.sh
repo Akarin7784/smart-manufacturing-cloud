@@ -94,6 +94,16 @@ grep -qi '^Idempotent-Replayed: true' "$hdr" || fail "同键重放下达缺少 I
 [ "$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST -H "$auth" -H "Idempotency-Key: $rel_key-other" "$base/api/workorders/$gr/release")" = 409 ] || fail "换键重复下达应返回 409"
 # 未带令牌访问必须被网关拒绝。
 [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$base/api/devices")" = 401 ] || fail "未认证请求应返回 401"
+# 服务间内部接口（预留、QC-HOLD）只供直连：网关对无令牌与管理员令牌都返回 404 problem+json，不暴露接口存在。
+for _p in /api/inventory/reservations /api/inventory/reservations/R1/release /api/inventory/qc-hold/receipts /api/inventory/qc-hold/releases /api/inventory/qc-hold/scraps; do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST "$base$_p")" = 404 ] || fail "网关应拒绝 $_p（无令牌 404）"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST -H "$auth" "$base$_p")" = 404 ] || fail "网关应拒绝 $_p（管理员令牌 404）"
+  curl -s -m 5 -X POST -H "$auth" "$base$_p" | jq -e '.type=="gateway-not-found" and .status==404' >/dev/null || fail "$_p 的 404 应为 gateway-not-found problem+json"
+done
+# 点段绕过：--path-as-is 让 curl 原样发送，网关必须 404，不能让下游规范化成内部路径。
+for _p in /api/inventory/x/../qc-hold/receipts /api/inventory/./qc-hold/receipts /api/inventory/x/%2e%2e/qc-hold/receipts /api/inventory/x/..\;/qc-hold/receipts; do
+  [ "$(curl -s --path-as-is -o /dev/null -w '%{http_code}' -m 5 -X POST -H "$auth" "$base$_p")" = 404 ] || fail "网关应拒绝点段路径 $_p（404）"
+done
 
 # 服务身份（OAuth2 client_credentials）：经网关用工单客户端密钥换取服务令牌，解码 JWT 载荷断言 scope/aud/有效期；
 # 错误密钥必须返回 401 invalid_client。明文密钥取自环境变量或 .env 的 WORKORDER_CLIENT_SECRET。

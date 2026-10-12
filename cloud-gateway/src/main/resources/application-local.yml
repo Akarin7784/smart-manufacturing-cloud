@@ -39,8 +39,8 @@ spring:
                 - Path=/api/materials,/api/materials/**,/api/workcenters,/api/workcenters/**,/api/boms,/api/boms/**,/api/routings,/api/routings/**
               filters:
                 - StripPrefix=1
-            # 库存服务：库位、批次、现存量、出入库（用户令牌）；/api/inventory/reservations/** 在网关安全规则中拒绝，
-            # 预留只允许工单服务持服务令牌经 Nacos 直连。
+            # 库存服务：库位、批次、现存量、出入库（用户令牌）；/api/inventory/reservations/** 与 /api/inventory/qc-hold/** 属于内部路径清单，
+            # 由 InternalPathDenyFilter 在认证前返回 404；预留只允许工单服务、QC-HOLD 只允许质检服务持服务令牌经 Nacos 直连。
             - id: inventory-service
               uri: ${INVENTORY_SERVICE_URL:http://localhost:8085}
               predicates:
