@@ -30,7 +30,7 @@ class WorkOrderIntegrationTest {
         return org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt()
             .authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("workorder:write"));
     }
-    @BeforeEach void clearOrders() { jdbc.update("delete from work_order"); }
+    @BeforeEach void clearOrders() { jdbc.update("delete from outbox_event"); jdbc.update("delete from work_order"); }
     /** 验证在线设备允许创建工单，并实际写入数据库。 */
     @Test void createsAndPersistsOrder() throws Exception {
         when(devices.get("D001")).thenReturn(ApiResponse.ok(new Device("D001", "CNC", "ONLINE")));
@@ -38,6 +38,7 @@ class WorkOrderIntegrationTest {
             .content("{\"deviceId\":\"D001\",\"product\":\"轴承\",\"quantity\":10}"))
             .andExpect(status().isCreated()).andExpect(jsonPath("$.data.status").value("CREATED"));
         assertEquals(1, jdbc.queryForObject("select count(*) from work_order", Integer.class));
+        assertEquals(1, jdbc.queryForObject("select count(*) from outbox_event where status = 'PENDING'", Integer.class));
     }
     /** 验证离线设备返回冲突错误，且不产生工单。 */
     @Test void offlineDeviceDoesNotCreateOrder() throws Exception {

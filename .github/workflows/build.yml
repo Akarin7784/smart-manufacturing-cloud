@@ -43,7 +43,9 @@ jobs:
         run: bash mvnw -B -ntp verify
       - name: Validate Docker Compose
         if: runner.os == 'Linux'
-        run: docker compose --profile app config --quiet
+        run: |
+          docker compose --profile app config --quiet
+          docker compose -f compose.yaml -f compose.rocketmq.yaml --profile app --profile mq config --quiet
       # 即使测试失败也保留报告，便于查看断言、堆栈和具体失败用例。
       - name: Upload test reports
         if: always()
@@ -53,13 +55,14 @@ jobs:
           path: '**/target/surefire-reports/**'
           if-no-files-found: warn
           retention-days: 14
-      # 两个平台都验证；只上传 Linux 构建出的四个可执行服务包，避免重复产物。
+      # 两个平台都验证；只上传 Linux 构建出的五个可执行服务包，避免重复产物。
       - name: Upload executable services
         if: success() && runner.os == 'Linux'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: executable-services
           path: |
+            event-service/target/event-service-*.jar
             auth-service/target/auth-service-*.jar
             cloud-gateway/target/cloud-gateway-*.jar
             device-service/target/device-service-*.jar

@@ -40,6 +40,8 @@ public class GatewaySecurityConfiguration {
                 .pathMatchers("/api/auth/users", "/api/auth/users/**").hasAuthority("user:manage")
                 .pathMatchers(HttpMethod.GET, "/api/auth/me").authenticated()
                 .pathMatchers("/api/devices/config").hasAuthority("config:read")
+                .pathMatchers("/api/workorders/outbox", "/api/workorders/outbox/**").hasAuthority("metrics:read")
+                .pathMatchers(HttpMethod.GET, "/api/events/workorders").hasAuthority("workorder:read")
                 .pathMatchers(HttpMethod.GET, "/api/devices", "/api/devices/**").hasAuthority("device:read")
                 .pathMatchers(HttpMethod.GET, "/api/workorders", "/api/workorders/**").hasAuthority("workorder:read")
                 .pathMatchers(HttpMethod.POST, "/api/workorders").hasAuthority("workorder:write")

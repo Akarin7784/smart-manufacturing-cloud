@@ -33,3 +33,11 @@
 - 检查新增和修改代码是否具有恰当的中文注释，注释是否与实际行为一致。
 - 按修改影响范围执行必要检查；纯注释修改无需反复运行全部测试或重建运行环境。
 - 启动、架构与验证文档分别维护在 README.md、docs/architecture.md 和 docs/validation.md。
+
+## RocketMQ 约定
+
+- cloud-messaging 使用 Alibaba BOM 管理的官方 RocketMQ 5.3.1 客户端；event-service 使用独立消费数据库。
+- 工单与 Outbox 必须同事务提交，不能在控制器中直接执行写库后发消息。
+- 发送保证至少一次；消费者以 eventId 幂等，同 ID 内容冲突必须拒绝，不得吞掉处理异常。
+- 消息不能包含访问令牌、密码或私钥；事件管理仅管理员可访问，投影要求工单查询权限。
+- 默认关闭 MQ 连接；使用 compose.rocketmq.yaml 与 app/mq profile 按需启用。启动或停止只操作 manufacturing-cloud，不影响其他项目。

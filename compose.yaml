@@ -6,6 +6,10 @@ services:
     environment:
       MODE: standalone
       PREFER_HOST_MODE: hostname
+      # 降低开发环境堆内存，生产容量应按实际负载重新设置。
+      JVM_XMS: 128m
+      JVM_XMX: 256m
+      JVM_XMN: 64m
       NACOS_AUTH_ENABLE: "false"
       NACOS_AUTH_ADMIN_ENABLE: "false"
       NACOS_AUTH_CONSOLE_ENABLE: "false"
@@ -63,6 +67,7 @@ services:
         MODULE: auth-service
     environment:
       SPRING_PROFILES_ACTIVE: cloud
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m"
       NACOS_ADDR: nacos:8848
       SENTINEL_DASHBOARD: sentinel:8858
       MYSQL_HOST: mysql
@@ -77,6 +82,37 @@ services:
         condition: service_healthy
       auth-db-init:
         condition: service_completed_successfully
+  # 事件数据库单独初始化，升级已有数据卷时不删除其他服务数据。
+  event-db-init:
+    profiles: ["app"]
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: local-root-password
+    volumes:
+      - ./infra/mysql/event-init.sql:/init.sql:ro
+    command: ["sh", "-c", "mysql -h mysql -uroot -p\"$$MYSQL_ROOT_PASSWORD\" < /init.sql"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+  event:
+    profiles: ["app"]
+    build:
+      context: .
+      args:
+        MODULE: event-service
+    environment:
+      SPRING_PROFILES_ACTIVE: cloud
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m"
+      NACOS_ADDR: nacos:8848
+      MYSQL_HOST: mysql
+      AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
+      AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
+      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
+    depends_on:
+      nacos:
+        condition: service_healthy
+      event-db-init:
+        condition: service_completed_successfully
   gateway:
     profiles: ["app"]
     build:
@@ -85,6 +121,7 @@ services:
         MODULE: cloud-gateway
     environment:
       SPRING_PROFILES_ACTIVE: cloud
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m"
       NACOS_ADDR: nacos:8848
       SENTINEL_DASHBOARD: sentinel:8858
       AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
@@ -109,6 +146,7 @@ services:
         MODULE: device-service
     environment:
       SPRING_PROFILES_ACTIVE: cloud
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m"
       NACOS_ADDR: nacos:8848
       SENTINEL_DASHBOARD: sentinel:8858
       AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
@@ -128,6 +166,7 @@ services:
         MODULE: workorder-service
     environment:
       SPRING_PROFILES_ACTIVE: cloud
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m"
       NACOS_ADDR: nacos:8848
       SENTINEL_DASHBOARD: sentinel:8858
       AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
@@ -139,7 +178,68 @@ services:
         condition: service_healthy
       mysql:
         condition: service_healthy
+  # RocketMQ 只在 mq profile 下启动，普通 app 环境不会额外占用消息组件内存。
+  rocketmq-nameserver:
+    profiles: ["mq"]
+    image: apache/rocketmq:5.3.1
+    environment:
+      JAVA_OPT_EXT: "-Xms64m -Xmx128m -Xmn32m"
+    command: ["sh", "mqnamesrv"]
+    mem_limit: 256m
+    ports:
+      - "127.0.0.1:9876:9876"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/127.0.0.1/9876"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  rocketmq-broker:
+    profiles: ["mq"]
+    image: apache/rocketmq:5.3.1
+    environment:
+      NAMESRV_ADDR: rocketmq-nameserver:9876
+      ROCKETMQ_BROKER_ADVERTISE_ADDR: ${ROCKETMQ_BROKER_ADVERTISE_ADDR:-}
+      JAVA_OPT_EXT: "-Xms128m -Xmx256m -Xmn64m -XX:MaxDirectMemorySize=128m"
+    command: ["sh", "-c", "export BROKER_ADDR=$${ROCKETMQ_BROKER_ADVERTISE_ADDR:-$$(hostname -i)}; sed \"s/^brokerIP1=.*/brokerIP1=$$BROKER_ADDR/\" /etc/rocketmq/broker.conf > /tmp/broker.conf && sh mqbroker -c /tmp/broker.conf"]
+    mem_limit: 512m
+    ports:
+      - "127.0.0.1:10911:10911"
+      - "127.0.0.1:10909:10909"
+    volumes:
+      - ./infra/rocketmq/broker.conf:/etc/rocketmq/broker.conf:ro
+      - rocketmq-store:/home/rocketmq/store
+      - rocketmq-logs:/home/rocketmq/logs
+    depends_on:
+      rocketmq-volume-init:
+        condition: service_completed_successfully
+      rocketmq-nameserver:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/127.0.0.1/10911"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  # 仅初始化专用消息数据卷，修正官方镜像普通用户的写入权限。
+  rocketmq-volume-init:
+    profiles: ["mq"]
+    image: apache/rocketmq:5.3.1
+    user: root
+    command: ["sh", "-c", "chown -R 3000:3000 /home/rocketmq/store /home/rocketmq/logs"]
+    volumes:
+      - rocketmq-store:/home/rocketmq/store
+      - rocketmq-logs:/home/rocketmq/logs
+  rocketmq-init:
+    profiles: ["mq"]
+    image: apache/rocketmq:5.3.1
+    environment:
+      JAVA_OPT_EXT: "-Xms32m -Xmx128m -Xmn32m"
+    command: ["sh", "-c", "sh mqadmin updateTopic -n rocketmq-nameserver:9876 -b rocketmq-broker:10911 -t manufacturing-workorders -r 4 -w 4"]
+    depends_on:
+      rocketmq-broker:
+        condition: service_healthy
 volumes:
+  rocketmq-store:
+  rocketmq-logs:
   auth-keys:
   nacos-data:
   nacos-logs:

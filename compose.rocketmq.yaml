@@ -1,0 +1,16 @@
+# 在基础 Compose 上启用生产者和消费者；仅操作 manufacturing-cloud 项目。
+services:
+  workorder:
+    environment:
+      ROCKETMQ_ENABLED: "true"
+      ROCKETMQ_NAMESERVER: rocketmq-nameserver:9876
+    depends_on:
+      rocketmq-init:
+        condition: service_completed_successfully
+  event:
+    environment:
+      ROCKETMQ_ENABLED: "true"
+      ROCKETMQ_NAMESERVER: rocketmq-nameserver:9876
+    depends_on:
+      rocketmq-init:
+        condition: service_completed_successfully

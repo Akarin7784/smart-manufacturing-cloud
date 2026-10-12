@@ -22,6 +22,12 @@ spring:
       server:
         webflux:
           routes:
+            - id: event-service
+              uri: lb://event-service
+              predicates:
+                - Path=/api/events/workorders
+              filters:
+                - StripPrefix=1
             - id: auth-service
               uri: lb://auth-service
               predicates:

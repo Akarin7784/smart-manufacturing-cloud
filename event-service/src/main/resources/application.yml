@@ -1,0 +1,18 @@
+# 独立事件服务配置；启用 MQ 时创建消费者，关闭时仍可查询持久化投影。
+server.port: ${SERVER_PORT:8084}
+spring:
+  application.name: event-service
+  profiles.default: local
+management:
+  endpoints.web.exposure.include: health,info,prometheus
+  endpoint.health.probes.enabled: true
+logging.pattern.level: "%5p [requestId=%X{requestId:-}]"
+manufacturing.security:
+  issuer: ${AUTH_ISSUER:http://localhost:8080}
+  audience: ${AUTH_AUDIENCE:manufacturing-api}
+  jwk-set-uri: ${AUTH_JWK_SET_URI:http://localhost:8083/auth/jwks}
+messaging.rocketmq:
+  enabled: ${ROCKETMQ_ENABLED:false}
+  name-server: ${ROCKETMQ_NAMESERVER:localhost:9876}
+  topic: ${ROCKETMQ_TOPIC:manufacturing-workorders}
+  consumer-group: ${ROCKETMQ_CONSUMER_GROUP:manufacturing-workorder-events}
