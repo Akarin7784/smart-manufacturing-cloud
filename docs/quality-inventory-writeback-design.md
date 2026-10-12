@@ -23,7 +23,7 @@
 | 9 | 人工结案 | `resolve` 必填 `reason`（空白 400），任务置终态 `RESOLVED_MANUALLY` 并写审计；计入 `result="resolved_manually"` |
 
 ## 2. 令牌与校验
-- 质检服务持有 `QUALITY_CLIENT_SECRET`（明文仅质检持有），auth 只存 BCrypt 散列 `QUALITY_CLIENT_SECRET_HASH`（init-env 生成，cost 10）；cloud 环境缺散列启动失败。质检侧配置键为 `mes.quality.writeback.client.{client-id,client-secret,scope}`。**已落地**：客户端注册、init-env、compose 与 Nacos 注入（auth 与部署 PR）；库存 `/inventory/qc-hold/**` 过滤链与网关拒绝规则由库存实现 PR 落地。
+- 质检服务持有 `QUALITY_CLIENT_SECRET`（明文仅质检持有），auth 只存 BCrypt 散列 `QUALITY_CLIENT_SECRET_HASH`（init-env 生成，cost 10）；cloud 环境缺散列启动失败。质检侧配置键为 `mes.quality.writeback.client.{client-id,client-secret,scope}`。**已落地**：客户端注册、init-env、compose 与 Nacos 注入（auth 与部署 PR）；网关对 `/api/inventory/qc-hold/**` 返回 404（内部路径清单）；库存 `/inventory/qc-hold/**` 过滤链由库存实现 PR 落地。
 - 质检缓存令牌，剩余有效期 < 60s 时刷新；收到 401 作废缓存重取一次。
 - 服务间调用经 Nacos 服务发现直连 `inventory-service`，**不经网关**。网关规则：`/api/inventory/qc-hold/**` 不对外转发（拒绝），服务令牌不含 `permissions`，网关现有角色规则对其不适用。
 - 库存新增过滤链 `/inventory/qc-hold/**`：解码器只认 `aud=inventory-service`（不符 401），授权要求 `SCOPE_inventory:qc-hold`（不足 403）；`inventory:reserve` 令牌不能调用隔离接口，反之亦然。错误为 problem+json。
