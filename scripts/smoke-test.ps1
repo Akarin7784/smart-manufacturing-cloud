@@ -41,6 +41,31 @@ if ($bom.data.version -ne 'A01' -or $bom.data.status -ne 'RELEASED') { throw 'De
 $explosion = Invoke-RestMethod "$BaseUrl/api/boms/FG-GR60-20/explosion?date=2026-10-12&quantity=10" -Headers $headers
 $steel = ($explosion.data.lines | Where-Object componentCode -eq 'RM-20CRMNTI-D30' | Measure-Object -Property requiredQty -Sum).Sum
 if ([decimal]$steel -ne [decimal]10.5) { throw "Unexpected BOM explosion result: steel=$steel" }
+# 服务身份（与 smoke-test.sh 对等）：用工单客户端密钥经网关换取服务令牌，解码载荷断言 scope/aud；错误密钥必须 401。
+if (-not $env:WORKORDER_CLIENT_SECRET) {
+    # 未导入环境时从 .env 读取明文密钥（与 smoke-test.sh 一致）。
+    $envFile = Join-Path (Split-Path -Parent $PSScriptRoot) '.env'
+    if (Test-Path -LiteralPath $envFile) {
+        $line = Get-Content -LiteralPath $envFile -Encoding UTF8 | Where-Object { $_ -match '^WORKORDER_CLIENT_SECRET=.+$' } | Select-Object -First 1
+        if ($line) { $env:WORKORDER_CLIENT_SECRET = $line.Substring('WORKORDER_CLIENT_SECRET='.Length) }
+    }
+}
+if (-not $env:WORKORDER_CLIENT_SECRET) { throw 'WORKORDER_CLIENT_SECRET is missing.' }
+$basic = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("workorder-service:$($env:WORKORDER_CLIENT_SECRET)"))
+$cc = Invoke-RestMethod "$BaseUrl/api/auth/oauth2/token" -Method Post -Headers @{ Authorization = $basic } `
+    -ContentType 'application/x-www-form-urlencoded' -Body 'grant_type=client_credentials&scope=inventory%3Areserve' -TimeoutSec 10
+if ($cc.token_type -ne 'Bearer' -or $cc.scope -ne 'inventory:reserve' -or $cc.expires_in -ne 300) { throw 'Unexpected client_credentials response.' }
+# JWT 载荷为 base64url：替换字符集并补齐填充后解码。
+$part = $cc.access_token.Split('.')[1].Replace('-', '+').Replace('_', '/')
+$part = $part + ('=' * ((4 - $part.Length % 4) % 4))
+$claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($part)) | ConvertFrom-Json
+if ($claims.scope -ne 'inventory:reserve' -or @($claims.aud) -notcontains 'inventory-service' -or $claims.token_type -ne 'service') {
+    throw 'Unexpected service token claims.'
+}
+$wrong = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('workorder-service:wrong-secret'))
+Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/auth/oauth2/token" -Method Post -Headers @{ Authorization = $wrong } `
+    -ContentType 'application/x-www-form-urlencoded' -Body 'grant_type=client_credentials' -TimeoutSec 10 } 401
+Write-Host 'PASS: service identity (client_credentials scope/aud, wrong secret 401).'
 # RocketMQ 收发回环（与 smoke-test.sh 对等）：在 broker 容器内用自带 mqadmin 发一条唯一标记消息，再以新消费组拉回比对。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。设置环境变量 SKIP_MQ_SMOKE=1 可跳过。
 if ($env:SKIP_MQ_SMOKE -ne '1') {

@@ -67,6 +67,23 @@ curl -fsS -m 5 -H "$auth" "$md/explosion?date=2026-10-12&quantity=10" | jq -e '
 # 未带令牌访问必须被网关拒绝。
 [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$base/api/devices")" = 401 ] || fail "未认证请求应返回 401"
 
+# 服务身份（OAuth2 client_credentials）：经网关用工单客户端密钥换取服务令牌，解码 JWT 载荷断言 scope/aud/有效期；
+# 错误密钥必须返回 401 invalid_client。明文密钥取自环境变量或 .env 的 WORKORDER_CLIENT_SECRET。
+cs=${WORKORDER_CLIENT_SECRET:-$(sed -n 's/^WORKORDER_CLIENT_SECRET=//p' "$root/.env" 2>/dev/null || true)}
+[ -n "$cs" ] || fail "缺少 WORKORDER_CLIENT_SECRET"
+tok=$(curl -fsS -m 10 -u "workorder-service:$cs" -d grant_type=client_credentials -d scope=inventory:reserve "$base/api/auth/oauth2/token") \
+  || fail "client_credentials 换取服务令牌失败"
+printf '%s' "$tok" | jq -e '.token_type=="Bearer" and .scope=="inventory:reserve" and .expires_in==300' >/dev/null || fail "服务令牌响应不符：$tok"
+# JWT 载荷为 base64url，无填充：转换字符集并补齐 '=' 后再解码。
+payload=$(printf '%s' "$tok" | jq -r '.access_token' | cut -d. -f2 | tr '_-' '/+')
+while [ $(( ${#payload} % 4 )) -ne 0 ]; do payload="$payload="; done
+printf '%s' "$payload" | base64 -d | jq -e '.sub=="workorder-service" and .client_id=="workorder-service" and .scope=="inventory:reserve"
+  and (.aud|if type=="array" then . else [.] end)==["inventory-service"] and .token_type=="service" and (.exp-.iat)==300 and (has("permissions")|not)' >/dev/null \
+  || fail "服务令牌声明不符（scope/aud/有效期/无用户权限）"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -m 10 -u "workorder-service:wrong-$cs" -d grant_type=client_credentials "$base/api/auth/oauth2/token")" = 401 ] \
+  || fail "错误客户端密钥应返回 401"
+echo "PASS: 服务身份 client_credentials（scope/aud 校验、错误密钥 401）"
+
 # RocketMQ 收发回环：用 Broker 镜像自带的 mqadmin 发一条带唯一标记的消息，再以新消费组拉回，确认 NameServer→Broker→消费链路可用。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。SKIP_MQ_SMOKE=1 可跳过（如未启动 app profile）。
 if [ "${SKIP_MQ_SMOKE:-0}" != 1 ]; then

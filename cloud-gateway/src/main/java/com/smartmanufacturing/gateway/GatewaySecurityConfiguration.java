@@ -36,6 +36,9 @@ public class GatewaySecurityConfiguration {
             .authorizeExchange(rules -> rules
                 .pathMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/**", "/api/auth/jwks").permitAll()
                 .pathMatchers(HttpMethod.POST, "/api/auth/login").permitAll()
+                // 服务令牌端点由认证服务按 RFC 6749 校验客户端凭据，网关不要求 JWT；
+                // 演示环境服务间调用经 Nacos 直连 auth-service，此网关入口主要供冒烟与外部集成使用，生产应叠加 Sentinel 限流。
+                .pathMatchers(HttpMethod.POST, "/api/auth/oauth2/token").permitAll()
                 .pathMatchers("/actuator/**").hasAuthority("metrics:read")
                 .pathMatchers("/api/auth/users", "/api/auth/users/**").hasAuthority("user:manage")
                 .pathMatchers(HttpMethod.GET, "/api/auth/me").authenticated()
