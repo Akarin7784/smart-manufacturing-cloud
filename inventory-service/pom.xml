@@ -3,6 +3,11 @@
 <modelVersion>4.0.0</modelVersion>
 <parent><groupId>com.smartmanufacturing</groupId><artifactId>manufacturing-cloud</artifactId><version>1.0.0-SNAPSHOT</version></parent>
 <artifactId>inventory-service</artifactId>
+<properties>
+  <!-- 客户端版本：remoting 协议兼容 RocketMQ 5.x Broker。 -->
+  <rocketmq-client.version>5.3.1</rocketmq-client.version>
+  <json-schema-validator.version>1.5.6</json-schema-validator.version>
+</properties>
 <dependencies>
 <!-- 公共组件：资源服务器、请求 ID、Sentinel 降级；库存服务自带安全链（见 InventorySecurityConfiguration）。 -->
 <dependency><groupId>com.smartmanufacturing</groupId><artifactId>cloud-common</artifactId></dependency>
@@ -18,8 +23,12 @@
 <dependency><groupId>org.flywaydb</groupId><artifactId>flyway-core</artifactId></dependency>
 <dependency><groupId>org.flywaydb</groupId><artifactId>flyway-mysql</artifactId></dependency>
 <dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>
+<!-- RocketMQ remoting 客户端：outbox 发布任务直连 NameServer 发送预留事件（#13 部署为 namesrv + broker，无 Proxy）。 -->
+<dependency><groupId>org.apache.rocketmq</groupId><artifactId>rocketmq-client</artifactId><version>${rocketmq-client.version}</version></dependency>
 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
 <dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-test</artifactId><scope>test</scope></dependency>
+<!-- 契约测试：按 OpenAPI 3.1（JSON Schema 2020-12）校验每个响应体。 -->
+<dependency><groupId>com.networknt</groupId><artifactId>json-schema-validator</artifactId><version>${json-schema-validator.version}</version><scope>test</scope></dependency>
 <!-- Testcontainers：*IT 在真实 MySQL 8.4 上验证 Flyway 迁移、DECIMAL 精度与行锁并发。 -->
 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-testcontainers</artifactId><scope>test</scope></dependency>
 <dependency><groupId>org.testcontainers</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>

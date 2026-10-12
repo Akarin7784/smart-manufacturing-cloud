@@ -1,14 +1,12 @@
 package com.smartmanufacturing.inventory;
 
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
- * 库存服务定时任务配置：只在启用幂等记录清理时开启调度，测试环境关闭后不会产生后台线程干扰用例。
+ * 库存服务定时任务配置：开启调度。各任务自身按配置开关（幂等清理、过期与 outbox 发布），测试环境全部关闭定时触发。
  */
 @Configuration(proxyBeanMethods = false)
 @EnableScheduling
-@ConditionalOnProperty(prefix = "inventory.idempotency.cleanup", name = "enabled", havingValue = "true", matchIfMissing = true)
 class SchedulingConfiguration {
 }
