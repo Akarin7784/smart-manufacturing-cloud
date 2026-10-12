@@ -64,4 +64,11 @@ class ReleaseRulesTest {
         assertThat(port.reserve("k2", "o", List.of()).reservationId()).isNotEqualTo(a.reservationId());
         assertThat(a.expiresAt()).isEqualTo(clock.instant().plusSeconds(900));
     }
+
+    /** 数量规范为 scale 6（DECIMAL(18,6)）；超过 6 位小数拒绝而不截断。 */
+    @Test void quantitiesAreScale6AndOverPrecisionRejected() {
+        assertThat(WorkOrderReleaseService.requirements(ReleaseFixtures.explosion(10).lines())).allSatisfy(l -> assertThat(l.quantity().scale()).isEqualTo(6));
+        assertThatThrownBy(() -> WorkOrderReleaseService.scale6(new BigDecimal("0.0000001")))
+            .isInstanceOfSatisfying(BusinessException.class, e -> assertThat(e.code()).isEqualTo("RELEASE_MASTERDATA_INVALID"));
+    }
 }

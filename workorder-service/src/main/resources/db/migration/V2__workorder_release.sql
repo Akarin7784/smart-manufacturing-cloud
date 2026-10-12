@@ -24,7 +24,7 @@ CREATE TABLE work_order_hold_reason (
   CONSTRAINT pk_work_order_hold_reason PRIMARY KEY (order_id, reason)
 );
 
--- BOM 展开快照：下达时冻结，之后不再回查主数据；source_bom_version 记录每行来源版本。
+-- BOM 展开快照：下达时冻结，之后不再回查主数据；数量列 DECIMAL(18,6) 与库存契约精度一致；source_bom_version 记录每行来源版本。
 CREATE TABLE wo_bom_snapshot (
   order_id VARCHAR(64) NOT NULL,
   seq INT NOT NULL,
@@ -32,8 +32,8 @@ CREATE TABLE wo_bom_snapshot (
   path VARCHAR(512) NOT NULL,
   parent_code VARCHAR(64) NOT NULL,
   component_code VARCHAR(64) NOT NULL,
-  qty_per DECIMAL(12,4) NOT NULL,
-  required_qty DECIMAL(16,4) NOT NULL,
+  qty_per DECIMAL(18,6) NOT NULL,
+  required_qty DECIMAL(18,6) NOT NULL,
   uom VARCHAR(16) NOT NULL,
   issue_mode VARCHAR(16) NOT NULL,
   consume_op_no VARCHAR(8) NULL,
@@ -76,12 +76,12 @@ CREATE TABLE wo_material_reservation (
   INDEX idx_wo_material_reservation_status (status, reservation_id)
 );
 
--- 预留行：按物料汇总的叶子件需求；line_id 为库存返回的预留行号，后续按行、按批次消耗时引用。
+-- 预留行：按物料汇总的叶子件需求；数量与库存契约一致为 DECIMAL(18,6)（十进制字符串，最多 6 位小数）；line_id 为库存返回的预留行号，后续按行、按批次消耗时引用。
 CREATE TABLE wo_material_reservation_line (
   reservation_id VARCHAR(64) NOT NULL,
   line_id VARCHAR(64) NULL,
   material_code VARCHAR(64) NOT NULL,
-  quantity DECIMAL(16,4) NOT NULL,
+  quantity DECIMAL(18,6) NOT NULL,
   uom VARCHAR(16) NOT NULL,
   CONSTRAINT pk_wo_material_reservation_line PRIMARY KEY (reservation_id, material_code)
 );

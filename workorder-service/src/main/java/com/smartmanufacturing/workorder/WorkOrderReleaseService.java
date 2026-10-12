@@ -142,12 +142,18 @@ public class WorkOrderReleaseService {
             "routingVersion", routing.version(), "reservationId", reservation.reservationId()));
     }
 
-    /** 叶子件按物料汇总为预留行（虚拟件已由主数据展开为其子件；非叶子的自制件不预留）。 */
+    /** 数量精度：与库存契约及 V2 的 DECIMAL(18,6) 一致。 */
+    static final int QTY_SCALE = 6;
+
+    /**
+     * 叶子件按物料汇总为预留行（虚拟件已由主数据展开为其子件；非叶子的自制件不预留）。
+     * 数量统一为 scale 6；超过 6 位小数直接拒绝（RoundingMode.UNNECESSARY），不静默截断。
+     */
     static List<ReservationLineView> requirements(List<BomExplosionLine> lines) {
         Map<String, ReservationLineView> sum = new TreeMap<>();
         for (BomExplosionLine l : lines) {
             if (!l.leaf()) continue;
-            sum.merge(l.componentCode(), new ReservationLineView(null, l.componentCode(), l.requiredQty(), l.uom()), (a, b) -> {
+            sum.merge(l.componentCode(), new ReservationLineView(null, l.componentCode(), scale6(l.requiredQty()), l.uom()), (a, b) -> {
                 if (!a.uom().equals(b.uom()))
                     throw new BusinessException("RELEASE_MASTERDATA_INVALID", "物料 " + a.materialCode() + " 在 BOM 中单位不一致", HttpStatus.UNPROCESSABLE_ENTITY);
                 return new ReservationLineView(null, a.materialCode(), a.quantity().add(b.quantity()), a.uom());
@@ -156,6 +162,14 @@ public class WorkOrderReleaseService {
         if (sum.isEmpty())
             throw new BusinessException("RELEASE_MASTERDATA_INVALID", "BOM 没有可预留的叶子物料", HttpStatus.UNPROCESSABLE_ENTITY);
         return List.copyOf(sum.values());
+    }
+
+    /** 规范为 scale 6；超精度属于主数据错误。 */
+    static BigDecimal scale6(BigDecimal q) {
+        try { return q.setScale(QTY_SCALE, java.math.RoundingMode.UNNECESSARY); }
+        catch (ArithmeticException e) {
+            throw new BusinessException("RELEASE_MASTERDATA_INVALID", "数量超过 6 位小数: " + q, HttpStatus.UNPROCESSABLE_ENTITY);
+        }
     }
 
     /**
