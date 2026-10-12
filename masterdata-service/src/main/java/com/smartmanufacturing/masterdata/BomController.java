@@ -21,7 +21,9 @@ public class BomController {
     private final BomService service;
     BomController(BomService service) { this.service = service; }
 
+    /** 列出产品的全部 BOM 版本（含草稿、已发布、作废），按生效日排序。 */
     @GetMapping("/{product}") public ApiResponse<List<Bom>> versions(@PathVariable String product) { return ApiResponse.ok(service.listByProduct(product)); }
+    /** 查询指定版本 BOM，不存在返回 404。 */
     @GetMapping("/{product}/{version}") public ApiResponse<Bom> get(@PathVariable String product, @PathVariable String version) {
         return ApiResponse.ok(service.get(product, version));
     }
@@ -38,16 +40,19 @@ public class BomController {
         return ApiResponse.ok(service.explode(product, date == null ? LocalDate.now() : date, quantity));
     }
 
+    /** 新建 BOM 草稿；产品须为自制件，同产品版本号重复返回 409。 */
     @PreAuthorize("hasAuthority('masterdata:write')")
     @PostMapping @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<Bom> create(@Valid @RequestBody SaveBom request) { return ApiResponse.ok(service.create(request)); }
 
+    /** 整体替换草稿的生效日与 BOM 行；已发布版本只读，返回 409。 */
     @PreAuthorize("hasAuthority('masterdata:write')")
     @PutMapping("/{product}/{version}")
     public ApiResponse<Bom> replace(@PathVariable String product, @PathVariable String version, @Valid @RequestBody SaveBom request) {
         return ApiResponse.ok(service.replaceDraft(product, version, request));
     }
 
+    /** 发布草稿：执行跨聚合校验并截断上一已发布版本；同一产品的发布按产品行锁串行。 */
     @PreAuthorize("hasAuthority('masterdata:release')")
     @PostMapping("/{product}/{version}/release")
     public ApiResponse<Bom> release(@PathVariable String product, @PathVariable String version) { return ApiResponse.ok(service.release(product, version)); }
