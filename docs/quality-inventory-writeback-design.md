@@ -49,7 +49,8 @@
   - HOLD `first_attempted_at` 为空（从未被领取执行）且不在执行中（非 `RUNNING`）→ HOLD 置 `CANCELLED`，不写 VOID。不用 `attempts=0` 判断：人工重试会把 attempts 清零，`first_attempted_at` 永不清空（#55 拍板）；
   - 否则（已尝试过或正在执行，库存是否已记账不确定）→ 保留 HOLD，追加 VOID 任务，同一 NCR 串行，VOID 排在 HOLD 之后：
     - HOLD 最终 `DONE` → 执行 VOID；
-    - HOLD 因**明确拒绝**（400、422、409 `insufficient-stock`）`FAILED` → 库存确定未记账，VOID 自动 `CANCELLED`；
+    - HOLD 因**明确拒绝**（400、422（`idempotency-key-conflict` 除外）、409 `insufficient-stock`）`FAILED` → 库存确定未记账，VOID 自动 `CANCELLED`；
+    - HOLD 因 422 `idempotency-key-conflict` `FAILED` → 首次请求可能已记账，按结果不确定处理，VOID 保持 `PENDING`、不自动取消；处理方式同未约定 404 超限：人工查清后对 HOLD `resolve`（VOID 随之 `CANCELLED`），或用同一幂等键人工重试 HOLD（`DONE` 后执行 VOID）；
     - HOLD 因**结果不确定**（超时、5xx 重试耗尽）`FAILED` → VOID 保持 `PENDING` 排在其后；人工重试 HOLD 沿用同一幂等键（库存若已记账则重放首次结果），HOLD `DONE` 后执行 VOID；若人工确认库存未记账，对 HOLD 执行 `resolve`（`RESOLVED_MANUALLY`），其后的 VOID 自动 `CANCELLED`。
     - HOLD 因**未约定 404 超过 `max-unknown-404-retries`**（gateway-not-found、about:blank、未定义 type）`FAILED` → 按结果不确定处理（#55 拍板），VOID 保持 `PENDING`、不自动取消；处理方式同 422 `idempotency-key-conflict`：人工查清后对 HOLD `resolve`（VOID 随之 `CANCELLED`），或用同一幂等键人工重试 HOLD（`DONE` 后执行 VOID）。
 - **已处置被冲销**：保持现行 `DISPOSED_REVERSAL_CONFLICT`，不自动回滚库存。
