@@ -44,7 +44,7 @@ class ClientCredentialsTokenTest {
     /** 测试只注入密钥的 BCrypt 散列，与生产一致：认证服务从不持有明文密钥。 */
     @DynamicPropertySource static void properties(DynamicPropertyRegistry registry) {
         registry.add("auth.private-key-path", () -> directory.resolve("signing-key.json").toString());
-        String hash = new BCryptPasswordEncoder(4).encode(SECRET);
+        String hash = new BCryptPasswordEncoder(ServiceClientRegistry.EXPECTED_COST).encode(SECRET);
         // 通过占位符变量注入，保持客户端列表其余配置来自实际 application.yml（覆盖列表下标会替换整个列表）。
         registry.add("WORKORDER_CLIENT_SECRET_HASH", () -> hash);
     }
@@ -133,5 +133,27 @@ class ClientCredentialsTokenTest {
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         String token = mapper.readTree(body).path("access_token").asText();
         mvc.perform(get("/auth/me").header(HttpHeaders.AUTHORIZATION, "Bearer " + token)).andExpect(status().isUnauthorized());
+    }
+
+    /** 非表单 Content-Type（JSON、缺失）按 RFC 6749 返回 400 invalid_request，而不是 Spring 默认的 415。 */
+    @Test void nonFormContentTypeIsInvalidRequest() throws Exception {
+        mvc.perform(post("/auth/oauth2/token").contentType(MediaType.APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, basic("workorder-service", SECRET)).content("{\"grant_type\":\"client_credentials\"}"))
+            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_request"))
+            .andExpect(header().string("Cache-Control", "no-store"));
+        mvc.perform(post("/auth/oauth2/token").header(HttpHeaders.AUTHORIZATION, basic("workorder-service", SECRET)))
+            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_request"));
+    }
+
+    /** 只请求一个未授予的 scope 也必须返回 invalid_scope，不能退化为签发默认 scope。 */
+    @Test void unknownSingleScopeRejected() throws Exception {
+        request(basic("workorder-service", SECRET), "grant_type=client_credentials&scope=inventory%3Aadmin")
+            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_scope"));
+    }
+
+    /** RFC 6749 3.2 规定参数不得重复：grant_type 出现两次返回 invalid_request。 */
+    @Test void duplicateGrantTypeIsInvalidRequest() throws Exception {
+        request(basic("workorder-service", SECRET), "grant_type=client_credentials&grant_type=client_credentials")
+            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_request"));
     }
 }

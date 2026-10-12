@@ -38,9 +38,12 @@ Set-IfEmpty 'AUTH_AUDIENCE' 'manufacturing-api'
 # PowerShell 无内置 BCrypt：优先本机 htpasswd，否则用一次性 httpd 容器（--rm）生成。
 function New-BcryptHash([string]$Secret) {
     $htpasswd = Get-Command htpasswd -ErrorAction SilentlyContinue
-    if ($htpasswd) { $out = $Secret | & $htpasswd.Source -niBC 10 '""' }
-    else { $out = $Secret | & docker run --rm -i httpd:2.4-alpine htpasswd -niBC 10 '""' }
-    $hash = ("$out").Trim().TrimStart(':')
+    # 使用非空占位用户名 svc，避免空字符串参数在 Windows PowerShell 5.1 与 PowerShell 7 下传参行为不一致；
+    # 输出为 "svc:散列"，取第一个冒号之后的部分。cost 固定为 10，须与认证服务 ServiceClientRegistry.EXPECTED_COST 一致。
+    if ($htpasswd) { $out = $Secret | & $htpasswd.Source -niBC 10 svc }
+    else { $out = $Secret | & docker run --rm -i httpd:2.4-alpine htpasswd -niBC 10 svc }
+    $line = ("$out").Trim()
+    $hash = $line.Substring($line.IndexOf(':') + 1)
     if (-not $hash.StartsWith('$2')) { throw 'BCrypt 散列生成失败：请安装 htpasswd 或启动 Docker' }
     $hash
 }

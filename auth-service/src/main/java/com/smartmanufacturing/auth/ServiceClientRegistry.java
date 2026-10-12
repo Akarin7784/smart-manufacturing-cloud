@@ -5,6 +5,7 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
@@ -16,19 +17,25 @@ import org.springframework.stereotype.Component;
 public class ServiceClientRegistry {
     private static final Logger log = LoggerFactory.getLogger(ServiceClientRegistry.class);
     /** BCrypt 散列格式；拒绝明文或其他算法，确保认证服务从不持有可直接使用的密钥。 */
-    private static final Pattern BCRYPT = Pattern.compile("^\\$2[aby]?\\$\\d{2}\\$[./A-Za-z0-9]{53}$");
+    private static final Pattern BCRYPT = Pattern.compile("^\\$2[aby]?\\$(\\d{2})\\$[./A-Za-z0-9]{53}$");
+    /**
+     * 服务客户端密钥散列约定的 BCrypt cost，与 scripts/init-env.sh / init-env.ps1 中 htpasswd -C 10 保持一致。
+     * 假散列也用此 cost，使未知客户端与已知客户端密钥错误的比对耗时一致；已注册散列 cost 不同则拒绝启动。
+     */
+    static final int EXPECTED_COST = 10;
     /** scope 字符集按 RFC 6749 3.3 的 scope-token 约束，同时排除空格以便按空格拼接。 */
     private static final Pattern SCOPE = Pattern.compile("^[\\x21\\x23-\\x5B\\x5D-\\x7E]+$");
 
     private final Map<String, ServiceClientProperties.Client> clients = new HashMap<>();
     private final PasswordEncoder passwords;
-    /** 未知客户端时用于比对的假散列，使未知客户端与密钥错误的耗时接近，避免枚举客户端。 */
+    /** 未知客户端时用于比对的假散列（cost 同 EXPECTED_COST），使未知客户端与密钥错误的耗时一致，避免枚举客户端。 */
     private final String dummyHash;
 
     public ServiceClientRegistry(ServiceClientProperties properties, PasswordEncoder passwords,
             @Value("${manufacturing.auth.require-secrets:false}") boolean requireSecrets) {
         this.passwords = passwords;
-        this.dummyHash = passwords.encode(UUID.randomUUID().toString());
+        // 不能用注入的 PasswordEncoder 生成：它是用户密码用的 cost 12，会让未知客户端比真实客户端慢约 4 倍。
+        this.dummyHash = new BCryptPasswordEncoder(EXPECTED_COST).encode(UUID.randomUUID().toString());
         for (ServiceClientProperties.Client client : properties.getClients()) {
             String id = client.getClientId();
             if (id == null || id.isBlank()) throw new IllegalStateException("服务客户端缺少 client-id");
@@ -42,8 +49,12 @@ public class ServiceClientRegistry {
                 log.warn("服务客户端 {} 未配置密钥散列，已禁用", id);
                 continue;
             }
-            if (!BCRYPT.matcher(hash).matches())
+            var matcher = BCRYPT.matcher(hash);
+            if (!matcher.matches())
                 throw new IllegalStateException("服务客户端 " + id + " 的密钥必须是 BCrypt 散列，禁止配置明文");
+            // cost 不一致会让假散列失去耗时对齐作用，直接拒绝启动，提示重新运行 init-env 生成。
+            if (Integer.parseInt(matcher.group(1)) != EXPECTED_COST)
+                throw new IllegalStateException("服务客户端 " + id + " 的 BCrypt cost 必须为 " + EXPECTED_COST);
             if (clients.putIfAbsent(id, client) != null) throw new IllegalStateException("服务客户端重复注册：" + id);
         }
     }

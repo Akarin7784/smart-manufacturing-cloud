@@ -7,7 +7,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /** 保护客户端注册表的启动校验：cloud 环境缺散列快速失败、禁止明文密钥、local 缺散列仅禁用。 */
 class ServiceClientRegistryTest {
-    private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder(4);
+    private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder(ServiceClientRegistry.EXPECTED_COST);
 
     private static ServiceClientProperties props(String hash) {
         ServiceClientProperties.Client client = new ServiceClientProperties.Client();
@@ -42,5 +42,11 @@ class ServiceClientRegistryTest {
         ServiceClientRegistry registry = new ServiceClientRegistry(props(hash), encoder, true);
         assertTrue(registry.authenticate("workorder-service", "s3cret").isPresent());
         assertTrue(registry.authenticate("workorder-service", "wrong").isEmpty());
+    }
+
+    /** 已注册散列 cost 与约定不一致时拒绝启动，保证未知客户端的假散列比对耗时与真实客户端一致。 */
+    @Test void costMismatchRejected() {
+        String cost4 = new BCryptPasswordEncoder(4).encode("s3cret");
+        assertThrows(IllegalStateException.class, () -> new ServiceClientRegistry(props(cost4), encoder, false));
     }
 }

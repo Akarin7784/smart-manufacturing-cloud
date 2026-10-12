@@ -39,9 +39,13 @@ public class ClientCredentialsController {
     }
 
     /** 表单参数：grant_type（必须为 client_credentials）、可选 scope；客户端凭据优先取 HTTP Basic。 */
-    @PostMapping(path = "/auth/oauth2/token", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    @PostMapping("/auth/oauth2/token")
     public ResponseEntity<Map<String, Object>> token(@RequestParam MultiValueMap<String, String> form,
-            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
+            @RequestHeader(value = HttpHeaders.CONTENT_TYPE, required = false) String contentType) {
+        // 不用 @PostMapping(consumes=...)：那样非表单请求会得到 Spring 默认的 415，而 RFC 6749 3.2 要求表单编码，
+        // 违反时应按 5.2 返回 400 invalid_request。这里在认证客户端之前检查，避免解析非表单请求中的凭据。
+        if (!isForm(contentType)) return error(HttpStatus.BAD_REQUEST, "invalid_request", "请求体必须为 application/x-www-form-urlencoded");
         String[] credentials = credentials(authorization, form);
         if (credentials == null) return error(HttpStatus.UNAUTHORIZED, "invalid_client", "客户端认证失败");
         // 先认证客户端再校验授权类型，未认证的调用方得不到关于参数的细节。
@@ -104,6 +108,13 @@ public class ClientCredentialsController {
         if (authorization != null) return null;
         String id = single(form, "client_id"), secret = single(form, "client_secret");
         return id == null || secret == null ? null : new String[] { id, secret };
+    }
+
+    /** 判断 Content-Type 是否为表单编码（忽略 charset 等参数）；缺失或无法解析均视为不是表单。 */
+    private static boolean isForm(String contentType) {
+        if (contentType == null) return false;
+        try { return MediaType.APPLICATION_FORM_URLENCODED.equalsTypeAndSubtype(MediaType.parseMediaType(contentType)); }
+        catch (org.springframework.http.InvalidMediaTypeException e) { return false; }
     }
 
     /** 读取单值参数；RFC 6749 3.2 规定参数不得重复，重复时按缺失处理。 */

@@ -37,14 +37,15 @@ ensure AUTH_AUDIENCE "manufacturing-api"
 
 # 服务间调用（OAuth2 client_credentials）的工单客户端密钥：明文只给调用方 workorder-service，
 # 认证服务只拿到 BCrypt 散列（WORKORDER_CLIENT_SECRET_HASH），从不持有明文。
+# BCrypt cost 固定为 10，须与认证服务 ServiceClientRegistry 的 EXPECTED_COST 一致。htpasswd 使用占位用户名 svc，输出 "svc:散列" 后截取散列。
 # BCrypt 生成顺序：htpasswd（apache2-utils）→ python3 bcrypt 模块 → 一次性 httpd 容器内的 htpasswd（--rm，不残留容器）。
 bcrypt_hash() {
   if command -v htpasswd >/dev/null 2>&1; then
-    printf '%s' "$1" | htpasswd -niBC 10 "" | tr -d ':\n'
+    printf '%s' "$1" | htpasswd -niBC 10 svc | cut -d: -f2- | tr -d '\n'
   elif command -v python3 >/dev/null 2>&1 && python3 -c 'import bcrypt' 2>/dev/null; then
     printf '%s' "$1" | python3 -c 'import bcrypt,sys; print(bcrypt.hashpw(sys.stdin.buffer.read(), bcrypt.gensalt(10)).decode(), end="")'
   elif command -v docker >/dev/null 2>&1; then
-    printf '%s' "$1" | docker run --rm -i httpd:2.4-alpine htpasswd -niBC 10 "" | tr -d ':\n'
+    printf '%s' "$1" | docker run --rm -i httpd:2.4-alpine htpasswd -niBC 10 svc | cut -d: -f2- | tr -d '\n'
   else
     echo "无法生成 BCrypt 散列：请安装 apache2-utils（htpasswd）、python3-bcrypt 或 Docker" >&2; return 1
   fi
