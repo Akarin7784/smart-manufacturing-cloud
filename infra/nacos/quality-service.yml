@@ -4,3 +4,11 @@
 logging:
   level:
     com.smartmanufacturing.quality: INFO
+# 回写库存 QC-HOLD 的服务客户端（非敏感部分）：client_id 与 scope 必须和 auth-service 的 manufacturing.auth.clients 一致。
+# 明文密钥只经环境变量 QUALITY_CLIENT_SECRET 注入质检容器，不放入 Nacos。
+mes:
+  quality:
+    writeback:
+      client:
+        client-id: quality-service
+        scope: inventory:qc-hold

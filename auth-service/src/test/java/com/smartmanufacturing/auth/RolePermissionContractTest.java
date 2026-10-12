@@ -36,4 +36,18 @@ class RolePermissionContractTest {
                 role + " 的权限与契约文件不一致，请同步 contracts/auth/role-permissions.json");
         }
     }
+
+    /**
+     * 反向断言：服务间 scope（inventory:qc-hold、inventory:reserve）只授予 manufacturing.auth.clients 中的服务客户端，
+     * 任何用户角色（Role 枚举与契约文件）都不得包含，避免用户令牌获得直连库存内部接口的能力。
+     */
+    @Test void serviceScopesAreNeverGrantedToUserRoles() throws Exception {
+        Map<String, List<String>> contract = new ObjectMapper().readValue(contractFile().toFile(), new TypeReference<>() { });
+        for (String scope : List.of("inventory:qc-hold", "inventory:reserve")) {
+            for (Role role : Role.values())
+                Assertions.assertFalse(role.permissions().contains(scope), role + " 不得包含服务 scope " + scope);
+            contract.forEach((role, permissions) ->
+                Assertions.assertFalse(permissions.contains(scope), "契约文件中 " + role + " 不得包含服务 scope " + scope));
+        }
+    }
 }
