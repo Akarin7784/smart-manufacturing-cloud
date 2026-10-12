@@ -16,9 +16,12 @@ public class RecordingEventSender implements EventSender {
 
     private final List<Sent> sent = new CopyOnWriteArrayList<>();
     private final AtomicInteger failuresLeft = new AtomicInteger();
+    /** 发送尝试次数（含失败），用于断言 outbox 首次失败即结束本批。 */
+    private final AtomicInteger attempts = new AtomicInteger();
 
     @Override
     public void send(String tag, String key, String eventId, String payload) {
+        attempts.incrementAndGet();
         if (failuresLeft.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0) throw new IllegalStateException("模拟 Broker 不可用");
         sent.add(new Sent(tag, key, eventId, payload));
     }
@@ -26,5 +29,6 @@ public class RecordingEventSender implements EventSender {
     public List<Sent> sent() { return sent; }
     /** 让接下来的 n 次发送失败。 */
     public void failNext(int n) { failuresLeft.set(n); }
-    public void clear() { sent.clear(); failuresLeft.set(0); }
+    public int attempts() { return attempts.get(); }
+    public void clear() { sent.clear(); failuresLeft.set(0); attempts.set(0); }
 }

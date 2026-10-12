@@ -16,7 +16,9 @@ import java.util.List;
  * outbox 发布任务：把 NEW 状态的事件投递到 RocketMQ，投递语义为<b>至少一次</b>。
  * <ul>
  *   <li>多实例安全：每批用 {@code FOR UPDATE SKIP LOCKED} 领取事件，同一事件同一时刻只被一个实例发送。</li>
- *   <li>发送成功后标记 SENT；失败则 attempts+1 并按指数退避（上限 5 分钟）设置下次尝试时间，event_id 不变。</li>
+ *   <li>发送成功后标记 SENT；失败则该条 attempts+1 并按指数退避（上限 5 分钟）设置下次尝试时间，event_id 不变。</li>
+ *   <li><b>首次失败即结束本批</b>：同批剩余事件不发送、attempts 不变，留待下一轮。Broker 不可用时每条都会等满发送超时，
+ *       继续发送只会让领取事务长时间持有行锁和连接，且几乎必然继续失败。</li>
  *   <li>Broker 已确认但标记 SENT 前进程崩溃时，事件会被再次发送——这正是消费端必须按 eventId 幂等的原因。</li>
  *   <li>发送在领取事务内同步进行（单条超时 3 秒、单批上限 50 条），以行锁防止其他实例重复领取；代价是批次期间占用一个连接。</li>
  *   <li>按 id 顺序领取，但不保证同一预留单事件的到达顺序（契约已说明）。</li>
@@ -61,12 +63,13 @@ public class OutboxPublisher {
                         Timestamp.from(clock.instant()), p.id());
                     ok++;
                 } catch (Exception e) {
-                    // 单条失败不影响同批其他事件；退避后重试，eventId 保持不变。
+                    // 只给失败的这一条退避并计数，eventId 保持不变；随后结束本批（见类注释），剩余事件不动。
                     Duration backoff = backoff(p.attempts() + 1);
                     String error = String.valueOf(e.getMessage());
                     jdbc.update("update outbox_event set attempts = attempts + 1, next_attempt_at = ?, last_error = ? where id = ?",
                         Timestamp.from(clock.instant().plus(backoff)), error.length() > 500 ? error.substring(0, 500) : error, p.id());
-                    log.warn("事件投递失败，{} 后重试：eventId={}, type={}", backoff, p.eventId(), p.eventType(), e);
+                    log.warn("事件投递失败，{} 后重试，本批剩余事件留待下一轮：eventId={}, type={}", backoff, p.eventId(), p.eventType(), e);
+                    break;
                 }
             }
             return ok;

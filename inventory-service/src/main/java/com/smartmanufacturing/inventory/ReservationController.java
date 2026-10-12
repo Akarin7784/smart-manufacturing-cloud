@@ -65,7 +65,7 @@ public class ReservationController {
                                         @RequestHeader(value = "Idempotency-Key", required = false) String key, Authentication auth) {
         String caller = CallerIdentity.of(auth);
         return StockController.respond(LockRetry.run(() -> idempotency.execute(caller, key, "reservation.renew",
-            Map.of("reservationId", reservationId), 200, () -> reservations.renew(reservationId))));
+            Map.of("reservationId", reservationId), 200, () -> reservations.renew(caller, reservationId))));
     }
 
     @PostMapping("/{reservationId}/release")

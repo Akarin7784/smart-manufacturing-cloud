@@ -199,4 +199,19 @@ class ReservationContractTest {
         OpenApiContract.assertConforms(BASE, "post", r);
         assertThat(jdbc.queryForObject("select count(*) from reservation where work_order_no = 'WO-SEC-2'", Integer.class)).isZero();
     }
+
+    /** 只有持有该预留的调用方能续期：其他服务身份（同样具备 inventory:reserve）续期返回 403，expiresAt 不变。 */
+    @Test void onlyHolderCanRenew() throws Exception {
+        inbound("CT-R", "kg", "LR", "5");
+        JsonNode created = call(postJson(svc(BASE), key(), createBody("WO-CT-R", line("CT-R", "1", "kg", "WO-CT-R:10"))), BASE, "post", 201);
+        String id = created.get("reservationId").asText();
+        MvcResult r = mvc.perform(postJson(svc(BASE) + "/" + id + "/renew", key(), null)
+            .with(jwt().jwt(j -> j.subject("other-service").claim("client_id", "other-service").audience(List.of("inventory-service")))
+                .authorities(new SimpleGrantedAuthority("SCOPE_inventory:reserve")))).andReturn();
+        assertThat(r.getResponse().getStatus()).isEqualTo(403);
+        OpenApiContract.assertConforms(ONE + "/renew", "post", r);
+        assertThat(call(get(svc(BASE) + "/" + id), ONE, "get", 200).get("expiresAt").asText()).isEqualTo(created.get("expiresAt").asText());
+        // 持有方续期成功。
+        call(postJson(svc(BASE) + "/" + id + "/renew", key(), null), ONE + "/renew", "post", 200);
+    }
 }

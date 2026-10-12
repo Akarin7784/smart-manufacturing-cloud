@@ -46,6 +46,9 @@ public class OutboxWriter {
         payload.put("reservationId", reservationId);
         payload.put("workOrderNo", workOrderNo);
         payload.put("status", status);
+        // aggregateVersion：预留单行的乐观锁版本（同一事务内读取，已包含本次状态变更的 +1），按预留单单调递增；
+        // 消费端以 reservationId 为键，丢弃 aggregateVersion 不大于本地已处理版本的事件，从而抵御乱序与重复投递。
+        payload.put("aggregateVersion", jdbc.queryForObject("select version from reservation where id = ?", Long.class, reservationId));
         payload.put("occurredAt", now);
         payload.putAll(common);
         try {

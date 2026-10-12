@@ -103,9 +103,15 @@ public class ReservationService {
     /** 查询预留单；不存在 404。 */
     public Reservation get(String id) { return load(id); }
 
-    /** 整单续期：仅 ACTIVE 可续期，expiresAt 重置为当前时间 + TTL。 */
-    public Reservation renew(String id) {
+    /**
+     * 整单续期：仅 ACTIVE 可续期，expiresAt 重置为当前时间 + TTL。
+     * 只有创建（持有）该预留的调用方可以续期，其他服务身份返回 403；续期不发事件，调用方以本接口返回的 expiresAt 为准。
+     */
+    public Reservation renew(String caller, String id) {
         Header h = lock(id);
+        String holder = jdbc.queryForObject("select principal from reservation where id = ?", String.class, id);
+        if (!java.util.Objects.equals(holder, caller))
+            throw new org.springframework.security.access.AccessDeniedException("只有持有该预留的调用方可以续期");
         requireActive(h, ProblemType.RESERVATION_CONSUMED);
         Instant now = clock.instant();
         jdbc.update("update reservation set expires_at = ?, version = version + 1, updated_at = ? where id = ?",

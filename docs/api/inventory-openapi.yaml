@@ -48,13 +48,17 @@ info:
 
     ## 事件
     预留单状态变化通过 outbox 表与业务数据在同一事务内落库，再异步投递到 RocketMQ：
-    - topic：`mes-inventory-reservation`；tag：`Created`、`Released`、`Consumed`、`Expired`。
+    - topic：`mes-inventory-reservation`；tag：`ReservationCreated`、`ReservationReleased`、`ReservationConsumed`、`ReservationExpired`。
     - topic 与 tag 从 Nacos 共享配置 `manufacturing.mq.*` 读取，代码中不写死。
     - MQ 本身不做持久化保证（演示环境），可靠性由 outbox 补发保证，因此投递语义为**至少一次**；
       消费端必须按 `eventId` 幂等，并以 `reservationId` + 事件状态做状态判断，忽略重复或过时事件。
     - 顺序：消息键为 `reservationId`，但**不保证**同一预留单事件的到达顺序（普通消息 + outbox 补发可能乱序）。
       终态（RELEASED/EXPIRED/CONSUMED）互斥且每张预留单只会产生一个终态事件，消费端可按 reservationId 对终态只处理一次，
       收到 Created 晚于终态时直接忽略。
+    - 版本：每个事件带 `aggregateVersion`（预留单行的乐观锁版本，按预留单单调递增，可能不连续），
+      消费端以 `reservationId` 为键，丢弃 `aggregateVersion` 不大于本地已处理版本的事件；`occurredAt` 只用于展示和审计。
+    - 续期不发事件：只有持有该预留的调用方（创建它的服务身份）能续期，调用方以续期接口返回的 `expiresAt` 为准；
+      如未来需要第三方感知续期，再新增 `ReservationRenewed`。
     - 消费组：工单服务使用 `CG_WORKORDER_RESERVATION`（同样从 Nacos `manufacturing.mq.*` 读取）。
     - 事件结构见 `components.schemas` 中的 `Reservation*Event`，投递约定见扩展字段 `x-events`。
 servers:
@@ -139,7 +143,10 @@ paths:
       tags: [reservation]
       operationId: renewReservation
       summary: 整单续期
-      description: 将 `expiresAt` 重置为当前时间加 15 分钟。仅 `ACTIVE` 可续期；已过期或已释放返回 410。404 只表示预留单 ID 不存在（调用方可视同 410 进入重新预留流程）。
+      description: |
+        将 `expiresAt` 重置为当前时间加 15 分钟。仅 `ACTIVE` 可续期；已过期或已释放返回 410。404 只表示预留单 ID 不存在（调用方可视同 410 进入重新预留流程）。
+        只有持有该预留的调用方（创建该预留单的服务身份 client_id）能续期，其他调用方返回 403。
+        续期**不发事件**（`aggregateVersion` 仍会递增），调用方以本接口返回的 `expiresAt` 为准；未来如需通知其他方再新增 `ReservationRenewed`。
       parameters:
         - $ref: '#/components/parameters/ReservationId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -1107,7 +1114,7 @@ components:
     ReservationEventBase:
       type: object
       description: 预留事件公共字段；消费端按 eventId 幂等，按 reservationId 关联预留单。
-      required: [eventId, eventType, reservationId, workOrderNo, status, occurredAt]
+      required: [eventId, eventType, reservationId, workOrderNo, status, aggregateVersion, occurredAt]
       properties:
         eventId:
           type: string
@@ -1124,13 +1131,18 @@ components:
           description: 工单号。
         status:
           $ref: '#/components/schemas/ReservationStatus'
+        aggregateVersion:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 预留单版本（预留单行的乐观锁版本），按预留单单调递增、可能不连续；消费端丢弃不大于本地已处理版本的事件。
         occurredAt:
           type: string
           format: date-time
-          description: 状态变化发生时间。
+          description: 状态变化发生时间，只用于展示和审计，不用于判断先后。
 
     ReservationCreatedEvent:
-      description: 预留创建事件（tag `Created`）。
+      description: 预留创建事件（tag `ReservationCreated`）。
       allOf:
         - $ref: '#/components/schemas/ReservationEventBase'
         - type: object
@@ -1147,7 +1159,7 @@ components:
                 $ref: '#/components/schemas/ReservationLine'
 
     ReservationReleasedEvent:
-      description: 预留释放事件（tag `Released`）。
+      description: 预留释放事件（tag `ReservationReleased`）。
       allOf:
         - $ref: '#/components/schemas/ReservationEventBase'
         - type: object
@@ -1157,7 +1169,7 @@ components:
               $ref: '#/components/schemas/ReleaseReason'
 
     ReservationConsumedEvent:
-      description: 整单扣减完成事件（tag `Consumed`）。
+      description: 整单扣减完成事件（tag `ReservationConsumed`）。
       allOf:
         - $ref: '#/components/schemas/ReservationEventBase'
         - type: object
@@ -1170,7 +1182,7 @@ components:
                 $ref: '#/components/schemas/ReservationLine'
 
     ReservationExpiredEvent:
-      description: 预留过期事件（tag `Expired`），由库存服务定时任务判定后发出。
+      description: 预留过期事件（tag `ReservationExpired`），由库存服务定时任务判定后发出。
       allOf:
         - $ref: '#/components/schemas/ReservationEventBase'
         - type: object
@@ -1194,11 +1206,11 @@ x-events:
   consumerGroups:
     - CG_WORKORDER_RESERVATION
   events:
-    - tag: Created
+    - tag: ReservationCreated
       schema: '#/components/schemas/ReservationCreatedEvent'
-    - tag: Released
+    - tag: ReservationReleased
       schema: '#/components/schemas/ReservationReleasedEvent'
-    - tag: Consumed
+    - tag: ReservationConsumed
       schema: '#/components/schemas/ReservationConsumedEvent'
-    - tag: Expired
+    - tag: ReservationExpired
       schema: '#/components/schemas/ReservationExpiredEvent'

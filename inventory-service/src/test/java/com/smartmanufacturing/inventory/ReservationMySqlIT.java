@@ -43,6 +43,7 @@ class ReservationMySqlIT {
     @Autowired OutboxWriter outbox;
     @Autowired RecordingEventSender sender;
     @Autowired ObjectMapper mapper;
+    @Autowired io.micrometer.core.instrument.MeterRegistry registry;
 
     @BeforeEach void setUp() {
         if (jdbc.queryForObject("select count(*) from warehouse_location where code = 'IT-R-01'", Integer.class) == 0)
@@ -101,6 +102,79 @@ class ReservationMySqlIT {
         assertThat(reserved("IT-R-X2")).isEqualByComparingTo("5");
     }
 
+    /** 读取某预留单全部事件的（类型 → aggregateVersion），按 outbox 写入顺序。 */
+    private List<Map.Entry<String, Long>> versions(String reservationId) throws Exception {
+        List<Map.Entry<String, Long>> out = new ArrayList<>();
+        for (String p : jdbc.queryForList("select payload from outbox_event where aggregate_id = ? order by id", String.class, reservationId)) {
+            JsonNode n = mapper.readTree(p);
+            assertThat(n.has("aggregateVersion")).as("事件必须带 aggregateVersion：" + p).isTrue();
+            out.add(Map.entry(n.get("eventType").asText(), n.get("aggregateVersion").asLong()));
+        }
+        return out;
+    }
+
+    /** aggregateVersion：同一预留单 Created → Released / Consumed / Expired 严格递增，且等于预留单行的当前版本。 */
+    @Test void eventsCarryIncreasingAggregateVersion() throws Exception {
+        inbound("IT-R-V", "件", "L1", "30");
+        // Created → Released
+        Reservation a = reserve(UUID.randomUUID().toString(), order("WO-V-A", line("IT-R-V", "1", "件", "A:1")));
+        tx.execute(s -> reservations.release(a.reservationId(), ReleaseReason.CALLER_REQUEST));
+        // Created → 续期（不发事件，但版本递增）→ 部分扣减 → Consumed
+        Reservation b = reserve(UUID.randomUUID().toString(), order("WO-V-B", line("IT-R-V", "2", "件", "B:1")));
+        tx.execute(s -> reservations.renew("workorder-service", b.reservationId()));
+        String lineB = b.lines().get(0).lineId();
+        tx.execute(s -> reservations.consume(b.reservationId(), lineB, new ConsumeRequest("1", "L1")));
+        tx.execute(s -> reservations.consume(b.reservationId(), lineB, new ConsumeRequest("1", "L1")));
+        // Created → Expired
+        Reservation c = reserve(UUID.randomUUID().toString(), order("WO-V-C", line("IT-R-V", "1", "件", "C:1")));
+        jdbc.update("update reservation set expires_at = ? where id = ?", Timestamp.from(Instant.now().minusSeconds(5)), c.reservationId());
+        expiry.expireDue();
+
+        for (var e : List.of(Map.entry(a.reservationId(), "ReservationReleased"), Map.entry(b.reservationId(), "ReservationConsumed"),
+                Map.entry(c.reservationId(), "ReservationExpired"))) {
+            List<Map.Entry<String, Long>> v = versions(e.getKey());
+            assertThat(v).extracting(Map.Entry::getKey).containsExactly("ReservationCreated", e.getValue());
+            assertThat(v.get(1).getValue()).as(e.getValue()).isGreaterThan(v.get(0).getValue());
+            assertThat(v.get(1).getValue()).isEqualTo(jdbc.queryForObject("select version from reservation where id = ?", Long.class, e.getKey()));
+        }
+        // 投递出去的消息体同样带该字段。
+        publisher.publishBatch();
+        assertThat(sender.sent()).isNotEmpty().allSatisfy(s -> assertThat(s.payload()).contains("\"aggregateVersion\":"));
+    }
+
+    /** Broker 持续不可用：本批只尝试第一条，该条 attempts+1，其余事件 attempts 不变、不被发送，留待下一轮。 */
+    @Test void outboxStopsBatchOnFirstFailure() throws Exception {
+        inbound("IT-R-F", "件", "L1", "10");
+        for (int i = 0; i < 3; i++) reserve(UUID.randomUUID().toString(), order("WO-F-" + i, line("IT-R-F", "1", "件", "F:" + i)));
+        List<Long> ids = jdbc.queryForList("select id from outbox_event where status = 'NEW' order by id", Long.class);
+        assertThat(ids).hasSizeGreaterThanOrEqualTo(3);
+        sender.failNext(Integer.MAX_VALUE);
+        assertThat(publisher.publishBatch()).isZero();
+        assertThat(sender.attempts()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select attempts from outbox_event where id = ?", Integer.class, ids.get(0))).isEqualTo(1);
+        for (Long id : ids.subList(1, ids.size()))
+            assertThat(jdbc.queryForObject("select attempts from outbox_event where id = ?", Integer.class, id)).as("id=" + id).isZero();
+        // 恢复后下一轮补发剩余事件（第一条在退避中，稍后再发）。
+        sender.clear();
+        assertThat(publisher.publishBatch()).isEqualTo(ids.size() - 1);
+        jdbc.update("update outbox_event set next_attempt_at = ? where id = ?", Timestamp.from(Instant.now().minusSeconds(1)), ids.get(0));
+        assertThat(publisher.publishBatch()).isEqualTo(1);
+    }
+
+    /** 状态迁移指标在提交后计数：同一幂等键并发创建，只有一方提交，回滚的一方不计 ACTIVE。 */
+    @Test void transitionMetricCountsOnlyCommittedTransactions() throws Exception {
+        inbound("IT-R-M", "件", "L1", "10");
+        var counter = registry.counter("mes.inventory.reservation.transition", "to", "ACTIVE");
+        double before = counter.count();
+        String key = UUID.randomUUID().toString();
+        CreateReservation r = order("WO-M", line("IT-R-M", "1", "件", "WO-M:1"));
+        Map<String, Integer> outcome = race(8, i -> reserve(key, r));
+        assertThat(outcome).containsEntry("OK", 8);
+        // 8 个请求共用一个键：数据库只有一张预留单，计数也只增加 1。
+        assertThat(jdbc.queryForObject("select count(*) from reservation where work_order_no = 'WO-M'", Integer.class)).isEqualTo(1);
+        assertThat(counter.count() - before).isEqualTo(1.0);
+    }
+
     /** 过期：由库存过期任务判定，状态 EXPIRED、占用归还、产生且仅产生一个 ReservationExpired；之后扣减与续期均 410。 */
     @Test void expiryIsDecidedByInventoryAndEmitsEvent() throws Exception {
         inbound("IT-R-E", "kg", "L1", "3");
@@ -124,7 +198,7 @@ class ReservationMySqlIT {
         String lineId = r.lines().get(0).lineId();
         assertThatThrownBy(() -> tx.execute(s -> reservations.consume(r.reservationId(), lineId, new ConsumeRequest("1", "L1"))))
             .isInstanceOfSatisfying(ProblemException.class, e -> assertThat(e.type()).isEqualTo(ProblemType.RESERVATION_EXPIRED));
-        assertThatThrownBy(() -> tx.execute(s -> reservations.renew(r.reservationId())))
+        assertThatThrownBy(() -> tx.execute(s -> reservations.renew("workorder-service", r.reservationId())))
             .isInstanceOfSatisfying(ProblemException.class, e -> assertThat(e.type().status().value()).isEqualTo(410));
     }
 
@@ -133,6 +207,9 @@ class ReservationMySqlIT {
         int before = jdbc.queryForObject("select count(*) from outbox_event", Integer.class);
         // 事件已写入 outbox，但随后业务失败回滚：事件必须随之消失。
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> {
+            // 先在同一事务内建预留单行（append 需读取其 version 作为 aggregateVersion），再写事件。
+            jdbc.update("insert into reservation (id, work_order_no, status, expires_at, principal, version, created_at, updated_at)"
+                + " values ('rollback-id', 'WO-RB', 'ACTIVE', ?, 'it', 0, ?, ?)", Timestamp.from(Instant.now()), Timestamp.from(Instant.now()), Timestamp.from(Instant.now()));
             outbox.append("ReservationCreated", "rollback-id", "WO-RB", "ACTIVE", Map.of());
             throw new IllegalStateException("模拟业务失败");
         })).isInstanceOf(IllegalStateException.class);
