@@ -46,8 +46,9 @@
 | `over-dispose` | 422 | 处置数量超过剩余待处置量 |
 | `invalid-status-transition` | 409 | 当前状态不允许该操作（例如 OPEN 直接 close） |
 | `ncr-voided` | 409 | NCR 已作废，不能再评审、处置或关闭 |
+| `ncr-not-found` | 404 | NCR 编号不存在（契约中所有 NCR 的 404 均用它） |
 
-401/403/404 用 `about:blank`。
+共 7 种；401/403 用 `about:blank`。
 
 ## 4. 与库存的交互
 - **本期不做**：SCRAP 只登记处置记录，不调用库存，也不改动库存（契约中写明）；REWORK 和 CONCESSION 同样只记录。
@@ -57,8 +58,8 @@
 ## 5. 事件、指标、运维
 - **Topic `mes-quality-event`**：tag 为 `NcrOpened`、`NcrDisposed`、`NcrClosed`、`NcrVoided`，带 `aggregateVersion`（取 `ncr.version`）。本期只发不消费。outbox 规则同库存：首次失败即结束本批。
 - **指标**：
-  - `mes_quality_api_total{result}`，result 取 `ok`、`replay`、6 种 type 的下划线写法、`error`
-  - `mes_quality_ncr_transition_total{to}`，提交后计数
+  - `mes_quality_api_total{result}`，result 取 `ok`、`replay`、7 种 type 的下划线写法（含 `ncr_not_found`）、`error`
+  - `mes_quality_ncr_transition_total{from,to}`，提交后计数，新建 NCR 的 `from` 为 `NONE`
   - `mes_quality_disposition_qty_total{type,uom}`
   - `mes_quality_event_consumed_total{tag,result}`
   - `mes_quality_pending_reversal_expired_total`
@@ -72,5 +73,6 @@
 2. **冲销先于报告**：
    - 先冲销、后报工（过期前），NCR 为 `VOIDED`，暂存为 `MATCHED`。
    - 只有冲销时，用可注入的 `Clock` 推进超过 TTL，断言暂存为 `EXPIRED`，过期计数 +1。
+   - 暂存已 `EXPIRED` 后原报工才到达：生成 `OPEN` 的 NCR（并发 `NcrOpened`），暂存保持 `EXPIRED`，不自动对冲。
 3. **已处置的 NCR 被冲销**：NCR 状态和处置数量不变，有 1 条 `DISPOSED_REVERSAL_CONFLICT` 冲突记录，冲突计数 +1，消息已 ACK、没有重投。
-4. **契约测试**：每个响应按 OpenAPI 校验，6 种 type 全部触发；并发处置不超处置；幂等重放。
+4. **契约测试**：每个响应按 OpenAPI 校验，7 种 type 全部触发；并发处置不超处置；幂等重放。

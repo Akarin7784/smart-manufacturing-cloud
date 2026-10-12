@@ -348,11 +348,11 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
     NotFound:
-      description: NCR 不存在。
+      description: NCR 不存在（type=ncr-not-found）。
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            $ref: '#/components/schemas/NcrNotFoundProblem'
     StatusConflict:
       description: 当前状态不允许该操作（type=invalid-status-transition）或 NCR 已作废（type=ncr-voided）。
       content:
@@ -606,8 +606,9 @@ components:
         - over-dispose
         - invalid-status-transition
         - ncr-voided
+        - ncr-not-found
       description: |
-        固定的错误类型枚举（共 6 种），调用方按此分支处理，不解析 `detail`。
+        固定的错误类型枚举（共 7 种），调用方按此分支处理，不解析 `detail`。
         | type | HTTP 状态 | 含义 |
         | --- | --- | --- |
         | `validation-error` | 400 | 请求参数校验失败 |
@@ -616,7 +617,8 @@ components:
         | `over-dispose` | 422 | 处置数量超过剩余待处置量 |
         | `invalid-status-transition` | 409 | 当前状态不允许该操作 |
         | `ncr-voided` | 409 | NCR 已作废，不能再评审、处置或关闭 |
-        401/403/404 由框架统一处理，type 为 `about:blank`。已处置 NCR 被冲销属于事件消费侧冲突，不对应任何 Problem type。
+        | `ncr-not-found` | 404 | 路径中的 NCR 编号不存在 |
+        401/403 由框架统一处理，type 为 `about:blank`。已处置 NCR 被冲销属于事件消费侧冲突，不对应任何 Problem type。
 
     Problem:
       type: object
@@ -624,7 +626,7 @@ components:
       properties:
         type:
           type: string
-          description: 错误类型；业务错误取值见 ProblemType，401/403/404 为 `about:blank`。
+          description: 错误类型；业务错误取值见 ProblemType，401/403 为 `about:blank`。
         title:
           type: string
           description: 错误简述。
@@ -648,6 +650,15 @@ components:
           properties:
             type:
               const: validation-error
+    NcrNotFoundProblem:
+      description: NCR 不存在。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              const: ncr-not-found
     IdempotencyConflictProblem:
       description: 幂等键冲突。
       allOf:
