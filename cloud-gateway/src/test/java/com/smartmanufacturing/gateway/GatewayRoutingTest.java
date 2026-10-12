@@ -46,7 +46,7 @@ class GatewayRoutingTest {
 
     /** 单独覆盖目标地址，保持路由列表和过滤器配置来自实际配置文件。 */
     @DynamicPropertySource static void routes(DynamicPropertyRegistry registry) {
-        for (String property : List.of("DEVICE_SERVICE_URL", "WORKORDER_SERVICE_URL", "AUTH_SERVICE_URL", "MASTERDATA_SERVICE_URL"))
+        for (String property : List.of("DEVICE_SERVICE_URL", "WORKORDER_SERVICE_URL", "AUTH_SERVICE_URL", "MASTERDATA_SERVICE_URL", "INVENTORY_SERVICE_URL"))
             registry.add(property, () -> "http://127.0.0.1:" + upstream.getAddress().getPort());
         registry.add("manufacturing.security.jwk-set-uri", () -> "http://127.0.0.1:" + upstream.getAddress().getPort() + "/auth/jwks");
     }
@@ -153,5 +153,22 @@ class GatewayRoutingTest {
     @Test void serviceTokenRejectedOnUserRoutes() {
         String service = token("http://localhost:8080", "inventory-service", Instant.now().plusSeconds(300), List.of());
         client().get().uri("/api/workorders").header("Authorization", "Bearer " + service).exchange().expectStatus().isUnauthorized();
+    }
+
+    /** 库存查询经网关转发并移除 /api 前缀，需 inventory:read；无该权限返回 403。 */
+    @Test void routesInventoryQueriesWithReadPermission() {
+        String inv = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("inventory:read"));
+        client().get().uri("/api/inventory/stock/availability?materialCode=PP-BRG-6204").headers(h -> h.setBearerAuth(inv)).exchange()
+            .expectStatus().isOk().expectBody(String.class).value(body -> Assertions.assertTrue(body.startsWith("/inventory/stock/availability|")));
+        client().get().uri("/api/inventory/stock").headers(h -> h.setBearerAuth(reader())).exchange().expectStatus().isForbidden();
+        // 只读权限不能出入库。
+        client().post().uri("/api/inventory/inbound").headers(h -> h.setBearerAuth(inv)).exchange().expectStatus().isForbidden();
+    }
+
+    /** 预留接口只供服务间直连：即使用户持有全部库存权限，网关也拒绝转发。 */
+    @Test void deniesInventoryReservationsAtGateway() {
+        String inv = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("inventory:read", "inventory:write"));
+        client().post().uri("/api/inventory/reservations").headers(h -> h.setBearerAuth(inv)).exchange().expectStatus().isForbidden();
+        client().get().uri("/api/inventory/reservations/R1").headers(h -> h.setBearerAuth(inv)).exchange().expectStatus().isForbidden();
     }
 }

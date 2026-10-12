@@ -11,6 +11,7 @@
 | workorder-service | 8082 | 18082 |
 | auth-service | 8083 | 18083 |
 | masterdata-service | 8084 | 18084 |
+| inventory-service | 8085（不发布到宿主机，冒烟经 compose 内网直连） | 18085 |
 
 - 各服务已有 `spring-boot-starter-actuator` 和 `micrometer-registry-prometheus`，暴露 `health,info,prometheus`。
 - **所有指标统一带 `application` 标签**（`management.metrics.tags.application=${spring.application.name}`），并为 `http.server.requests` 开启直方图桶，用于计算 P95/P99。
@@ -42,7 +43,7 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 
 ### 抓取方式：静态配置，不用 Nacos 服务发现
 
-配置文件是 `infra/observability/prometheus/prometheus.yml`，按 compose 服务名静态抓取 5 个管理端口。不用 Nacos 发现的原因：
+配置文件是 `infra/observability/prometheus/prometheus.yml`，按 compose 服务名静态抓取 6 个管理端口。不用 Nacos 发现的原因：
 
 1. Prometheus 没有内置 Nacos SD，接入需要额外部署 adapter 或 http_sd 桥接服务；
 2. Nacos 注册的是业务端口，而指标在管理端口，仍要重写端口；
@@ -96,6 +97,7 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 
 通用规则：
 - 名称用 `mes_<领域>_<对象>_<度量>`，下面写的是 Prometheus 导出后的名字。Micrometer 里用点号命名，例如 `mes.workorder.report`，Counter 导出时自动加 `_total`。
+  - 数量类 Counter 同样如此：`mes.workorder.report.qty` 导出为 `mes_workorder_report_qty_total`，`mes.inventory.movement.qty` 导出为 `mes_inventory_movement_qty_total`。下表沿用约定名，PromQL、告警和面板中必须写带 `_total` 的导出名。
 - **标签里不放工单号、预留单号、批次号等业务标识**：它们的取值无限增长，会导致时间序列基数爆炸。需要按单号追踪时查日志（带 requestId）或业务表。
 - `result` 标签与该服务固定的 Problem type 枚举**一一对应**，把连字符改成下划线，例如 `over-report` 写成 `over_report`。另外加上成功 `ok`，以及兜底的 `error`（未映射的异常和 5xx）。枚举新增值时同步新增标签值。
 - 数量类指标必须带 `uom` 标签，**单位不同的数量不能直接相加**，面板和查询都要按 `uom` 分组。
@@ -106,7 +108,7 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | 指标 | 类型 | 标签 | 说明 |
 | --- | --- | --- | --- |
 | `mes_workorder_report_total` | Counter | `result` | 报工请求结果。`result` 的取值是 `ok`，加上工单服务 Problem type 的下划线写法（按已拍板的设计为 `over_report`、`downstream_reported`、`workorder_closed`、`operations_unreported`，最终以工单服务的固定枚举为准），再加 `error` |
-| `mes_workorder_report_qty` | Counter | `kind`（`good`/`defect`/`scrap`）、`uom` | 报工数量累计（冲销记负数，或另计到冲销指标里，实现时在 PR 中说明） |
+| `mes_workorder_report_qty`（导出名 `mes_workorder_report_qty_total`） | Counter | `kind`（`good`/`defect`/`scrap`）、`uom` | 报工数量累计（冲销记负数，或另计到冲销指标里，实现时在 PR 中说明） |
 | `mes_workorder_reversal_total` | Counter | — | 冲销笔数 |
 | `mes_workorder_status_transition_total` | Counter | `to`（目标状态，如 `IN_PROGRESS`、`COMPLETED`） | 工单状态迁移次数 |
 | `mes_workorder_report_lock_wait` | Timer | — | 报工和冲销事务里 `SELECT … FOR UPDATE` 锁工单行的等待时间 |
@@ -116,9 +118,9 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 
 | 指标 | 类型 | 标签 | 说明 |
 | --- | --- | --- | --- |
-| `mes_inventory_reservation_total` | Counter | `result` | 预留相关请求结果。`result` 的取值是 `ok`、`replay`（幂等重放），8 种 Problem type 的下划线写法（`insufficient_stock`、`over_consume`、`idempotency_key_conflict`、`reservation_expired`、`reservation_released`、`reservation_consumed`、`line_closed`、`validation_error`，见 `docs/api/inventory-openapi.yaml` 的 `ProblemType`），再加 `error` |
+| `mes_inventory_reservation_total` | Counter | `result` | 预留相关请求结果。`result` 的取值是 `ok`、`replay`（幂等重放），9 种 Problem type 的下划线写法（`insufficient_stock`、`uom_mismatch`（单位与主数据不一致，422）、`over_consume`、`idempotency_key_conflict`、`reservation_expired`、`reservation_released`、`reservation_consumed`、`line_closed`、`validation_error`，见 `docs/api/inventory-openapi.yaml` 的 `ProblemType`），再加 `error` |
 | `mes_inventory_reservation_transition_total` | Counter | `to`（`RELEASED`/`EXPIRED`/`CONSUMED` 等） | 预留单状态迁移次数 |
-| `mes_inventory_movement_qty` | Counter | `kind`（出入库类型）、`uom` | 出入库数量累计，不同 `uom` 不能相加 |
+| `mes_inventory_movement_qty`（导出名 `mes_inventory_movement_qty_total`） | Counter | `kind`（出入库类型）、`uom` | 出入库数量累计，不同 `uom` 不能相加 |
 | `mes_inventory_outbox_pending` | Gauge | — | 待投递的 outbox 事件数（对应告警 `OutboxBacklog`） |
 | `mes_inventory_stock_lock_wait` | Timer | — | 扣减或预留时锁库存行的等待时间 |
 
