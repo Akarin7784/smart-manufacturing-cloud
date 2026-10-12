@@ -7,5 +7,7 @@
 !cloud-gateway/**
 !device-service/**
 !workorder-service/**
+# 覆盖率汇总模块只需 pom，供根 pom 的 modules 解析。
+!coverage-report/pom.xml
 **/target
 !infra/healthcheck/**
