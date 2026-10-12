@@ -15,6 +15,6 @@
 | client-id | scopes | audience | 用途 |
 | --- | --- | --- | --- |
 | `workorder-service` | `inventory:reserve` | `inventory-service` | 物料预留 |
-| `quality-service`（待实现，见 docs/quality-inventory-writeback-design.md） | `inventory:qc-hold` | `inventory-service` | 质检隔离库位 QC-HOLD 入库、放行、报废 |
+| `quality-service`（见 docs/quality-inventory-writeback-design.md） | `inventory:qc-hold` | `inventory-service` | 质检隔离库位 QC-HOLD 入库、放行、报废 |
 
 服务令牌不含 `permissions`，网关的角色权限规则对它不适用；`/api/inventory/qc-hold/**` 为内部接口，网关不对外转发。
