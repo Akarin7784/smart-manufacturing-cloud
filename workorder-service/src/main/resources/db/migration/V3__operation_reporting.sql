@@ -57,3 +57,7 @@ CREATE TABLE wo_command_request (
 -- V2 写入的旧事件两列为空，表示尚无投递目标。
 ALTER TABLE outbox_event ADD COLUMN topic VARCHAR(128) NULL;
 ALTER TABLE outbox_event ADD COLUMN tag VARCHAR(64) NULL;
+
+-- 工单聚合版本：每次状态变更（下达、冻结、恢复、开工、完工、重开）递增 1，随全部工单状态事件以 aggregateVersion 发布；
+-- 消费端丢弃版本不高于本地已处理版本的事件（Topic 为普通消息，不保证顺序），occurredAt 仅用于展示与审计。
+ALTER TABLE work_order ADD COLUMN version BIGINT NOT NULL DEFAULT 0;

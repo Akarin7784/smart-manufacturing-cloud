@@ -39,15 +39,18 @@ public class OperationReportingService {
     private final WorkOrderJournal journal;
     private final ObjectMapper mapper;
     private final Clock clock;
-    private final String eventTopic, startedTag, completedTag, qualityTopic, defectReportedTag, defectReversedTag;
+    private final ReportingMetrics metrics;
+    private final String eventTopic, startedTag, completedTag, reopenedTag, qualityTopic, defectReportedTag, defectReversedTag;
 
     public OperationReportingService(JdbcTemplate jdbc, TransactionTemplate tx, WorkOrderJournal journal, ObjectMapper mapper,
-                                     Clock clock, MqProperties mq) {
+                                     Clock clock, MqProperties mq, ReportingMetrics metrics) {
+        this.metrics = metrics;
         this.jdbc = jdbc; this.tx = tx; this.journal = journal; this.mapper = mapper; this.clock = clock;
         // 启动即解析，缺配置直接启动失败，而不是在第一次报工时才发现
         this.eventTopic = mq.topic("workorder-event");
         this.startedTag = mq.tag("workorder-started");
         this.completedTag = mq.tag("workorder-completed");
+        this.reopenedTag = mq.tag("workorder-reopened");
         this.qualityTopic = mq.topic("workorder-quality");
         this.defectReportedTag = mq.tag("defect-reported");
         this.defectReversedTag = mq.tag("defect-reversed");
@@ -69,7 +72,18 @@ public class OperationReportingService {
     public CommandResult report(String orderNo, String opNo, ReportOperationRequest req, String key, String operator) {
         String hash = hash("REPORT", orderNo, opNo, num(req.goodQty()), num(req.defectQty()), num(req.scrapQty()),
             req.uom(), req.lotNo(), req.note());
-        return idempotent(operator, key, "REPORT", orderNo, hash, 201, order -> doReport(order, opNo, req, operator));
+        // 业务异常（含 Problem type）由 WorkOrderProblemHandler 统一计数，这里只计成功、重放与非预期异常
+        try {
+            CommandResult r = idempotent(operator, key, "REPORT", orderNo, hash, 201, order -> doReport(order, opNo, req, operator));
+            if (r.replayed()) metrics.reportReplay();
+            else metrics.reportOk(req.goodQty(), req.defectQty(), req.scrapQty(), req.uom());
+            return r;
+        } catch (com.smartmanufacturing.common.BusinessException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            metrics.reportError();
+            throw e;
+        }
     }
 
     private OperationReportResult doReport(Order order, String opNo, ReportOperationRequest req, String operator) {
@@ -106,16 +120,16 @@ public class OperationReportingService {
 
         String status = order.status();
         if ("RELEASED".equals(status)) {
-            changeStatus(order.id(), status, "IN_PROGRESS", "FIRST_REPORT", "首次报工 " + reportId, operator);
-            // 字段按群内约定：eventId、workOrderNo、occurredAt（eventId / occurredAt 由 journal 补充）
-            journal.routedEvent(order.id(), "WorkOrderStarted", eventTopic, startedTag, Map.of("workOrderNo", order.id()));
+            long v = changeStatus(order.id(), status, "IN_PROGRESS", "FIRST_REPORT", "首次报工 " + reportId, operator);
+            // 字段：eventId、workOrderNo、occurredAt、aggregateVersion（eventId / occurredAt 由 journal 补充）
+            journal.routedEvent(order.id(), "WorkOrderStarted", eventTopic, startedTag, Map.of("workOrderNo", order.id(), "aggregateVersion", v));
             status = "IN_PROGRESS";
         }
         List<Progress> updated = progress(order.id());
         Progress last = updated.get(updated.size() - 1);
         if (last.good().compareTo(order.planned()) >= 0) {
-            changeStatus(order.id(), status, "COMPLETED", "AUTO_COMPLETE", "末道累计合格数达到计划数", operator);
-            journal.routedEvent(order.id(), "WorkOrderCompleted", eventTopic, completedTag, completedPayload(order, last.good(), last.uom(), false, null));
+            long v = changeStatus(order.id(), status, "COMPLETED", "AUTO_COMPLETE", "末道累计合格数达到计划数", operator);
+            journal.routedEvent(order.id(), "WorkOrderCompleted", eventTopic, completedTag, completedPayload(order, last.good(), last.uom(), false, null, v));
             status = "COMPLETED";
         }
         LOG.info("报工成功：工单 {} 工序 {} 报工 {} 合格 {} 不良 {} 报废 {} 工单状态 {}", order.id(), opNo, reportId, num(good), num(defect), num(scrap), status);
@@ -126,7 +140,18 @@ public class OperationReportingService {
 
     public CommandResult reverse(String orderNo, String reportId, ReverseReportRequest req, String key, String operator) {
         String hash = hash("REVERSAL", orderNo, reportId, req.reason());
-        return idempotent(operator, key, "REVERSAL", orderNo, hash, 201, order -> doReverse(order, reportId, req.reason(), operator));
+        CommandResult r = idempotent(operator, key, "REVERSAL", orderNo, hash, 201, order -> doReverse(order, reportId, req.reason(), operator));
+        if (!r.replayed()) {
+            // 冲销数量取自本次冲销记录（负数），按绝对值计入 mes_workorder_reversal_qty，不影响 report_qty
+            try {
+                var rep = mapper.readTree(r.body()).at("/data/report");
+                metrics.reversed(new BigDecimal(rep.get("goodQty").asText()), new BigDecimal(rep.get("defectQty").asText()),
+                    new BigDecimal(rep.get("scrapQty").asText()), rep.get("uom").asText());
+            } catch (JsonProcessingException e) {
+                LOG.warn("冲销指标记录失败（不影响业务）", e);
+            }
+        }
+        return r;
     }
 
     private OperationReportResult doReverse(Order order, String reportId, String reason, String operator) {
@@ -168,9 +193,17 @@ public class OperationReportingService {
 
         String status = order.status();
         List<Progress> updated = progress(order.id());
-        if ("COMPLETED".equals(status) && updated.get(updated.size() - 1).good().compareTo(order.planned()) < 0) {
-            // 冲销导致末道合格数不足计划数：从完工退回生产中；全部冲销后仍保持 IN_PROGRESS，不回到 RELEASED
-            changeStatus(order.id(), status, "IN_PROGRESS", "REPORT_REVERSED", "冲销报工 " + reportId, operator);
+        Progress lastOp = updated.get(updated.size() - 1);
+        if ("COMPLETED".equals(status) && lastOp.good().compareTo(order.planned()) < 0) {
+            // 冲销导致末道合格数不足计划数：从完工退回生产中并发布 WorkOrderReopened；全部冲销后仍保持 IN_PROGRESS，不回到 RELEASED
+            long v = changeStatus(order.id(), status, "IN_PROGRESS", "REPORT_REVERSED", "冲销报工 " + reportId, operator);
+            var payload = new LinkedHashMap<String, Object>();
+            payload.put("workOrderNo", order.id());
+            payload.put("reversedReportId", reportId);
+            payload.put("completedQty", num(lastOp.good()));
+            payload.put("uom", lastOp.uom() != null ? lastOp.uom() : original.uom());
+            payload.put("aggregateVersion", v);
+            journal.routedEvent(order.id(), "WorkOrderReopened", eventTopic, reopenedTag, payload);
             status = "IN_PROGRESS";
         }
         LOG.info("冲销成功：工单 {} 报工 {} 冲销记录 {} 工单状态 {}", order.id(), reportId, reversalId, status);
@@ -197,8 +230,8 @@ public class OperationReportingService {
                 Map.of("operations", unreported));
         BigDecimal lastGood = ops.get(ops.size() - 1).good();
         BigDecimal shortfall = order.planned().subtract(lastGood).max(ZERO);
-        changeStatus(order.id(), order.status(), "COMPLETED", "MANUAL_COMPLETE", reason, operator);
-        journal.routedEvent(order.id(), "WorkOrderCompleted", eventTopic, completedTag, completedPayload(order, lastGood, ops.get(ops.size() - 1).uom(), true, reason));
+        long v = changeStatus(order.id(), order.status(), "COMPLETED", "MANUAL_COMPLETE", reason, operator);
+        journal.routedEvent(order.id(), "WorkOrderCompleted", eventTopic, completedTag, completedPayload(order, lastGood, ops.get(ops.size() - 1).uom(), true, reason, v));
         LOG.info("手工完工：工单 {} 计划 {} 末道合格 {} 短缺 {} 原因 {}", order.id(), num(order.planned()), num(lastGood), num(shortfall), reason);
         return new WorkOrderCompletionView(progressView(order.id(), "COMPLETED", order.planned(), ops), num(shortfall), reason);
     }
@@ -226,7 +259,7 @@ public class OperationReportingService {
                                      java.util.function.Function<Order, Object> work) {
         try {
             return tx.execute(s -> {
-                Order order = lock(orderNo);
+                Order order = metrics.timeLock(() -> lock(orderNo));
                 Optional<CommandResult> prior = replay(principal, key, hash);
                 if (prior.isPresent()) return prior.get();
                 Object view = work.apply(order);
@@ -297,14 +330,18 @@ public class OperationReportingService {
         return new WorkOrderProgressView(orderId, status, num(planned), views);
     }
 
-    private void changeStatus(String orderId, String from, String to, String reason, String note, String operator) {
-        int n = jdbc.update("update work_order set status = ? where id = ? and status = ?", to, orderId, from);
+    /** 条件更新状态并递增聚合版本，写审计；返回变更后的版本号（随状态事件发布为 aggregateVersion）。 */
+    private long changeStatus(String orderId, String from, String to, String reason, String note, String operator) {
+        int n = jdbc.update("update work_order set status = ?, version = version + 1 where id = ? and status = ?", to, orderId, from);
         if (n != 1) throw new IllegalStateException("工单状态更新失败：" + orderId + " " + from + " -> " + to);
         journal.statusChanged(orderId, from, to, reason, note, operator);
+        metrics.transitionAfterCommit(to);
+        Long v = jdbc.queryForObject("select version from work_order where id = ?", Long.class, orderId);
+        return v == null ? 0 : v;
     }
 
     private void defectEvent(Order order, String opNo, String uom, String lotNo, BigDecimal defect, String reportId,
-                             String originalReportId, String type, String tag) {
+                             String reversedReportId, String type, String tag) {
         var payload = new LinkedHashMap<String, Object>();
         payload.put("workOrderNo", order.id());
         payload.put("operationNo", opNo);
@@ -312,20 +349,22 @@ public class OperationReportingService {
         payload.put("lotNo", lotNo);
         payload.put("uom", uom);
         payload.put("defectQty", num(defect));
-        payload.put("reportId", reportId);
-        if (originalReportId != null) {
-            payload.put("originalReportId", originalReportId);
-            // docs/messaging.md 既有字段名，保留以兼容
-            payload.put("reversedReportId", originalReportId);
+        if (reversedReportId == null) {
+            payload.put("reportId", reportId);
+        } else {
+            // 统一命名：reversedReportId = 被冲销的原报工；reversalId = 本次冲销记录；reportId 同原报工，便于质检按报工关联
+            payload.put("reportId", reversedReportId);
+            payload.put("reversedReportId", reversedReportId);
+            payload.put("reversalId", reportId);
         }
         journal.routedEvent(order.id(), type, qualityTopic, tag, payload);
     }
 
     /**
      * WorkOrderCompleted 字段（群内约定）：eventId、workOrderNo、uom、occurredAt、completionMode（AUTO|MANUAL）、
-     * plannedQty、completedQty、shortfallQty（十进制字符串；AUTO 固定为 "0"）、reason（仅 MANUAL）。
+     * plannedQty、completedQty、shortfallQty（十进制字符串；AUTO 固定为 "0"）、reason（仅 MANUAL）、aggregateVersion。completedQty 恒为末道工序累计合格数，plannedQty = completedQty + shortfallQty。
      */
-    private static Map<String, Object> completedPayload(Order order, BigDecimal lastGood, String uom, boolean manual, String reason) {
+    private static Map<String, Object> completedPayload(Order order, BigDecimal lastGood, String uom, boolean manual, String reason, long version) {
         var payload = new LinkedHashMap<String, Object>();
         payload.put("workOrderNo", order.id());
         payload.put("uom", uom);
@@ -334,6 +373,7 @@ public class OperationReportingService {
         payload.put("completedQty", num(lastGood));
         payload.put("shortfallQty", manual ? num(order.planned().subtract(lastGood).max(ZERO)) : "0");
         if (manual) payload.put("reason", reason);
+        payload.put("aggregateVersion", version);
         return payload;
     }
 

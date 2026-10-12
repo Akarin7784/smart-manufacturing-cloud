@@ -22,10 +22,19 @@ import java.net.URI;
 class WorkOrderProblemHandler {
     private static final Logger LOG = LoggerFactory.getLogger(WorkOrderProblemHandler.class);
     private static final MediaType PROBLEM = MediaType.APPLICATION_PROBLEM_JSON;
+    /** 报工入口路径：其失败结果计入 mes_workorder_report_total。 */
+    private static final java.util.regex.Pattern REPORT_PATH = java.util.regex.Pattern.compile(".*/workorders/[^/]+/operations/[^/]+/reports/?");
+    private final ReportingMetrics metrics;
+    WorkOrderProblemHandler(ReportingMetrics metrics) { this.metrics = metrics; }
+
+    private void count(jakarta.servlet.http.HttpServletRequest req, WorkOrderProblemType t) {
+        if ("POST".equals(req.getMethod()) && REPORT_PATH.matcher(req.getRequestURI()).matches()) metrics.reportProblem(t);
+    }
 
     @ExceptionHandler(BusinessException.class)
-    ResponseEntity<ProblemDetail> business(BusinessException e) {
+    ResponseEntity<ProblemDetail> business(BusinessException e, jakarta.servlet.http.HttpServletRequest req) {
         WorkOrderProblemType t = WorkOrderProblemType.ofCode(e.code());
+        count(req, t);
         if (t == null) {
             LOG.error("业务码 {} 未在 WorkOrderProblemType 中登记，按内部错误返回", e.code(), e);
             t = WorkOrderProblemType.INTERNAL_ERROR;
@@ -35,11 +44,19 @@ class WorkOrderProblemHandler {
 
     /** 参数校验失败统一为 validation-error。 */
     @ExceptionHandler(MethodArgumentNotValidException.class)
-    ResponseEntity<ProblemDetail> validation(MethodArgumentNotValidException e) {
+    ResponseEntity<ProblemDetail> validation(MethodArgumentNotValidException e, jakarta.servlet.http.HttpServletRequest req) {
+        count(req, WorkOrderProblemType.VALIDATION_ERROR);
         String detail = e.getBindingResult().getFieldErrors().stream()
             .map(f -> f.getField() + ": " + f.getDefaultMessage()).sorted()
             .collect(java.util.stream.Collectors.joining("; "));
         return problem(WorkOrderProblemType.VALIDATION_ERROR, detail, null);
+    }
+
+    /** 请求体无法解析（JSON 格式错误、数字非法等）同样为 validation-error。 */
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    ResponseEntity<ProblemDetail> unreadable(org.springframework.http.converter.HttpMessageNotReadableException e, jakarta.servlet.http.HttpServletRequest req) {
+        count(req, WorkOrderProblemType.VALIDATION_ERROR);
+        return problem(WorkOrderProblemType.VALIDATION_ERROR, "请求体格式错误", null);
     }
 
     static ResponseEntity<ProblemDetail> problem(WorkOrderProblemType t, String detail, Object data) {

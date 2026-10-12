@@ -27,5 +27,6 @@ manufacturing:
     tags:
       workorder-started: WorkOrderStarted
       workorder-completed: WorkOrderCompleted
+      workorder-reopened: WorkOrderReopened
       defect-reported: DefectReported
       defect-reversed: DefectReversed

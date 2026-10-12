@@ -121,7 +121,7 @@ public class WorkOrderReleaseService {
         jdbc.update("insert into work_order_lifecycle (order_id, version, resume_target, product_code, bom_version, routing_version, release_key, released_by, released_at) values (?, 0, null, ?, ?, ?, ?, ?, ?)",
             order.id(), order.product(), bom.bomVersion(), routing.version(), key, operator, now);
         // 条件更新兜底：工单在校验之后被取消等情况下拒绝下达。
-        if (jdbc.update("update work_order set status = 'RELEASED' where id = ? and status = 'CREATED'", order.id()) != 1)
+        if (jdbc.update("update work_order set status = 'RELEASED', version = version + 1 where id = ? and status = 'CREATED'", order.id()) != 1)
             throw new BusinessException("WORK_ORDER_STATE_CONFLICT", "工单状态已变化，下达取消", HttpStatus.CONFLICT);
         int seq = 0;
         for (BomExplosionLine l : bom.lines())
@@ -226,7 +226,7 @@ public class WorkOrderReleaseService {
         if (onHold && reasons(orderId).contains(reason.name())) return false; // 幂等：原因已存在
         bump(orderId, lc.version(), onHold ? lc.resumeTarget() : order.status());
         jdbc.update("insert into work_order_hold_reason (order_id, reason) values (?, ?)", orderId, reason.name());
-        if (!onHold && jdbc.update("update work_order set status = 'ON_HOLD' where id = ? and status = ?", orderId, order.status()) != 1)
+        if (!onHold && jdbc.update("update work_order set status = 'ON_HOLD', version = version + 1 where id = ? and status = ?", orderId, order.status()) != 1)
             throw new VersionConflict();
         journal.statusChanged(orderId, order.status(), "ON_HOLD", reason.name(), note, operator);
         journal.event(orderId, "WorkOrderHeld", Map.of("reason", reason.name(), "resumeTarget", onHold ? lc.resumeTarget() : order.status()));
@@ -282,7 +282,7 @@ public class WorkOrderReleaseService {
         bump(orderId, lc.version(), last ? null : lc.resumeTarget());
         if (reservation != null) insertReservation(orderId, seq, reservation);
         String to = last ? lc.resumeTarget() : "ON_HOLD";
-        if (last && jdbc.update("update work_order set status = ? where id = ? and status = 'ON_HOLD'", to, orderId) != 1)
+        if (last && jdbc.update("update work_order set status = ?, version = version + 1 where id = ? and status = 'ON_HOLD'", to, orderId) != 1)
             throw new VersionConflict();
         journal.statusChanged(orderId, order.status(), to, reason.name(), note, operator);
         journal.event(orderId, last ? "WorkOrderResumed" : "WorkOrderHoldReasonCleared", Map.of("reason", reason.name(), "status", to));

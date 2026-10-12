@@ -41,11 +41,25 @@
 | 项 | 值 |
 | --- | --- |
 | Topic | `mes-workorder-event` |
-| Tag | `WorkOrderStarted`（首笔报工，状态转 `IN_PROGRESS`）、`WorkOrderCompleted`（状态转 `COMPLETED`） |
+| Tag | `WorkOrderStarted`（首笔报工，状态转 `IN_PROGRESS`）、`WorkOrderCompleted`（状态转 `COMPLETED`）、`WorkOrderReopened`（冲销使 `COMPLETED` 退回 `IN_PROGRESS`） |
 | 生产者 | workorder-service（业务数据与 outbox 同事务写入，投递成功后再标记已发送） |
 | 幂等 | 消费端按 `eventId` 去重，重复投递无副作用 |
 
-`WorkOrderCompleted` 在末道工序累计合格数达到计划数时自动发出；也支持人工确认完工。人工完工时事件会带上完工方式（自动或人工）以及与计划数的差额，具体字段名由工单服务实现 PR 确定。
+`WorkOrderCompleted` 在末道工序累计合格数达到计划数时自动发出（`completionMode=AUTO`），也可经 `POST /api/workorders/{no}/complete` 人工确认完工（`completionMode=MANUAL`，允许短缺）。
+
+**顺序与版本**：Topic 为普通消息（非顺序），同一工单的事件可能乱序到达。所有工单状态事件都带 `aggregateVersion`，即工单行的乐观锁版本（`work_order.version`），每次状态变更（含下达、冻结、恢复）递增。消费端按工单记录已处理的最大版本，**丢弃版本不高于本地版本的事件**；`occurredAt` 仅用于展示与审计，不能用于排序。
+
+数量均为 `DECIMAL(18,6)` 十进制字符串；`completedQty` 在所有事件中都是**末道工序累计合格数**。
+
+### 事件字段
+
+| Tag | 字段 |
+| --- | --- |
+| `WorkOrderStarted` | `eventId`、`workOrderNo`、`occurredAt`、`aggregateVersion` |
+| `WorkOrderCompleted` | `eventId`、`workOrderNo`、`uom`、`occurredAt`、`completionMode`（`AUTO` / `MANUAL`）、`plannedQty`、`completedQty`、`shortfallQty`（AUTO 固定为 `"0"`；恒有 `plannedQty = completedQty + shortfallQty`）、`reason`（仅 MANUAL）、`aggregateVersion` |
+| `WorkOrderReopened` | `eventId`、`workOrderNo`、`occurredAt`、`reversedReportId`（被冲销的原报工）、`completedQty`（冲销后）、`uom`、`aggregateVersion` |
+
+**ID 命名约定**（本文件所有事件通用）：`reversedReportId` 一律指被冲销的**原报工**记录；需要冲销记录本身的 ID 时使用 `reversalId`。
 
 ## 库存预留事件（`mes-inventory-reservation`）
 
@@ -89,9 +103,12 @@
 | `lotNo` | 批次号 |
 | `uom` | 计量单位 |
 | `defectQty` | 不良数量，`DECIMAL(18,6)`，JSON 中用十进制字符串表示，避免浮点精度丢失 |
-| `reportId` | 报工记录 ID |
+| `reportId` | 报工记录 ID（`DefectReversed` 时为被冲销的原报工） |
 | `occurredAt` | 事件发生时间 |
 | `reversedReportId` | 仅 `DefectReversed`：被冲销的原报工记录 ID |
+| `reversalId` | 仅 `DefectReversed`：本次冲销记录 ID |
+
+`DefectReversed` 的 `defectQty` 为原报工的不良数（正数），表示需撤销的数量。
 
 ## 冒烟检查
 

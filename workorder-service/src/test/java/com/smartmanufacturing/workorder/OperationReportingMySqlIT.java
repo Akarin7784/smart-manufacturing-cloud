@@ -41,6 +41,7 @@ class OperationReportingMySqlIT {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper mapper;
+    @Autowired io.micrometer.core.instrument.MeterRegistry meters;
     @Autowired WorkOrderReleaseService release;
     @Autowired LocalMaterialReservation stub;
     @MockitoBean MasterdataClient masterdata;
@@ -92,9 +93,72 @@ class OperationReportingMySqlIT {
         assertThat(json(r).get("type").asText()).isEqualTo(type);
     }
 
+    private double counter(String name, String tag, String value) {
+        var c = meters.find(name).tag(tag, value).counter();
+        return c == null ? 0 : c.count();
+    }
+
+    /** plannedQty = completedQty + shortfallQty（精确小数）。 */
+    private static void assertSumsToPlanned(JsonNode e) {
+        assertThat(new BigDecimal(e.get("completedQty").asText()).add(new BigDecimal(e.get("shortfallQty").asText())))
+            .isEqualByComparingTo(new BigDecimal(e.get("plannedQty").asText()));
+    }
+
+    /** 工单状态事件按 aggregateVersion 排序（消费端的排序依据；occurredAt 仅用于展示）。 */
+    private List<JsonNode> stateEvents(String id) throws Exception {
+        List<JsonNode> out = new ArrayList<>();
+        for (var row : jdbc.queryForList("select event_type, payload from outbox_event where aggregate_id = ? and topic = 'mes-workorder-event'", id)) {
+            var n = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree((String) row.get("payload"));
+            n.put("_type", (String) row.get("event_type"));
+            out.add(n);
+        }
+        out.sort(Comparator.comparingLong(n -> n.get("aggregateVersion").asLong()));
+        return out;
+    }
+
+    /** 门槛：完工 → 冲销 → 再报工至完工，事件依次为 Completed、Reopened、Completed，aggregateVersion 递增且 completedQty 正确。 */
+    @Test void completeReverseRecompleteEmitsVersionedEvents() throws Exception {
+        String id = released(10);
+        report(id, "OP10", "10", "0", "0");
+        report(id, "OP20", "6", "0", "0");
+        String last = reportId(report(id, "OP20", "4", "0", "0"));
+        assertThat(status(id)).isEqualTo("COMPLETED");
+        assertThat(reverse(id, last).getResponse().getStatus()).isEqualTo(201);
+        assertThat(status(id)).isEqualTo("IN_PROGRESS");
+        report(id, "OP20", "4", "0", "0");
+        assertThat(status(id)).isEqualTo("COMPLETED");
+
+        List<JsonNode> ev = stateEvents(id);
+        assertThat(ev).extracting(n -> n.get("_type").asText())
+            .containsExactly("WorkOrderStarted", "WorkOrderCompleted", "WorkOrderReopened", "WorkOrderCompleted");
+        for (int i = 1; i < ev.size(); i++)
+            assertThat(ev.get(i).get("aggregateVersion").asLong()).isGreaterThan(ev.get(i - 1).get("aggregateVersion").asLong());
+        assertThat(ev.get(ev.size() - 1).get("aggregateVersion").asLong())
+            .isEqualTo(jdbc.queryForObject("select version from work_order where id = ?", Long.class, id));
+
+        JsonNode c1 = ev.get(1), reopened = ev.get(2), c2 = ev.get(3);
+        assertThat(c1.get("completedQty").asText()).isEqualTo("10.000000");
+        assertThat(c1.get("completionMode").asText()).isEqualTo("AUTO");
+        assertSumsToPlanned(c1);
+        assertThat(reopened.get("reversedReportId").asText()).isEqualTo(last);
+        assertThat(reopened.get("completedQty").asText()).isEqualTo("6.000000");
+        assertThat(reopened.get("uom").asText()).isEqualTo("PCS");
+        assertThat(reopened.get("workOrderNo").asText()).isEqualTo(id);
+        assertThat(reopened.has("eventId")).isTrue();
+        assertThat(reopened.has("occurredAt")).isTrue();
+        assertThat(jdbc.queryForObject("select tag from outbox_event where aggregate_id = ? and event_type = 'WorkOrderReopened'", String.class, id)).isEqualTo("WorkOrderReopened");
+        assertThat(c2.get("completedQty").asText()).isEqualTo("10.000000");
+        assertThat(c2.get("shortfallQty").asText()).isEqualTo("0");
+        assertSumsToPlanned(c2);
+    }
+
     /** 门槛 1：N 个线程并发向同一工序报工，成功数之和恰好等于上限，绝不超报；累计与流水合计一致。 */
     @Test void concurrentReportsNeverExceedLimit() throws Exception {
         String id = released(10);
+        double ok0 = counter("mes.workorder.report", "result", "ok"), over0 = counter("mes.workorder.report", "result", "over_report");
+        double prog0 = counter("mes.workorder.status.transition", "to", "IN_PROGRESS");
+        long lock0 = meters.get("mes.workorder.report.lock.wait").timer().count();
+        double defect0 = meters.find("mes.workorder.report.qty").tag("kind", "defect").tag("uom", "PCS").summary() == null ? 0 : meters.get("mes.workorder.report.qty").tag("kind", "defect").tag("uom", "PCS").summary().totalAmount();
         int threads = 12;
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         CountDownLatch start = new CountDownLatch(1);
@@ -117,6 +181,22 @@ class OperationReportingMySqlIT {
         assertThat(started.get(0).has("eventId")).isTrue();
         assertThat(started.get(0).has("occurredAt")).isTrue();
         assertThat(events(id, "DefectReported")).hasSize(5);
+        // 指标：成功 5 次、超限 7 次；不良数量合计 2.5；状态转换 1 次；每次请求都计时行锁等待
+        assertThat(counter("mes.workorder.report", "result", "ok") - ok0).isEqualTo(5);
+        assertThat(counter("mes.workorder.report", "result", "over_report") - over0).isEqualTo(7);
+        double replay0 = counter("mes.workorder.report", "result", "replay"), closed0 = counter("mes.workorder.report", "result", "workorder_closed");
+        String path = "/workorders/" + id + "/operations/OP20/reports";
+        String body = "{\"goodQty\":1,\"defectQty\":0,\"scrapQty\":0,\"uom\":\"PCS\"}";
+        call(path, "m-1", body); call(path, "m-1", body);
+        assertThat(counter("mes.workorder.report", "result", "replay") - replay0).isEqualTo(1);
+        jdbc.update("update work_order set status = 'CLOSED' where id = ?", id);
+        call(path, "m-2", body);
+        assertThat(counter("mes.workorder.report", "result", "workorder_closed") - closed0).isEqualTo(1);
+        assertThat(meters.get("mes.workorder.outbox.pending").gauge().value())
+            .isEqualTo(jdbc.queryForObject("select count(*) from outbox_event where published_at is null", Long.class).doubleValue());
+        assertThat(counter("mes.workorder.status.transition", "to", "IN_PROGRESS") - prog0).isEqualTo(1);
+        assertThat(meters.get("mes.workorder.report.qty").tag("kind", "defect").tag("uom", "PCS").summary().totalAmount() - defect0).isEqualTo(2.5);
+        assertThat(meters.get("mes.workorder.report.lock.wait").timer().count() - lock0).isEqualTo(threads + 3); // 并发 12 次 + 重放校验 2 次 + 关闭校验 1 次
     }
 
     /** 门槛 2：同键重放返回首次的状态与响应体，不重复写入；同键不同请求 422；缺键 400。 */
@@ -160,7 +240,9 @@ class OperationReportingMySqlIT {
         assertThat(rev.at("/data/report/reversedReportId").asText()).isEqualTo(bid);
         var defectRev = events(id, "DefectReversed");
         assertThat(defectRev).hasSize(1);
-        assertThat(defectRev.get(0).get("originalReportId").asText()).isEqualTo(bid);
+        assertThat(defectRev.get(0).get("reversedReportId").asText()).isEqualTo(bid);
+        assertThat(defectRev.get(0).get("reversalId").asText()).isEqualTo(rev.at("/data/report/reportId").asText());
+        assertThat(defectRev.get(0).has("originalReportId")).isFalse();
         assertThat(defectRev.get(0).get("defectQty").asText()).isEqualTo("1.000000");
         assertThat(defectRev.get(0).get("materialCode").asText()).isEqualTo(ReleaseFixtures.PRODUCT);
         assertThat(defectRev.get(0).get("lotNo").asText()).isEqualTo("LOT-1");
@@ -176,10 +258,16 @@ class OperationReportingMySqlIT {
         assertThat(completed.get(0).get("uom").asText()).isEqualTo("PCS");
         assertThat(completed.get(0).get("completedQty").asText()).isEqualTo("10.000000");
         assertThat(completed.get(0).has("reason")).isFalse();
+        assertSumsToPlanned(completed.get(0));
         assertThat(jdbc.queryForObject("select tag from outbox_event where event_type = 'WorkOrderCompleted' and aggregate_id = ?", String.class, id)).isEqualTo("WorkOrderCompleted");
 
-        // 完工后冲销 → IN_PROGRESS，审计记录 REPORT_REVERSED
+        // 完工后冲销 → IN_PROGRESS，审计记录 REPORT_REVERSED；冲销数量以正数计入 reversal_qty，report_qty 不减少
+        var revGood = meters.find("mes.workorder.reversal.qty").tag("kind", "good").tag("uom", "PCS").summary();
+        double revGood0 = revGood == null ? 0 : revGood.totalAmount();
+        double repGood0 = meters.get("mes.workorder.report.qty").tag("kind", "good").tag("uom", "PCS").summary().totalAmount();
         assertThat(reverse(id, d).getResponse().getStatus()).isEqualTo(201);
+        assertThat(meters.get("mes.workorder.reversal.qty").tag("kind", "good").tag("uom", "PCS").summary().totalAmount() - revGood0).isEqualTo(10.0);
+        assertThat(meters.get("mes.workorder.report.qty").tag("kind", "good").tag("uom", "PCS").summary().totalAmount()).isEqualTo(repGood0);
         assertThat(status(id)).isEqualTo("IN_PROGRESS");
         assertThat(good(id, "OP20")).isEqualByComparingTo("0");
         assertThat(jdbc.queryForObject("select count(*) from work_order_status_log where order_id = ? and from_status = 'COMPLETED' and to_status = 'IN_PROGRESS' and reason = 'REPORT_REVERSED'", Integer.class, id)).isEqualTo(1);
@@ -256,6 +344,7 @@ class OperationReportingMySqlIT {
         assertThat(ev.get(0).get("plannedQty").asText()).isEqualTo("10.000000");
         assertThat(ev.get(0).get("completedQty").asText()).isEqualTo("7.500000");
         assertThat(ev.get(0).get("uom").asText()).isEqualTo("PCS");
+        assertSumsToPlanned(ev.get(0));
         assertThat(ev.get(0).get("reason").asText()).isEqualTo("客户提前提货");
         // 重放返回首次结果；已完工不能再报工
         assertThat(call(path, "c-1", "{\"reason\":\"客户提前提货\"}").getResponse().getContentAsString()).isEqualTo(ok.getResponse().getContentAsString());
