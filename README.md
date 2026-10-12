@@ -51,6 +51,7 @@ flowchart LR
 - cloud-gateway：显式路由 /api/auth/**、/api/devices/**、/api/workorders/**，移除 /api 前缀。
 - device-service：设备查询、持久化、Nacos 动态配置示例。
 - workorder-service：工单校验、Feign 调用、持久化与降级。
+- masterdata-service：物料、工作中心/工位、版本化多层 BOM、工艺路线；demo profile 加载 GR-60 演示主数据（端口 8084）。
 - infra：Nacos 配置样例、MySQL 初始化、Sentinel 控制台镜像。
 - scripts：Windows 启停、配置导入、冒烟检查。
 - docs：部署与扩展说明。

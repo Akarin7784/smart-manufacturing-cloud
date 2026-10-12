@@ -7,5 +7,6 @@
 !cloud-gateway/**
 !device-service/**
 !workorder-service/**
+!masterdata-service/**
 **/target
 !infra/healthcheck/**

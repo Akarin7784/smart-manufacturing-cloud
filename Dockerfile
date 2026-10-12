@@ -9,6 +9,7 @@ COPY cloud-common cloud-common
 COPY cloud-gateway cloud-gateway
 COPY device-service device-service
 COPY workorder-service workorder-service
+COPY masterdata-service masterdata-service
 ARG MODULE
 RUN --mount=type=cache,target=/root/.m2,sharing=locked mvn -B -ntp -pl ${MODULE} -am package -DskipTests && cp ${MODULE}/target/${MODULE}-1.0.0-SNAPSHOT.jar /app.jar
 # 健康探针在构建阶段用 javac 编译：运行镜像只有 JRE，无法使用源码模式直接运行 .java 文件。
