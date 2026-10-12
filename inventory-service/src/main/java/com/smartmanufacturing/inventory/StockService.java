@@ -178,6 +178,9 @@ public class StockService {
     /**
      * 按 id 升序锁定物料的全部<b>普通库位</b>现存量行（固定加锁顺序，见类注释）。
      * 排除 QC-HOLD：隔离量不计入可用量，出库、预留、扣减都不能使用它。
+     * 用库位编码 {@code location_code <> 'QC-HOLD'} 而不是 join warehouse_location 判断 system_location：
+     * 加锁查询只扫 stock_on_hand 的物料索引，不连带锁住库位表的行；QC-HOLD 是 V2 种子的唯一系统库位，编码固定不变，
+     * 与隔离接口、可用量查询使用同一常量 {@link #QC_HOLD}，口径一致。今后若新增其他系统库位，再改为按 system_location 判断。
      */
     List<LockedRow> lockMaterialRows(String material) {
         return metrics.timeLock(() -> jdbc.query("select id, location_code, lot_no, qty, version from stock_on_hand where material_code = ? and location_code <> ? order by id for update",

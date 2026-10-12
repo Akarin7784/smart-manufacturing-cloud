@@ -9,6 +9,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2TokenValidator;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.core.env.Environment;
 import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.security.authorization.AuthorizationManager;
@@ -69,7 +74,7 @@ public class InventorySecurityConfiguration {
             .securityMatcher("/inventory/reservations", "/inventory/reservations/**")
             .authorizeHttpRequests(rules -> rules.anyRequest().access(serviceTokenRule()))
             .oauth2ResourceServer(resource -> resource
-                .jwt(jwt -> jwt.decoder(decoder(serviceAudience)).jwtAuthenticationConverter(new JwtAuthenticationConverter()))
+                .jwt(jwt -> jwt.decoder(serviceDecoder()).jwtAuthenticationConverter(new JwtAuthenticationConverter()))
                 .authenticationEntryPoint((req, res, e) -> write(mapper, req, res, 401, "请提供有效的服务身份令牌")));
         return http.build();
     }
@@ -84,7 +89,7 @@ public class InventorySecurityConfiguration {
             .securityMatcher("/inventory/qc-hold", "/inventory/qc-hold/**")
             .authorizeHttpRequests(rules -> rules.anyRequest().access(serviceTokenRule(QC_HOLD_AUTHORITY)))
             .oauth2ResourceServer(resource -> resource
-                .jwt(jwt -> jwt.decoder(decoder(serviceAudience)).jwtAuthenticationConverter(new JwtAuthenticationConverter()))
+                .jwt(jwt -> jwt.decoder(serviceDecoder()).jwtAuthenticationConverter(new JwtAuthenticationConverter()))
                 .authenticationEntryPoint((req, res, e) -> write(mapper, req, res, 401, "请提供有效的服务身份令牌")));
         return http.build();
     }
@@ -131,6 +136,20 @@ public class InventorySecurityConfiguration {
                 && a.getAuthorities().stream().anyMatch(g -> requiredAuthority.equals(g.getAuthority()));
             return new AuthorizationDecision(ok);
         };
+    }
+
+    /**
+     * 预留链与 qc-hold 链共用的服务令牌解码器：在共享规则（签发者、有效期、aud=inventory-service）之上，
+     * 额外要求 {@code token_type=service}（architecture.md 约定，#44）。缺少或取值错误在解码阶段失败，返回 401，
+     * 防止误配了 inventory-service 受众的其他令牌仅凭 aud 与 scope 通过。
+     */
+    JwtDecoder serviceDecoder() {
+        NimbusJwtDecoder decoder = (NimbusJwtDecoder) decoder(serviceAudience);
+        OAuth2TokenValidator<Jwt> serviceType = token -> "service".equals(token.getClaimAsString("token_type"))
+            ? OAuth2TokenValidatorResult.success()
+            : OAuth2TokenValidatorResult.failure(new OAuth2Error("invalid_token", "不是服务身份令牌（token_type 必须为 service）", null));
+        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(SecurityClaims.validators(issuer, serviceAudience), serviceType));
+        return decoder;
     }
 
     /** 按 JWKS 获取 RSA 公钥，固定 RS256，并校验签发者、有效期与指定受众（复用 cloud-security 的共享规则）。 */
