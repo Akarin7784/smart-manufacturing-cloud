@@ -1,0 +1,6 @@
+# 质检服务独立配置；Group = MANUFACTURING
+# 有意保持精简：质检服务的配置全部在 quality-service 自带的 application.yml 中，Nacos 只用于运行时覆盖（按需在此追加键）。
+# 本文件必须存在：Nacos 中缺少该 dataId 时，Spring Cloud Alibaba 启动会输出 "config[dataId=quality-service.yml] is empty" 的 WARN。
+logging:
+  level:
+    com.smartmanufacturing.quality: INFO
