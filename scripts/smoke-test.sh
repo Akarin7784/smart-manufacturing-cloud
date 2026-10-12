@@ -64,6 +64,23 @@ curl -fsS -m 5 -H "$auth" "$md/explosion?date=2026-10-12&quantity=10" | jq -e '
   || fail "演示 BOM 多层展开结果不符"
 # 已发布版本只读：管理员重复发布 A01 必须返回 409，证明演示数据以 RELEASED 状态加载。
 [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST -H "$auth" "$md/A01/release")" = 409 ] || fail "已发布 BOM 重复发布应返回 409"
+# 工单下达：为 GR-60 成品建单后下达，校验冻结的 BOM A01 / 工艺 R01 快照、8 道工序（首道 READY）与 ACTIVE 物料预留；
+# 同键重放返回同一预留单（Idempotent-Replayed: true），换键再次下达返回 409。物料预留当前由本地替身适配器提供。
+gr_body='{"deviceId":"D001","product":"FG-GR60-20","quantity":10}'
+gr=$(curl -fsS -m 5 -H "$auth" -H 'Content-Type: application/json' -H "Idempotency-Key: smoke-gr-$(od -An -N8 -tx8 /dev/urandom | tr -d " ")" -d "$gr_body" "$base/api/workorders" | jq -r '.data.id')
+[ -n "$gr" ] && [ "$gr" != null ] || fail "创建 GR-60 工单失败"
+rel_key="smoke-rel-$(od -An -N8 -tx8 /dev/urandom | tr -d " ")"
+release() { curl -sS -m 15 -D "$1" -X POST -H "$auth" -H "Idempotency-Key: $2" "$base/api/workorders/$gr/release"; }
+rel=$(release "$hdr" "$rel_key")
+echo "$rel" | jq -e '.code=="OK" and .data.status=="RELEASED" and .data.bomVersion=="A01" and .data.routingVersion=="R01"
+  and (.data.operations|length)==8 and .data.operations[0].status=="READY" and .data.reservation.status=="ACTIVE"
+  and ([.data.reservation.lines[]|select(.materialCode=="RM-20CRMNTI-D30")|.quantity][0]*10000|round)==105000' >/dev/null \
+  || fail "工单下达结果不符: $rel"
+rel_id=$(echo "$rel" | jq -r '.data.reservation.reservationId')
+replay_rel=$(release "$hdr" "$rel_key")
+grep -qi '^Idempotent-Replayed: true' "$hdr" || fail "同键重放下达缺少 Idempotent-Replayed: true"
+[ "$(echo "$replay_rel" | jq -r '.data.reservation.reservationId')" = "$rel_id" ] || fail "同键重放下达返回了不同的预留单"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST -H "$auth" -H "Idempotency-Key: $rel_key-other" "$base/api/workorders/$gr/release")" = 409 ] || fail "换键重复下达应返回 409"
 # 未带令牌访问必须被网关拒绝。
 [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$base/api/devices")" = 401 ] || fail "未认证请求应返回 401"
 
@@ -89,4 +106,4 @@ if [ "${SKIP_MQ_SMOKE:-0}" != 1 ]; then
   [ -n "$got" ] || fail "RocketMQ 未收回刚发送的消息"
   echo "PASS: RocketMQ 收发回环（Topic mes-smoke-test）"
 fi
-echo "PASS: 登录、JWT 校验、路由、Feign 令牌传递、持久化、工单幂等重放、业务错误码与主数据 BOM 展开"
+echo "PASS: 登录、JWT 校验、路由、Feign 令牌传递、持久化、工单幂等重放、业务错误码、主数据 BOM 展开与工单下达"

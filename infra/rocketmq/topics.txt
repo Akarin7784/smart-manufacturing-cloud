@@ -3,5 +3,7 @@
 mes-inventory-reservation
 # 工单状态事件（由工单服务 outbox 发布）
 mes-workorder-event
+# 工单不良品待质检事件（Tag：DefectReported/DefectReversed；消费组 CG_QUALITY_DEFECT）
+mes-workorder-quality
 # 冒烟测试专用：发一条再收回，验证 Broker 收发链路
 mes-smoke-test
