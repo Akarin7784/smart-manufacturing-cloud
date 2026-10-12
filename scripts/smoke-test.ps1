@@ -161,6 +161,46 @@ try {
 }
 Write-Host 'PASS: inventory reserve/release (service token, available qty restored).'
 
+# 质检权限（网关层，与 smoke-test.sh 对等）：用 init-env 生成的演示账号真实登录，验证角色映射。
+# quality-service 尚未部署时网关找不到实例会返回 503，因此只断言"网关放行（非 401/403）"或"网关拒绝（403）"，不断言业务结果。
+function Get-DemoPassword([string]$Key) {
+    $value = [Environment]::GetEnvironmentVariable($Key)
+    if (-not $value) {
+        $envFile = Join-Path (Split-Path -Parent $PSScriptRoot) '.env'
+        if (Test-Path -LiteralPath $envFile) {
+            $line = Get-Content -LiteralPath $envFile -Encoding UTF8 | Where-Object { $_ -match "^$Key=.+$" } | Select-Object -First 1
+            if ($line) { $value = $line.Substring($Key.Length + 1) }
+        }
+    }
+    if (-not $value) { throw "$Key is missing; run scripts/init-env.ps1." }
+    return $value
+}
+function Get-DemoToken([string]$User, [string]$Key) {
+    $r = Invoke-RestMethod "$BaseUrl/api/auth/login" -Method Post -ContentType 'application/json' -Body (
+        @{ username = $User; password = (Get-DemoPassword $Key) } | ConvertTo-Json -Compress) -TimeoutSec 5
+    return $r.data.accessToken
+}
+# 返回 HTTP 状态码（含 4xx/5xx），不抛异常。
+function Get-QualityStatus([string]$Token, [string]$Method, [string]$Path) {
+    try {
+        $p = @{ Uri = "$BaseUrl$Path"; Method = $Method; Headers = @{ Authorization = "Bearer $Token" }; TimeoutSec = 10 }
+        if ($Method -eq 'Post') { $p.ContentType = 'application/json'; $p.Body = '{}' }
+        Invoke-WebRequest @p -UseBasicParsing | ForEach-Object { [int]$_.StatusCode }
+    } catch {
+        if (-not $_.Exception.Response) { throw }
+        [int]$_.Exception.Response.StatusCode
+    }
+}
+$qcToken = Get-DemoToken 'qc01' 'AUTH_DEMO_QC01_PASSWORD'
+$opToken = Get-DemoToken 'op01' 'AUTH_DEMO_OP01_PASSWORD'
+$adminToken = $login.data.accessToken
+$disposePath = '/api/quality/ncrs/NCR-SMOKE/dispositions'
+if ((Get-QualityStatus $opToken 'Post' $disposePath) -ne 403) { throw 'op01 dispose should be 403 at gateway.' }
+foreach ($case in @(@($opToken, 'Get', '/api/quality/ncrs'), @($qcToken, 'Get', '/api/quality/ncrs'), @($qcToken, 'Post', $disposePath), @($adminToken, 'Post', $disposePath))) {
+    $code = Get-QualityStatus $case[0] $case[1] $case[2]
+    if ($code -eq 401 -or $code -eq 403) { throw "Gateway should allow $($case[1]) $($case[2]), got $code." }
+}
+Write-Host 'PASS: quality permissions (op01 dispose 403, read allowed; qc01/admin read and dispose allowed).'
 # RocketMQ 收发回环（与 smoke-test.sh 对等）：在 broker 容器内用自带 mqadmin 发一条唯一标记消息，再以新消费组拉回比对。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。设置环境变量 SKIP_MQ_SMOKE=1 可跳过。
 if ($env:SKIP_MQ_SMOKE -ne '1') {
