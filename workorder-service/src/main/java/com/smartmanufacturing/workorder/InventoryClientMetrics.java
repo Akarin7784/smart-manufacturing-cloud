@@ -48,13 +48,13 @@ class InventoryClientMetrics {
     }
 
     /**
-     * mes_workorder_inventory_call_failure_total{operation, result="contract_mismatch"}：库存返回不符合契约
+     * mes_workorder_inventory_contract_mismatch_total{operation}：库存返回不符合契约
      * （422 uom-mismatch、本服务不应收到的 Problem type、未约定的状态码、响应体缺失或结构无法解析）。
      * 单独计数，不并入网络 / 5xx 错误，供告警 WorkorderReservationContractMismatch 使用。
      */
     private Counter contractMismatch(String operation) {
-        return Counter.builder("mes.workorder.inventory.call.failure").tag("operation", operation).tag("result", "contract_mismatch")
-            .description("库存调用失败（按原因）").register(registry);
+        return Counter.builder("mes.workorder.inventory.contract.mismatch").tag("operation", operation)
+            .description("库存调用结果不符合契约次数").register(registry);
     }
 
     void releaseResult(String result) { release(result).increment(); }

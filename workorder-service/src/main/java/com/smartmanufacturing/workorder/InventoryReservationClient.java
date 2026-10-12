@@ -95,7 +95,7 @@ public class InventoryReservationClient implements MaterialReservationPort {
     /**
      * 统一统计契约不一致：库存返回 422 uom-mismatch、本服务不应收到的 Problem type / 状态码（{@link InventoryContractException}），
      * 或 2xx 响应体结构无法解析（时间、数量格式错误等）时，计入
-     * mes_workorder_inventory_call_failure_total{operation, result="contract_mismatch"}。解析失败统一转为 InventoryContractException，
+     * mes_workorder_inventory_contract_mismatch_total{operation}。解析失败统一转为 InventoryContractException，
      * 不让 DateTimeParseException 之类的原始异常落入调用方的通用 error 分支。网络错误、5xx、鉴权失败不在此计数。
      */
     private <T> T observed(String op, java.util.function.Supplier<T> action) {

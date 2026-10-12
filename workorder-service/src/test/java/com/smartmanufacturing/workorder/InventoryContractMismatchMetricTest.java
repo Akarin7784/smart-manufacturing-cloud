@@ -20,7 +20,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 
 /**
  * 契约不一致计数：库存返回 422 uom-mismatch 或响应结构不符合契约时，
- * mes_workorder_inventory_call_failure_total{operation, result="contract_mismatch"} 递增；5xx / 网络错误不计入。
+ * mes_workorder_inventory_contract_mismatch_total{operation} 递增；5xx / 网络错误不计入。
  */
 class InventoryContractMismatchMetricTest {
     private SimpleMeterRegistry registry;
@@ -36,17 +36,17 @@ class InventoryContractMismatchMetricTest {
     }
 
     private double mismatch(String op) {
-        return registry.find("mes.workorder.inventory.call.failure").tag("operation", op).tag("result", "contract_mismatch").counter().count();
+        return registry.find("mes.workorder.inventory.contract.mismatch").tag("operation", op).counter().count();
     }
 
     private static List<ReservationLineView> lines() {
         return List.of(new ReservationLineView(null, "M-001", new BigDecimal("2"), "PCS"));
     }
 
-    /** 启动即以 0 预注册四种操作的 contract_mismatch 序列。 */
+    /** 启动即以 0 预注册四种操作的契约不一致序列，以及释放结果 contract_mismatch。 */
     @Test void preRegisteredAtZero() {
         for (String op : List.of("reserve", "renew", "release", "get"))
-            assertThat(registry.find("mes.workorder.inventory.call.failure").tag("operation", op).tag("result", "contract_mismatch").counter())
+            assertThat(registry.find("mes.workorder.inventory.contract.mismatch").tag("operation", op).counter())
                 .as(op).isNotNull().satisfies(c -> assertThat(c.count()).isZero());
         assertThat(registry.find("mes.workorder.reservation.release").tag("result", "contract_mismatch").counter()).isNotNull()
             .satisfies(c -> assertThat(c.count()).isZero());

@@ -114,7 +114,7 @@ public class ReservationReleaseWorker {
             LOG.warn("库存不可用，释放预留 {} 退避重试：{}", t.reservationId(), e.getMessage());
             return retry(t, "unavailable", e);
         } catch (InventoryContractException e) {
-            // 库存响应不符合契约：单独计为 contract_mismatch（客户端已计 inventory_call_failure），不与网络错误混在 error 里
+            // 库存响应不符合契约：单独计为 contract_mismatch（客户端已计 inventory_contract_mismatch），不与网络错误混在 error 里
             LOG.error("【告警】释放预留 {} 时库存响应不符合契约，退避重试：{}", t.reservationId(), e.getMessage());
             return retry(t, "contract_mismatch", e);
         } catch (RuntimeException e) {
