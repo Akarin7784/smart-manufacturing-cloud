@@ -285,6 +285,29 @@ if ($qm -notmatch '(?m)^mes_quality_event_consumed_total\{[^}]*result="disposed_
 if ($qm -notmatch '(?m)^mes_quality_event_consumed_total\{[^}]*result="invalid"[^}]*\} 0(\.0)?\r?$') { throw 'invalid counter not pre-registered at 0.' }
 if ($qm -notmatch '(?m)^mes_quality_pending_reversal_expired_total(\{[^}]*\})? 0(\.0)?\r?$') { throw 'pending_reversal_expired counter not pre-registered at 0.' }
 Write-Host 'PASS: quality alert counters pre-registered at 0 (internal 18086).'
+# 工单预留告警序列（与 smoke-test.sh 对等）：内网读取 workorder:18082，断言释放结果、待释放任务 Gauge 与库存鉴权失败计数器存在。
+# contract_mismatch 相关序列由业务开发 PR 新增，见下方按源码自动启用的断言。
+$env:INV_TOKEN = ''; $env:INV_IDEM_KEY = ''; $env:INV_BASE = 'http://workorder:18082'
+try { $wm = inv_call GET /actuator/prometheus } finally { $env:INV_BASE = '' }
+if ((Get-InvStatus $wm) -ne 200) { throw 'workorder-service /actuator/prometheus on 18082 should be 200.' }
+foreach ($r in @('released', 'expired', 'reservation_gone', 'reservation_consumed', 'reservation_not_found', 'auth_error', 'unavailable', 'error')) {
+    if ($wm -notmatch "(?m)^mes_workorder_reservation_release_total\{[^}]*result=""$r""[^}]*\} ") { throw "mes_workorder_reservation_release_total{result=$r} missing." }
+}
+if ($wm -notmatch '(?m)^mes_workorder_reservation_release_pending(\{[^}]*\})? ') { throw 'mes_workorder_reservation_release_pending missing.' }
+foreach ($o in @('reserve', 'renew', 'release', 'get', 'token')) {
+    if ($wm -notmatch "(?m)^mes_workorder_inventory_auth_failure_total\{[^}]*operation=""$o""[^}]*\} ") { throw "mes_workorder_inventory_auth_failure_total{operation=$o} missing." }
+}
+# 契约不一致序列：由业务开发 PR 新增，按源码是否已包含该指标自动启用（与 smoke-test.sh 对等）。
+$woSrc = Join-Path $PSScriptRoot '..\workorder-service\src\main'
+if (Get-ChildItem -Path $woSrc -Recurse -File | Select-String -SimpleMatch -Quiet 'mes.workorder.inventory.contract.mismatch') {
+    foreach ($o in @('reserve', 'renew', 'release', 'get')) {
+        if ($wm -notmatch "(?m)^mes_workorder_inventory_contract_mismatch_total\{[^}]*operation=""$o""[^}]*\} ") { throw "mes_workorder_inventory_contract_mismatch_total{operation=$o} missing." }
+    }
+    if ($wm -notmatch '(?m)^mes_workorder_reservation_release_total\{[^}]*result="contract_mismatch"[^}]*\} ') { throw 'mes_workorder_reservation_release_total{result=contract_mismatch} missing.' }
+} else {
+    Write-Host 'SKIP: contract_mismatch metrics not in source yet (dependency PR), series checks skipped.'
+}
+Write-Host 'PASS: workorder reservation alert series registered (internal 18082).'
 
 # 服务自身的 403（绕过网关，经 compose 内网直连设备服务，与 smoke-test.sh 对等）：op01 无 config:read，
 # 必须返回 problem+json（type=access-denied），且无 code 字段、instance 不含查询串。需要 Content-Type，因此单独调用 curl 容器。
