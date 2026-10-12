@@ -23,7 +23,7 @@ import java.io.IOException;
  * （查询 quality:read，写入 quality:write）。令牌由认证服务 RSA 私钥签名，通过 JWKS 获取公钥；不信任任何外部身份请求头。
  * <p>
  * 已通过 {@code manufacturing.security.resource-server=false} 关闭 cloud-common 的通用安全链：
- * 通用链的 401/403 输出 ApiResponse，而质检契约要求 problem+json（type=about:blank）。
+ * 通用链的 401/403 输出 ApiResponse，而质检契约要求 problem+json（type=authentication-required / access-denied）。
  * 管理端口规则与库存服务一致：独立管理端口上匿名放开 Prometheus，业务端口上的 actuator 需 metrics:read。
  */
 @Configuration(proxyBeanMethods = false)
@@ -70,11 +70,13 @@ public class QualitySecurityConfiguration {
         return decoder;
     }
 
-    /** 过滤器层的错误不经过控制器异常处理，在此输出与业务错误一致的 problem+json。 */
+    /** 过滤器层的错误不经过控制器异常处理，在此输出与业务错误一致的 problem+json；401 按 RFC 6750 附带 Bearer 质询。 */
     private static void write(ObjectMapper mapper, HttpServletRequest req, HttpServletResponse res, int status, String detail) throws IOException {
         res.setStatus(status);
         res.setContentType("application/problem+json;charset=UTF-8");
         if (status == 401) res.setHeader("WWW-Authenticate", "Bearer");
-        mapper.writeValue(res.getWriter(), QualityProblemHandler.body("about:blank", status == 401 ? "未认证" : "没有访问权限", status, detail, req));
+        // type 与 title 按状态取固定值（authentication-required / access-denied），detail 说明具体原因。
+        SecurityProblemType problem = SecurityProblemType.of(status);
+        mapper.writeValue(res.getWriter(), QualityProblemHandler.body(problem.value(), problem.title(), status, detail, req));
     }
 }

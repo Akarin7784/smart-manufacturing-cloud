@@ -1,11 +1,8 @@
 package com.smartmanufacturing.common;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.smartmanufacturing.api.ApiResponse;
 import com.smartmanufacturing.security.ManagementPortAccess;
 import com.smartmanufacturing.security.SecurityClaims;
-import jakarta.servlet.http.HttpServletResponse;
-import java.io.IOException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.*;
@@ -45,11 +42,11 @@ public class ResourceSecurityConfiguration {
                 .requestMatchers("/actuator/**").hasAuthority("metrics:read")
                 .anyRequest().authenticated())
             .exceptionHandling(errors -> errors
-                .authenticationEntryPoint((req, res, e) -> writeError(mapper, res, 401, "AUTHENTICATION_REQUIRED", "请登录或重新获取令牌"))
-                .accessDeniedHandler((req, res, e) -> writeError(mapper, res, 403, "ACCESS_DENIED", "没有访问权限")))
+                .authenticationEntryPoint((req, res, e) -> SecurityProblem.AUTHENTICATION_REQUIRED.write(mapper, req, res))
+                .accessDeniedHandler((req, res, e) -> SecurityProblem.ACCESS_DENIED.write(mapper, req, res)))
             .oauth2ResourceServer(resource -> resource
                 .jwt(jwt -> jwt.jwtAuthenticationConverter(SecurityClaims.authenticationConverter()))
-                .authenticationEntryPoint((req, res, e) -> writeError(mapper, res, 401, "AUTHENTICATION_REQUIRED", "请登录或重新获取令牌")));
+                .authenticationEntryPoint((req, res, e) -> SecurityProblem.AUTHENTICATION_REQUIRED.write(mapper, req, res)));
         return http.build();
     }
 
@@ -57,14 +54,5 @@ public class ResourceSecurityConfiguration {
     public static RequestMatcher prometheusOnManagementPort(Environment environment) {
         return request -> ManagementPortAccess.PROMETHEUS_PATH.equals(request.getRequestURI())
             && ManagementPortAccess.isManagementPort(environment, request.getLocalPort());
-    }
-
-    /** 安全过滤器中的异常不经过控制器异常处理，需在此统一输出 JSON。 */
-    public static void writeError(ObjectMapper mapper, HttpServletResponse response, int status, String code, String message)
-            throws IOException {
-        response.setStatus(status);
-        response.setContentType("application/json;charset=UTF-8");
-        if (status == 401) response.setHeader("WWW-Authenticate", "Bearer");
-        mapper.writeValue(response.getWriter(), ApiResponse.error(code, message));
     }
 }

@@ -587,8 +587,8 @@ components:
         | `idempotency-key-required` | 400 | 缺少或格式非法的 `Idempotency-Key` |
         | `idempotency-key-conflict` | 422 | 同一调用方的幂等键已用于不同请求 |
         | `idempotency-in-progress` | 409 | 同键请求正在处理 |
-        | `authentication-required` | 401 | 未认证 |
-        | `access-denied` | 403 | 无权限 |
+        | `authentication-required` | 401 | 未认证（安全层产生，响应不含 `code`/`data`，`instance` 为请求路径） |
+        | `access-denied` | 403 | 无权限（同上；经网关访问时由网关先行返回 `gateway-*`，见 docs/authentication.md） |
         | `workorder-not-found` | 404 | 工单不存在 |
         | `workorder-not-released` | 404 | 工单未下达 |
         | `workorder-state-conflict` | 409 | 工单当前状态不允许该操作（如 ON_HOLD、COMPLETED 状态下报工） |

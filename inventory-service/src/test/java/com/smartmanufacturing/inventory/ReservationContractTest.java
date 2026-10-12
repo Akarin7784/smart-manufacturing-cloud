@@ -61,12 +61,12 @@ class ReservationContractTest {
         tx.executeWithoutResult(s -> stock.inbound("ct", new InventoryDtos.Movement(material, uom, "CT-01", lot, qty, null)));
     }
 
-    /** 发送请求，按契约校验响应；若为 problem+json 则记录 type 并核对 status 字段与 HTTP 状态一致。 */
+    /** 发送请求，按契约校验响应；若为 problem+json 则记录业务 type（401/403/404 的非业务类型不计入覆盖） 并核对 status 字段与 HTTP 状态一致。 */
     private JsonNode call(MockHttpServletRequestBuilder req, String template, String method, int expectedStatus) throws Exception {
         MvcResult r = mvc.perform(req.with(service())).andReturn();
         assertThat(r.getResponse().getStatus()).as(method + " " + template + "：" + r.getResponse().getContentAsString()).isEqualTo(expectedStatus);
         JsonNode body = OpenApiContract.assertConforms(template, method, r);
-        if (expectedStatus >= 400 && body.has("type") && !"about:blank".equals(body.get("type").asText())) {
+        if (expectedStatus >= 400 && body.has("type") && !java.util.Set.of("about:blank", "authentication-required", "access-denied").contains(body.get("type").asText())) {
             covered.add(body.get("type").asText());
             assertThat(body.get("status").asInt()).isEqualTo(expectedStatus);
         }
