@@ -126,7 +126,12 @@ classDiagram
 - 同一产品同一时刻只有一个 RELEASED 且在有效期内的 BOM/工艺版本；RELEASED 版本不可修改，只能升版。
 - BOM 行的 `consumeOpNo` 必须存在于同产品生效工艺路线中（发布时跨聚合校验，均在 masterdata-service 内）。
 - 工单快照：下达时将 BOM 展开结果与工序列表复制到 workorder-service 的 `wo_bom_snapshot`、`operation_task`，后续不再回查主数据。
-- 工序任务 `goodQty(n) ≤ goodQty(n-1)`（不允许下道合格数超过上道合格数，返工回流除外，返工数量单独计）。
+- 工序数量不变量（报工接口校验依据）：对第 n 道工序（n>1），`good(n) + scrap(n) + pendingRework(n) ≤ good(n-1) + reworkReturn(n)`。
+  - `good(n-1)`：上道累计合格数（已转出到本道的可加工数）；首道工序以工单计划数×(1+超交容差) 代替。
+  - `scrap(n)`：本道累计报废；`pendingRework(n)`：本道判返工且尚未返回的数量（已离开合格流，但未消失）。
+  - `reworkReturn(n)`：返工完成后回流到本道重新加工的数量（返工件不重复计入上道合格数）。
+  - 示例：上道合格 10，本道已报合格 8、报废 2，则本道再报任何数量都返回 422 `QTY_EXCEEDS_INPUT`；若其中 1 件返工回流，则可再报 1 件。
+  - 每次报工在同一事务内以 `version` 乐观锁更新 operation_task 累计值，保证并发报工下不变量成立。
 - 追溯属性为 SERIAL 的物料装配必须扫描序列号；LOT 的必须扫描批次；NONE 只记数量。
 
 ### 2.3 关键事件（outbox）
@@ -154,7 +159,7 @@ classDiagram
 | trace:read | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ |
 | device:write | ✔ | | ✔ | | | |
 
-> 现有 OPERATOR 拥有 `workorder:write`，引入新角色后需评估迁移：建议保留兼容一个版本，新增执行类接口只认 `execution:report`。
+> 兼容策略：现有 OPERATOR 拥有 `workorder:write`。P1 起新增执行类接口只认 `execution:report`，OPERATOR 的 `workorder:write` 在 P1 期间保留（仅对现有 `POST /work-orders` 生效，标记为 deprecated）；**P2 发布时移除**，计划类接口改由 PLANNER 承担。越权测试在 P1 覆盖新旧两套权限（OPERATOR 仍可调用旧接口、不可调用下达/关闭），P2 增加“OPERATOR 调用旧接口返回 403”用例。
 
 ---
 
@@ -168,11 +173,14 @@ stateDiagram-v2
   CREATED --> RELEASED: 下达 [BOM/工艺已发布且有效; 快照成功]
   CREATED --> CANCELLED: 取消
   RELEASED --> IN_PROGRESS: 首道工序开工 [设备预留成功; 首检任务已生成]
+  RELEASED --> ON_HOLD: 冻结 [LotHeld 涉及快照物料/人工; 记录 resumeTarget=RELEASED]
   RELEASED --> CANCELLED: 取消 [无任何报工/投料]
   RELEASED --> CREATED: 撤回下达 [无任何报工/投料; 释放预留]
   IN_PROGRESS --> ON_HOLD: 暂停 [质量冻结/设备故障/人工]
-  ON_HOLD --> IN_PROGRESS: 恢复 [冻结原因全部解除]
-  IN_PROGRESS --> COMPLETED: 完工 [末道合格数+报废数 ≥ 计划数×(1-欠交容差) 或人工确认短交]
+  ON_HOLD --> IN_PROGRESS: 恢复 [冻结原因全部解除 且 resumeTarget=IN_PROGRESS]
+  ON_HOLD --> RELEASED: 恢复 [冻结原因全部解除 且 resumeTarget=RELEASED]
+  ON_HOLD --> CANCELLED: 取消 [resumeTarget=RELEASED; 无报工/投料]
+  IN_PROGRESS --> COMPLETED: 完工 [计划×(1-欠交容差) ≤ 末道合格数 ≤ 计划×(1+超交容差), 或人工确认短交; 无 RUNNING/WAITING_INSPECTION 任务]
   COMPLETED --> IN_PROGRESS: 反完工 [未入库; 审批]
   COMPLETED --> CLOSED: 关闭 [无未处置不合格品; 投料差异已确认]
   CANCELLED --> [*]
@@ -183,9 +191,9 @@ stateDiagram-v2
 | --- | --- | --- | --- |
 | CREATED→RELEASED | 计划员 `POST /work-orders/{no}/release` | 产品存在生效 BOM、工艺版本；计划数>0；计划日期合法 | 冻结 BOM 展开与工序到快照；生成 OperationTask(全部 PENDING)；分配批次号；发 WorkOrderReleased |
 | RELEASED→IN_PROGRESS | 首次 `OperationStarted` 内部触发 | 由工序开工守卫保证 | 记录实际开工时间 |
-| *→ON_HOLD | 人工 / InspectionConcluded(FAIL) / EquipmentStatusChanged(FAULT) | — | 维护 `hold_reason` 集合（可多原因并存），所有 RUNNING 任务转 PAUSED |
-| ON_HOLD→IN_PROGRESS | 人工/事件 | `hold_reason` 集合为空 | 任务不自动恢复，需操作工确认 |
-| IN_PROGRESS→COMPLETED | 末道报工自动或计划员手动 | 见上表；手动短交需填写原因 | 发 WorkOrderCompleted（P4 回传 ERP） |
+| RELEASED/IN_PROGRESS→ON_HOLD | 人工 / LotHeld / InspectionConcluded(FAIL，FAI 失败) / EquipmentStatusChanged(FAULT) | 仅允许从 RELEASED、IN_PROGRESS 进入；CREATED 无需冻结（未下达不可执行），COMPLETED 及以后不冻结工单而是冻结批次/SN | 首次进入时记录 `resume_target`（RELEASED 或 IN_PROGRESS）；维护 `hold_reason` 集合（可多原因并存，按来源去重）；所有 RUNNING 任务转 PAUSED 并释放设备预留 |
+| ON_HOLD→RELEASED / IN_PROGRESS | 人工/事件 | `hold_reason` 集合为空；目标状态 = `resume_target` | 任务不自动恢复，需操作工确认重新开工（重新预留设备） |
+| IN_PROGRESS→COMPLETED | 末道报工自动或计划员手动 | 末道合格数在 [计划×(1-欠交容差), 计划×(1+超交容差)]；超交上限同时在报工接口拦截（首道可加工数上限）；手动短交需填写原因 | 发 WorkOrderCompleted（P4 回传 ERP） |
 | COMPLETED→CLOSED | 计划员 | 无 OPEN 的 NonConformance；投料差异（理论用量 vs 实际）已确认 | 只读归档 |
 
 并发与一致性：
@@ -203,16 +211,28 @@ stateDiagram-v2
   RUNNING --> PAUSED: 暂停
   PAUSED --> RUNNING: 恢复
   RUNNING --> READY: 部分报工后下班/换班（数量累计）
-  RUNNING --> DONE: 报工累计(合格+报废) = 可加工数 且 检验点已结案
+  RUNNING --> WAITING_INSPECTION: 报工累计(合格+报废+待返工) = 可加工数 [存在未结案检验点]
+  RUNNING --> DONE: 报工累计 = 可加工数 [无检验点或检验已全部结案]
+  WAITING_INSPECTION --> DONE: InspectionConcluded(PASS)
+  WAITING_INSPECTION --> READY: InspectionConcluded(FAIL) → NC 处置为返工回流
+  WAITING_INSPECTION --> DONE: NC 处置为报废/让步（数量按处置结果修正）
+  RUNNING --> PAUSED: 设备预留过期 / 工单 ON_HOLD
   DONE --> [*]
 ```
+
+- `WAITING_INSPECTION`：数量已报满、检验结论未回。此时**释放设备预留**（设备可加工下一任务），任务不可再报工。
+- 下道 READY 的触发：按“已放行合格数”流转，而非报工合格数。无检验点或检验点为自动判定（压装/拧紧，同步产生结论）的工序，报工合格即放行；人工检验点的工序，`InspectionConcluded(PASS)` 后才把对应数量转为上道放行数，触发下道 PENDING→READY。巡检类（抽样 1/30）不阻塞放行，FAIL 时通过 LotHeld 追溯隔离。
+- 检验结论超时（默认 4 小时未回）产生告警，不自动放行。
 
 首件检门禁：工序标记 `firstArticleRequired=true` 时，开工后只允许报工 1 件，首件检 PASS 后才放开批量报工。
 
 ### 3.3 设备预留（解决“读状态≠占用”）
 
 1. 开工时 workorder 调用 `POST /devices/{code}/reservations`（携带 `Idempotency-Key = orderNo:opNo:attemptId`），device-service 以条件更新获得占用（同一设备同一时刻至多一个 ACTIVE 预留）。
-2. 预留成功后 workorder 本地事务写 RUNNING；若本地写失败，调用释放接口补偿，并有 TTL（如 15 分钟无心跳/报工自动过期）兜底。
+2. 预留成功后 workorder 本地事务写 RUNNING；若本地写失败，调用释放接口补偿，并有 TTL 兜底。
+3. **续约**：TTL 默认 15 分钟，续约责任方是**处于 RUNNING 的工序任务**（workorder-service 内定时任务，每 5 分钟对本服务所有 RUNNING 任务批量调用 `PUT /devices/{code}/reservations/{id}/renew`）；报工请求同时顺带续约。续约不依赖工位客户端在线，因此磨齿 600 s/件等长工序不会因无报工而过期。续约连续失败 2 次产生告警。
+4. **过期处理**：device-service 侧预留过期即转 EXPIRED 并发布 `ReservationExpired`；workorder 消费后将对应任务 RUNNING→PAUSED（原因 `RESERVATION_EXPIRED`）并告警班组长，已报数量保留；恢复需重新预留，不允许“任务 RUNNING 但无有效预留”。续约接口对已 EXPIRED 的预留返回 409，workorder 同样走上述 PAUSED 流程（事件丢失时的兜底）。
+5. 任务进入 PAUSED、WAITING_INSPECTION、DONE 或工单 ON_HOLD 时主动释放预留。
 3. Feign 降级或超时：开工失败并提示“无法确认设备占用”，**不会**乐观开工。
 
 ---
@@ -364,7 +384,7 @@ FG-GR60-20  减速机                          1 台
 - **编码规则**（编码规则服务放 masterdata-service，号段在服务内原子分配）：
   - 生产批次：`L{yyMMdd}{产线2位}{流水3位}`，如 `L261012A1001`；一张零件工单 = 一个生产批次。
   - 采购批次：沿用供应商批次，入厂时生成内部批次 `R{yyMMdd}{流水4位}` 并关联供应商批次/炉号。
-  - 产品 SN：`GR60{yy}{周2位}{流水5位}`，如 `GR602641` + `00001`；在 OP20 生成并激光打印，校验位使用 Luhn mod 10。
+  - 产品 SN：`GR60{yy}{ISO周2位}{流水5位}{校验位1位}`，共 14 位，如 2026-10-12（ISO 第 42 周）首台为 `GR60264200001` + 校验位；校验位对前 13 位按 Luhn mod 36（字母数字扩展）计算，扫码时校验以拦截错码；在 OP20 生成并激光打印。
 - **谱系记录**：OP40/OP50 装配扫描时写 `GenealogyLink(parent=产品SN, child=组件SN或批次, qty, opNo, station, operator, time)`；LOT 类组件记录批次与数量，同一批次被多个 SN 共享。
 - **扫码校验**：扫描物料必须属于工单 BOM 快照、批次状态为 AVAILABLE、未过期、检验状态 PASS；不满足则拒绝并给出原因。错扫允许冲销（生成反向记录，保留原记录）。
 - **正向追溯**：给定原材料炉号 → 零件批次 → 组件 → 产品 SN → 箱码 → 发货（P4）。演示场景：“某炉 20CrMnTi 硬度不合格，影响哪些已出厂减速机？”
@@ -392,8 +412,8 @@ FG-GR60-20  减速机                          1 台
 | 阶段 | 目标 | 交付内容 | 验收标准 |
 | --- | --- | --- | --- |
 | P0（已完成） | 平台底座 | 网关、Nacos、Sentinel、JWT 认证、三角色授权、双平台 CI | 现有测试与 smoke 脚本通过 |
-| P1 主数据与工单 | 能维护 GR-60 全部主数据并下达工单 | masterdata-service（物料、BOM 版本、工艺路线、工作中心/工位、编码规则）；device-service 设备台账扩展；工单 CREATED/RELEASED/CANCELLED 与快照；Flyway 引入；演示数据 | 下达工单后修改 BOM 不影响已下达工单；非法状态转换返回 409；越权测试覆盖 |
-| P2 车间执行、质量、追溯 | 跑通一台减速机从上线到包装 | 工序任务状态机、开工/报工/暂停、设备预留与补偿、扫码投料、倒冲；quality-service（检验计划、检验记录、NC 与处置、首检门禁）；trace-service（批次、SN、谱系、正反向追溯）；RocketMQ + outbox | 演示脚本：生成 SN → 装配扫码 → 跑合 FAIL → 返修 → PASS → 包装；任意 SN 可查完整谱系 |
+| P1 主数据与工单 | 能维护 GR-60 全部主数据并下达工单 | masterdata-service（物料、BOM 版本、工艺路线、工作中心/工位、编码规则）；device-service 设备台账扩展；工单 CREATED/RELEASED/CANCELLED 与快照；Flyway 引入；演示数据 | 下达工单后修改 BOM 不影响已下达工单；非法状态转换返回 409；同一工单并发下达只有一个成功、其余 409；越权测试覆盖新旧权限 |
+| P2 车间执行、质量、追溯 | 跑通一台减速机从上线到包装 | 工序任务状态机、开工/报工/暂停、设备预留与补偿、扫码投料、倒冲；quality-service（检验计划、检验记录、NC 与处置、首检门禁）；trace-service（批次、SN、谱系、正反向追溯）；RocketMQ + outbox | 演示脚本：生成 SN → 装配扫码 → 跑合 FAIL → 返修 → PASS → 包装；任意 SN 可查完整谱系；同一设备并发预留只有一个 ACTIVE；预留过期任务自动 PAUSED；并发报工不违反数量不变量（Testcontainers MySQL） |
 | P3 分析与包装 | 面向管理层的可视化 | 包装装箱、看板（进度、FPY、OEE）、SPC（Xbar-R：压装力、扭矩）、设备保养计划 | 指标口径文档化并有单元测试 |
 | P4 集成与生产化 | 可对接客户环境 | ERP 订单/完工接口（适配器模式）、OPC UA/MQTT 设备数据接入、OIDC 单点登录、数据权限（工厂/车间）、多租户评估 | 集成契约测试；故障演练 |
 
