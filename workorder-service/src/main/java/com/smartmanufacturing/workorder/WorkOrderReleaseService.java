@@ -218,13 +218,9 @@ public class WorkOrderReleaseService {
             cause.addSuppressed(e);
             LOG.warn("补偿释放预留失败，已写入释放任务重试：{}", reservationId, e);
             try {
-                tx.executeWithoutResult(s -> jdbc.update(
-                    "insert into wo_reservation_release_task (task_id, order_id, reservation_id, reason, idempotency_key, status, attempts, created_at)"
-                        + " select ?, ?, ?, ?, ?, 'PENDING', 0, ? from dual where not exists (select 1 from wo_reservation_release_task where idempotency_key = ?)",
-                    UUID.randomUUID().toString(), orderId, reservationId, MaterialReservationPort.ReleaseReason.COMPENSATION.name(),
-                    key, Timestamp.from(clock.instant()), key));
+                CompensationReleaseTasks.insert(jdbc, tx, orderId, reservationId, key, clock.instant());
             } catch (RuntimeException dbFailure) {
-                // 任务写入也失败时只能依赖库存 TTL 兜底；记录错误便于告警排查
+                // 任务写入也失败时只能依赖库存 TTL 兜底；记录错误便于告警排查（“任务已存在”已在 insert 内按幂等处理，不会到这里）
                 cause.addSuppressed(dbFailure);
                 LOG.error("写入补偿释放任务失败，预留 {} 将依赖库存 TTL 回收", reservationId, dbFailure);
             }

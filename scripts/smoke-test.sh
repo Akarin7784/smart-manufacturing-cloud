@@ -253,6 +253,19 @@ printf '%s\n' "$qm" | grep -Eq '^mes_quality_event_consumed_total\{[^}]*result="
 printf '%s\n' "$qm" | grep -Eq '^mes_quality_pending_reversal_expired_total(\{[^}]*\})? 0(\.0)?$' || fail "缺少 mes_quality_pending_reversal_expired_total 0"
 echo "PASS: 质检告警计数器已以 0 预注册（内网 18086）"
 
+# 服务自身的 403（绕过网关，经 compose 内网直连设备服务）：op01 无 config:read，
+# 必须返回 problem+json（type=access-denied，非网关的 gateway-access-denied），且无旧 code 字段、instance 不含查询串。
+# 复用 inv_call 的一次性 curl 容器与网络探测，但需要响应头里的 Content-Type，因此单独调用 curl。
+_dnet=$(inv_network) || fail "未找到 compose 网络"
+dr=$(docker run --rm --network "$_dnet" "$SMOKE_CURL_IMAGE" -sS -m 10 -H "Authorization: Bearer $op" \
+  -w '\n%{content_type}\n%{http_code}' "http://device:8081/devices/config?probe=1") || fail "直连设备服务失败"
+dcode=$(printf '%s' "$dr" | tail -n1); dct=$(printf '%s' "$dr" | tail -n2 | sed -n 1p); dbody=$(printf '%s' "$dr" | sed '$d' | sed '$d')
+[ "$dcode" = 403 ] || fail "直连设备服务 op01 读配置应返回 403，实际 $dcode"
+case "$dct" in application/problem+json*) ;; *) fail "直连服务 403 的 Content-Type 应为 application/problem+json，实际 $dct" ;; esac
+printf '%s' "$dbody" | jq -e '.type=="access-denied" and .status==403 and (.title|length>0) and (.detail|length>0) and .instance=="/devices/config" and (has("code")|not)' >/dev/null \
+  || fail "直连服务 403 响应体不符合 problem+json 约定：$dbody"
+echo "PASS: 服务自身 403 为 problem+json（直连 device:8081，type=access-denied）"
+
 # RocketMQ 收发回环：用 Broker 镜像自带的 mqadmin 发一条带唯一标记的消息，再以新消费组拉回，确认 NameServer→Broker→消费链路可用。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。SKIP_MQ_SMOKE=1 可跳过（如未启动 app profile）。
 if [ "${SKIP_MQ_SMOKE:-0}" != 1 ]; then
