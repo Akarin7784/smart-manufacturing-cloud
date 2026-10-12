@@ -618,7 +618,7 @@ components:
         | `invalid-status-transition` | 409 | 当前状态不允许该操作 |
         | `ncr-voided` | 409 | NCR 已作废，不能再评审、处置或关闭 |
         | `ncr-not-found` | 404 | 路径中的 NCR 编号不存在 |
-        401/403 由框架统一处理，type 为 `about:blank`。已处置 NCR 被冲销属于事件消费侧冲突，不对应任何 Problem type。
+        服务内 401/403 由框架统一处理，type 为 `about:blank`；经网关访问时 401/403/429/503 由网关先行返回，type 为 `gateway-*`（见 docs/authentication.md）。已处置 NCR 被冲销属于事件消费侧冲突，不对应任何 Problem type。
 
     Problem:
       type: object
@@ -626,7 +626,7 @@ components:
       properties:
         type:
           type: string
-          description: 错误类型；业务错误取值见 ProblemType，401/403 为 `about:blank`。
+          description: 错误类型；业务错误取值见 ProblemType，服务内 401/403 为 `about:blank`，网关拦截时为 `gateway-*`。
         title:
           type: string
           description: 错误简述。

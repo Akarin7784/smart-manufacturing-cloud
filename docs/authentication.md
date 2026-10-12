@@ -93,8 +93,27 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 
 ## 错误及生命周期
 
-- 未登录、篡改、过期、签发者或受众错误：401 / AUTHENTICATION_REQUIRED。
-- 身份有效但权限不足：403 / ACCESS_DENIED。
+- 未登录、篡改、过期、签发者或受众错误：401，`type=gateway-authentication-required`（带 `WWW-Authenticate: Bearer`）。
+- 身份有效但权限不足：403，`type=gateway-access-denied`。
+
+### 网关错误格式（RFC 9457）
+
+网关自身产生的错误一律返回 `Content-Type: application/problem+json`，字段固定为 `type`、`title`、`status`、`detail`、`instance`，不再有旧的 `{code,message}` 结构：
+
+| 状态 | type | 触发条件 |
+| --- | --- | --- |
+| 401 | `gateway-authentication-required` | 无令牌或令牌校验失败 |
+| 403 | `gateway-access-denied` | 缺少接口权限，或接口不对网关开放（如库存预留） |
+| 429 | `gateway-rate-limited` | 命中 Sentinel 网关限流规则 |
+| 503 | `gateway-service-unavailable` | 路由的下游服务没有可用实例或无法连接 |
+
+`type` 与各业务服务一样采用相对引用，`gateway-` 前缀表示由网关拦截；`instance` 为请求路径（不含查询串）。示例：
+
+```json
+{"type":"gateway-access-denied","title":"没有访问权限","status":403,"detail":"当前身份缺少访问该接口所需的权限","instance":"/api/quality/ncrs/NCR-1/dispositions"}
+```
+
+请求通过网关后，由业务服务返回的错误保持各服务契约（见 `docs/api/*-openapi.yaml`）。
 - 账号不存在、密码错误、禁用或锁定：统一 401 / INVALID_CREDENTIALS。
 - 同一账号连续五次错误密码后锁定十五分钟；成功登录或管理员状态更新清除失败计数。
 - 默认访问令牌有效期十五分钟，时间校验允许 Spring Security 默认的六十秒时钟偏差。
