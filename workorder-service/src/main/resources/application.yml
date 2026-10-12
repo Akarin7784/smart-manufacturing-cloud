@@ -6,11 +6,6 @@ spring:
     name: workorder-service
   profiles:
     default: local
-  # 过渡：Flyway（#11，workorder 独立历史 V1__init + V2__workorder_release）合入前，由 sql.init 在 schema.sql 之后执行
-  # V2 的可重复执行副本 db/transitional/workorder-release-init.sql。rebase 到 #11 后删除此段与该副本，V2 文件名与内容不变。
-  sql:
-    init:
-      schema-locations: classpath:schema.sql,classpath:db/transitional/workorder-release-init.sql
 management:
   endpoints:
     web:
