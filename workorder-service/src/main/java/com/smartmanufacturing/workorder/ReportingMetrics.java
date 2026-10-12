@@ -31,9 +31,9 @@ class ReportingMetrics {
         for (WorkOrderProblemType t : WorkOrderProblemType.values()) result(resultOf(t));
     }
 
-    /** mes_workorder_report_qty_count / _sum{kind=good|defect|scrap, uom}：报工数量（单位为低基数标签）。 */
-    private DistributionSummary qty(String kind, String uom) {
-        return DistributionSummary.builder("mes.workorder.report.qty").tag("kind", kind).tag("uom", uom).description("报工数量").register(registry);
+    /** mes_workorder_report_qty_total{kind=good|defect|scrap, uom}：报工数量累计（Counter，见 docs/observability.md 第 5 节）。 */
+    private Counter qty(String kind, String uom) {
+        return Counter.builder("mes.workorder.report.qty").tag("kind", kind).tag("uom", uom).description("报工数量").register(registry);
     }
 
     /** Problem type 转为结果标签：over-report → over_report。 */
@@ -46,19 +46,19 @@ class ReportingMetrics {
 
     void reportOk(BigDecimal g, BigDecimal d, BigDecimal s, String uom) {
         result("ok").increment();
-        qty("good", uom).record(g.doubleValue()); qty("defect", uom).record(d.doubleValue()); qty("scrap", uom).record(s.doubleValue());
+        qty("good", uom).increment(g.doubleValue()); qty("defect", uom).increment(d.doubleValue()); qty("scrap", uom).increment(s.doubleValue());
     }
     void reportReplay() { result("replay").increment(); }
     void reportProblem(WorkOrderProblemType t) { result(t == null ? "error" : resultOf(t)).increment(); }
     void reportError() { result("error").increment(); }
-    /** mes_workorder_reversal_qty_count / _sum{kind, uom}：被冲销的数量（正数）；净报工量 = report_qty − reversal_qty。 */
+    /** mes_workorder_reversal_qty_total{kind, uom}：被冲销的数量（正数 Counter）；净报工量 = report_qty − reversal_qty。 */
     void reversed(BigDecimal g, BigDecimal d, BigDecimal s, String uom) {
         reversals.increment();
-        rev("good", uom).record(g.abs().doubleValue()); rev("defect", uom).record(d.abs().doubleValue()); rev("scrap", uom).record(s.abs().doubleValue());
+        rev("good", uom).increment(g.abs().doubleValue()); rev("defect", uom).increment(d.abs().doubleValue()); rev("scrap", uom).increment(s.abs().doubleValue());
     }
 
-    private DistributionSummary rev(String kind, String uom) {
-        return DistributionSummary.builder("mes.workorder.reversal.qty").tag("kind", kind).tag("uom", uom).description("冲销数量").register(registry);
+    private Counter rev(String kind, String uom) {
+        return Counter.builder("mes.workorder.reversal.qty").tag("kind", kind).tag("uom", uom).description("冲销数量").register(registry);
     }
 
     /** mes_workorder_status_transition_total{to=<状态>}：状态转换计数，在当前事务提交后累加。 */

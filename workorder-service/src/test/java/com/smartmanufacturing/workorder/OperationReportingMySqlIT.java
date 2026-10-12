@@ -158,7 +158,7 @@ class OperationReportingMySqlIT {
         double ok0 = counter("mes.workorder.report", "result", "ok"), over0 = counter("mes.workorder.report", "result", "over_report");
         double prog0 = counter("mes.workorder.status.transition", "to", "IN_PROGRESS");
         long lock0 = meters.get("mes.workorder.report.lock.wait").timer().count();
-        double defect0 = meters.find("mes.workorder.report.qty").tag("kind", "defect").tag("uom", "PCS").summary() == null ? 0 : meters.get("mes.workorder.report.qty").tag("kind", "defect").tag("uom", "PCS").summary().totalAmount();
+        double defect0 = meters.find("mes.workorder.report.qty").tag("kind", "defect").tag("uom", "PCS").counter() == null ? 0 : meters.get("mes.workorder.report.qty").tag("kind", "defect").tag("uom", "PCS").counter().count();
         int threads = 12;
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         CountDownLatch start = new CountDownLatch(1);
@@ -195,7 +195,7 @@ class OperationReportingMySqlIT {
         assertThat(meters.get("mes.workorder.outbox.pending").gauge().value())
             .isEqualTo(jdbc.queryForObject("select count(*) from outbox_event where published_at is null", Long.class).doubleValue());
         assertThat(counter("mes.workorder.status.transition", "to", "IN_PROGRESS") - prog0).isEqualTo(1);
-        assertThat(meters.get("mes.workorder.report.qty").tag("kind", "defect").tag("uom", "PCS").summary().totalAmount() - defect0).isEqualTo(2.5);
+        assertThat(meters.get("mes.workorder.report.qty").tag("kind", "defect").tag("uom", "PCS").counter().count() - defect0).isEqualTo(2.5);
         assertThat(meters.get("mes.workorder.report.lock.wait").timer().count() - lock0).isEqualTo(threads + 3); // 并发 12 次 + 重放校验 2 次 + 关闭校验 1 次
     }
 
@@ -262,12 +262,12 @@ class OperationReportingMySqlIT {
         assertThat(jdbc.queryForObject("select tag from outbox_event where event_type = 'WorkOrderCompleted' and aggregate_id = ?", String.class, id)).isEqualTo("WorkOrderCompleted");
 
         // 完工后冲销 → IN_PROGRESS，审计记录 REPORT_REVERSED；冲销数量以正数计入 reversal_qty，report_qty 不减少
-        var revGood = meters.find("mes.workorder.reversal.qty").tag("kind", "good").tag("uom", "PCS").summary();
-        double revGood0 = revGood == null ? 0 : revGood.totalAmount();
-        double repGood0 = meters.get("mes.workorder.report.qty").tag("kind", "good").tag("uom", "PCS").summary().totalAmount();
+        var revGood = meters.find("mes.workorder.reversal.qty").tag("kind", "good").tag("uom", "PCS").counter();
+        double revGood0 = revGood == null ? 0 : revGood.count();
+        double repGood0 = meters.get("mes.workorder.report.qty").tag("kind", "good").tag("uom", "PCS").counter().count();
         assertThat(reverse(id, d).getResponse().getStatus()).isEqualTo(201);
-        assertThat(meters.get("mes.workorder.reversal.qty").tag("kind", "good").tag("uom", "PCS").summary().totalAmount() - revGood0).isEqualTo(10.0);
-        assertThat(meters.get("mes.workorder.report.qty").tag("kind", "good").tag("uom", "PCS").summary().totalAmount()).isEqualTo(repGood0);
+        assertThat(meters.get("mes.workorder.reversal.qty").tag("kind", "good").tag("uom", "PCS").counter().count() - revGood0).isEqualTo(10.0);
+        assertThat(meters.get("mes.workorder.report.qty").tag("kind", "good").tag("uom", "PCS").counter().count()).isEqualTo(repGood0);
         assertThat(status(id)).isEqualTo("IN_PROGRESS");
         assertThat(good(id, "OP20")).isEqualByComparingTo("0");
         assertThat(jdbc.queryForObject("select count(*) from work_order_status_log where order_id = ? and from_status = 'COMPLETED' and to_status = 'IN_PROGRESS' and reason = 'REPORT_REVERSED'", Integer.class, id)).isEqualTo(1);
