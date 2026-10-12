@@ -13,7 +13,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import java.util.TreeMap;
 import java.util.Map;
@@ -26,8 +25,8 @@ import java.util.Map;
  *   <li>所有锁 stock_on_hand 的写路径（入库、出库、预留、扣减、隔离入出）都先不加锁地查出候选 id，
  *       再统一用 {@code where id in (...) order by id for update} 按主键升序加锁（#57）；涉及多个物料时先收集齐全部 id 再一次性加锁。
  *       加锁语句不带任何范围条件，避免范围扫描锁住其他物料的行；锁内再校验条件。</li>
- *   <li>需要新建现存量行的路径（入库新批次、入隔离）在独立短事务（REQUIRES_NEW）里按唯一键排序预建数量 0 的行并提交，
- *       主事务内不做插入，只收集 id 后一次性按主键加锁（见 {@link #lockRows}）。</li>
+ *   <li>需要新建现存量行的路径（入库新批次、入隔离）由调用方在主事务开始前调用 {@link #prepareRows}，在独立短事务里按唯一键排序
+ *       预建数量 0 的行并提交；主事务内不做插入，只收集 id 后一次性按主键加锁（见 {@link #lockRows}）。</li>
  *   <li>可用量 = 现存量合计 − ACTIVE 预留单中 OPEN 行的未扣减量（reserved_qty − consumed_qty）。</li>
  *   <li>现存量行更新同时带 version 条件并加一：已持有行锁时条件必然成立，作为防御性校验与变更计数。</li>
  *   <li>每次余额变化都追加一条流水（只追加、不修改），流水与余额在同一事务提交，可随时对账。</li>
@@ -46,13 +45,12 @@ public class StockService {
     private final LocationService locations;
     private final Clock clock;
     private final InventoryMetrics metrics;
-    /** 预建现存量行专用的独立短事务（REQUIRES_NEW）：立即提交，主事务内因此不再有插入。 */
+    /** 预建现存量行专用的独立短事务：必须在主事务开始前调用（见 {@link #prepareRows}），立即提交。 */
     private final TransactionTemplate prebuildTx;
 
     public StockService(JdbcTemplate jdbc, LocationService locations, Clock clock, InventoryMetrics metrics, PlatformTransactionManager txManager) {
         this.jdbc = jdbc; this.locations = locations; this.clock = clock; this.metrics = metrics;
         this.prebuildTx = new TransactionTemplate(txManager);
-        this.prebuildTx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     /** 现存量行的唯一键（物料、库位、批次）；按此顺序排序后预建，避免并发预建互相等待。 */
@@ -73,7 +71,7 @@ public class StockService {
         ensureUom(r.materialCode(), r.uom());
         ensureLot(r.materialCode(), r.lotNo());
         RowKey key = new RowKey(r.materialCode(), r.locationCode(), r.lotNo());
-        LockedRow row = lockRows(List.of(key), true).get(key);
+        LockedRow row = requirePrepared(lockRows(List.of(key)), key);
         return applyDelta(row, r.materialCode(), r.uom(), qty, INBOUND, "EXTERNAL", r.refNo(), operator);
     }
 
@@ -158,7 +156,7 @@ public class StockService {
         ensureUom(material, uom);
         ensureLot(material, lotNo);
         RowKey key = new RowKey(material, QC_HOLD, lotNo);
-        LockedRow row = lockRows(List.of(key), true).get(key);
+        LockedRow row = requirePrepared(lockRows(List.of(key)), key);
         return applyDelta(row, material, uom, qty, QC_HOLD_IN, "NCR", ncrNo, operator);
     }
 
@@ -170,7 +168,7 @@ public class StockService {
         String registered = requireUom(material, uom);
         RowKey key = new RowKey(material, QC_HOLD, lotNo);
         // 出隔离不预建：行不存在即隔离量为 0，下面按不足返回 409。
-        LockedRow row = lockRows(List.of(key), false).get(key);
+        LockedRow row = lockRows(List.of(key)).get(key);
         BigDecimal held = row == null ? BigDecimal.ZERO : row.qty();
         if (qty.compareTo(held) > 0) {
             throw new ProblemException(ProblemType.INSUFFICIENT_STOCK, "QC-HOLD 隔离量不足",
@@ -181,25 +179,38 @@ public class StockService {
     }
 
     /**
-     * 按唯一键一次性锁定若干现存量行（可同时包含源库位与目标库位，如普通库位与 QC-HOLD），#57：
-     * <ol>
-     *   <li>{@code prebuild=true} 时，先在独立短事务（REQUIRES_NEW，立即提交）里按唯一键排序，对缺失的行
-     *       {@code INSERT ... ON DUPLICATE KEY UPDATE} 以数量 0 预建；主事务内不做任何插入。</li>
-     *   <li>主事务内不加锁地按唯一键查出全部 id，再一次性 {@code WHERE id IN (...) ORDER BY id FOR UPDATE}。</li>
-     *   <li>锁内校验：只返回键值与请求一致的行。</li>
-     * </ol>
+     * 主事务开始<b>之前</b>调用（#57）：在独立短事务里按唯一键排序，对缺失的现存量行
+     * {@code INSERT ... ON DUPLICATE KEY UPDATE} 以数量 0 预建并提交。
+     * <p>不能放进主事务（哪怕用 REQUIRES_NEW）：嵌套事务要再占一个连接，并发请求数达到连接池上限时，
+     * 所有请求都持有一个连接等第二个，连接池会互相卡死（CI 中 concurrentSameKeyInboundsOnce 已复现）。
+     * 已存在的行先用不加锁的查询跳过；并发预建同一键时 {@code id = id} 为空更新，不抛异常。数量 0 的行不出现在现存量查询中。
+     * 幂等重放、业务失败都会留下数量 0 的空行，无副作用。</p>
+     */
+    public void prepareRows(Collection<RowKey> keys) {
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("prepareRows 必须在主事务开始前调用");
+        List<RowKey> missing = new java.util.TreeSet<>(keys).stream().filter(k -> findIds(k).isEmpty()).toList();
+        if (missing.isEmpty()) return;
+        prebuildTx.executeWithoutResult(status -> {
+            for (RowKey k : missing) {
+                jdbc.update("insert into stock_on_hand (material_code, location_code, lot_no, qty, version, updated_at) values (?, ?, ?, 0, 0, ?)"
+                    + " on duplicate key update id = id", k.materialCode(), k.locationCode(), k.lotNo(), Timestamp.from(clock.instant()));
+            }
+        });
+    }
+
+    /**
+     * 主事务内按唯一键一次性锁定若干现存量行（可同时包含源库位与目标库位，如普通库位与 QC-HOLD）：
+     * 不加锁地按唯一键收集全部 id → 一次性 {@code WHERE id IN (...) ORDER BY id FOR UPDATE} → 锁内校验键值。
+     * 主事务内不做任何插入；需要新建的行由调用方事先 {@link #prepareRows} 预建。
      * 不再逐行“查 → 插 → 锁”：逐行加锁时，两个方向相反的操作（A→QC-HOLD 与 QC-HOLD→A）会以相反顺序持锁而死锁。
      *
-     * @return 唯一键 → 已加锁的行；不存在（且未预建）的键不出现在结果中
+     * @return 唯一键 → 已加锁的行；不存在的键不出现在结果中
      */
-    Map<RowKey, LockedRow> lockRows(Collection<RowKey> keys, boolean prebuild) {
+    Map<RowKey, LockedRow> lockRows(Collection<RowKey> keys) {
         List<RowKey> sorted = List.copyOf(new java.util.TreeSet<>(keys));
-        if (prebuild) prebuildRows(sorted);
         List<Long> ids = new ArrayList<>();
-        for (RowKey k : sorted) {
-            ids.addAll(jdbc.queryForList("select id from stock_on_hand where material_code = ? and location_code = ? and lot_no = ?",
-                Long.class, k.materialCode(), k.locationCode(), k.lotNo()));
-        }
+        for (RowKey k : sorted) ids.addAll(findIds(k));
         Map<RowKey, LockedRow> result = new TreeMap<>();
         for (LockedRow row : lockByIds(ids)) {
             RowKey k = new RowKey(row.materialCode(), row.locationCode(), row.lotNo());
@@ -208,22 +219,17 @@ public class StockService {
         return result;
     }
 
-    /**
-     * 独立短事务预建缺失的现存量行（数量 0、版本 0），按唯一键排序执行后立即提交。
-     * 已存在的行先用不加锁的查询跳过，避免对已存在行执行 ON DUPLICATE KEY UPDATE 时等待其他事务的行锁；
-     * 并发预建同一键时 {@code id = id} 为空更新，不抛异常、不改数据。数量 0 的行不出现在现存量查询中。
-     */
-    private void prebuildRows(List<RowKey> sorted) {
-        List<RowKey> missing = sorted.stream().filter(k -> jdbc.queryForList(
-            "select id from stock_on_hand where material_code = ? and location_code = ? and lot_no = ?",
-            Long.class, k.materialCode(), k.locationCode(), k.lotNo()).isEmpty()).toList();
-        if (missing.isEmpty()) return;
-        prebuildTx.executeWithoutResult(status -> {
-            for (RowKey k : missing) {
-                jdbc.update("insert into stock_on_hand (material_code, location_code, lot_no, qty, version, updated_at) values (?, ?, ?, 0, 0, ?)"
-                    + " on duplicate key update id = id", k.materialCode(), k.locationCode(), k.lotNo(), Timestamp.from(clock.instant()));
-            }
-        });
+    /** 入库类操作要求目标行已预建；缺失说明调用方漏了 prepareRows，属于编程错误。 */
+    private static LockedRow requirePrepared(Map<RowKey, LockedRow> rows, RowKey key) {
+        LockedRow row = rows.get(key);
+        if (row == null) throw new IllegalStateException("现存量行未预建，调用方须在主事务前调用 prepareRows：" + key);
+        return row;
+    }
+
+    /** 按唯一键查 id（不加锁）。 */
+    private List<Long> findIds(RowKey k) {
+        return jdbc.queryForList("select id from stock_on_hand where material_code = ? and location_code = ? and lot_no = ?",
+            Long.class, k.materialCode(), k.locationCode(), k.lotNo());
     }
 
     /** 单个物料的普通库位行，见 {@link #lockMaterialRows(Collection)}。 */

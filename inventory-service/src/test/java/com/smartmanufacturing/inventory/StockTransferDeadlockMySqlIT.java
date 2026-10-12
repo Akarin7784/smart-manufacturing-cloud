@@ -41,10 +41,12 @@ class StockTransferDeadlockMySqlIT {
 
     /** 在一个 READ COMMITTED 事务里一次性锁住源与目标两行，源减 qty、目标加 qty。 */
     private void move(TransactionTemplate tx, String from, String to, BigDecimal qty) {
+        var src = new StockService.RowKey(MATERIAL, from, LOT);
+        var dst = new StockService.RowKey(MATERIAL, to, LOT);
+        // 主事务前预建（两行均已存在时为空操作），主事务内一次性按主键升序锁源与目标。
+        stock.prepareRows(List.of(src, dst));
         tx.executeWithoutResult(status -> {
-            var src = new StockService.RowKey(MATERIAL, from, LOT);
-            var dst = new StockService.RowKey(MATERIAL, to, LOT);
-            Map<StockService.RowKey, StockService.LockedRow> rows = stock.lockRows(List.of(src, dst), true);
+            Map<StockService.RowKey, StockService.LockedRow> rows = stock.lockRows(List.of(src, dst));
             StockService.LockedRow s = rows.get(src), d = rows.get(dst);
             // 锁内校验余额：不足就跳过本轮（不同轮次方向相反，余额会来回变化）。
             if (s.qty().compareTo(qty) < 0) return;
@@ -56,6 +58,7 @@ class StockTransferDeadlockMySqlIT {
     @Test void oppositeTransfersBetweenLocationAndQcHoldDoNotDeadlock() throws Exception {
         locations.create(new InventoryDtos.CreateLocation(LOC, "WH", LOC));
         Movement m = new Movement(MATERIAL, "件", LOC, LOT, "100", "IT");
+        stock.prepareRows(List.of(new StockService.RowKey(MATERIAL, LOC, LOT), new StockService.RowKey(MATERIAL, StockService.QC_HOLD, LOT)));
         idempotency.execute("it", "mv-init", "inbound", m, 201, () -> stock.inbound("it", m));
         idempotency.execute("it", "mv-hold", "qc-hold.receipt", "mv-hold", 201,
             () -> stock.qcHoldIn("it", MATERIAL, "件", LOT, new BigDecimal("100"), "NCR-20261013-0001"));

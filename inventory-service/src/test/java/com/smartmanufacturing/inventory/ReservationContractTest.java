@@ -57,6 +57,8 @@ class ReservationContractTest {
     }
 
     private void inbound(String material, String uom, String lot, String qty) {
+        // 与控制器一致：主事务前预建现存量行。
+        stock.prepareRows(List.of(new StockService.RowKey(material, "CT-01", lot)));
         tx.executeWithoutResult(s -> stock.inbound("ct", new InventoryDtos.Movement(material, uom, "CT-01", lot, qty, null)));
     }
 
