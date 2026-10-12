@@ -23,12 +23,19 @@ manufacturing:
       inventory-reservation: mes-inventory-reservation
       # 工单状态事件：工单服务经 outbox 发布。
       workorder-event: mes-workorder-event
+      # 工单不良品待质检事件：工单服务经 outbox 发布，质检服务订阅。
+      workorder-quality: mes-workorder-quality
     tags:
       reservation-created: ReservationCreated
       reservation-released: ReservationReleased
       reservation-consumed: ReservationConsumed
       # 预留过期由库存服务定时任务判定后发布，工单服务只订阅，不自行计算过期。
       reservation-expired: ReservationExpired
+      # 报工不良数 > 0 时发布；冲销带不良数的报工时发布。
+      defect-reported: DefectReported
+      defect-reversed: DefectReversed
     consumer-groups:
       # 工单服务订阅库存预留事件的消费组。
       workorder-reservation: CG_WORKORDER_RESERVATION
+      # 质检服务订阅工单不良品事件的消费组。
+      quality-defect: CG_QUALITY_DEFECT
