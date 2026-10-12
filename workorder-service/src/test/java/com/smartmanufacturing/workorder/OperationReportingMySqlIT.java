@@ -111,7 +111,11 @@ class OperationReportingMySqlIT {
         BigDecimal ledger = jdbc.queryForObject("select sum(good_qty + defect_qty + scrap_qty) from wo_operation_report where order_id = ? and op_no = 'OP10'", BigDecimal.class, id);
         assertThat(total).isEqualByComparingTo("10").isEqualByComparingTo(ledger);
         assertThat(status(id)).isEqualTo("IN_PROGRESS");
-        assertThat(events(id, "WorkOrderStarted")).hasSize(1);
+        var started = events(id, "WorkOrderStarted");
+        assertThat(started).hasSize(1);
+        assertThat(started.get(0).get("workOrderNo").asText()).isEqualTo(id);
+        assertThat(started.get(0).has("eventId")).isTrue();
+        assertThat(started.get(0).has("occurredAt")).isTrue();
         assertThat(events(id, "DefectReported")).hasSize(5);
     }
 
@@ -167,7 +171,11 @@ class OperationReportingMySqlIT {
         assertThat(status(id)).isEqualTo("COMPLETED");
         var completed = events(id, "WorkOrderCompleted");
         assertThat(completed).hasSize(1);
-        assertThat(completed.get(0).get("shortfall").asText()).isEqualTo("0.000000");
+        assertThat(completed.get(0).get("shortfallQty").asText()).isEqualTo("0");
+        assertThat(completed.get(0).get("completionMode").asText()).isEqualTo("AUTO");
+        assertThat(completed.get(0).get("uom").asText()).isEqualTo("PCS");
+        assertThat(completed.get(0).get("completedQty").asText()).isEqualTo("10.000000");
+        assertThat(completed.get(0).has("reason")).isFalse();
         assertThat(jdbc.queryForObject("select tag from outbox_event where event_type = 'WorkOrderCompleted' and aggregate_id = ?", String.class, id)).isEqualTo("WorkOrderCompleted");
 
         // 完工后冲销 → IN_PROGRESS，审计记录 REPORT_REVERSED
@@ -243,8 +251,11 @@ class OperationReportingMySqlIT {
         assertThat(jdbc.queryForObject("select note from work_order_status_log where order_id = ? and to_status = 'COMPLETED' and reason = 'MANUAL_COMPLETE'", String.class, id)).isEqualTo("客户提前提货");
         var ev = events(id, "WorkOrderCompleted");
         assertThat(ev).hasSize(1);
-        assertThat(ev.get(0).get("shortfall").asText()).isEqualTo("2.500000");
-        assertThat(ev.get(0).get("manual").asBoolean()).isTrue();
+        assertThat(ev.get(0).get("shortfallQty").asText()).isEqualTo("2.500000");
+        assertThat(ev.get(0).get("completionMode").asText()).isEqualTo("MANUAL");
+        assertThat(ev.get(0).get("plannedQty").asText()).isEqualTo("10.000000");
+        assertThat(ev.get(0).get("completedQty").asText()).isEqualTo("7.500000");
+        assertThat(ev.get(0).get("uom").asText()).isEqualTo("PCS");
         assertThat(ev.get(0).get("reason").asText()).isEqualTo("客户提前提货");
         // 重放返回首次结果；已完工不能再报工
         assertThat(call(path, "c-1", "{\"reason\":\"客户提前提货\"}").getResponse().getContentAsString()).isEqualTo(ok.getResponse().getContentAsString());

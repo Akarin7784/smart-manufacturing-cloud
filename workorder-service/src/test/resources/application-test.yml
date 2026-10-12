@@ -27,7 +27,7 @@ manufacturing:
       workorder-event: mes-workorder-event
       workorder-quality: mes-workorder-quality
     tags:
-      work-order-started: WorkOrderStarted
-      work-order-completed: WorkOrderCompleted
+      workorder-started: WorkOrderStarted
+      workorder-completed: WorkOrderCompleted
       defect-reported: DefectReported
       defect-reversed: DefectReversed

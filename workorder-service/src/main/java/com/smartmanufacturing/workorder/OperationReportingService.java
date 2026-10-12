@@ -46,8 +46,8 @@ public class OperationReportingService {
         this.jdbc = jdbc; this.tx = tx; this.journal = journal; this.mapper = mapper; this.clock = clock;
         // 启动即解析，缺配置直接启动失败，而不是在第一次报工时才发现
         this.eventTopic = mq.topic("workorder-event");
-        this.startedTag = mq.tag("work-order-started");
-        this.completedTag = mq.tag("work-order-completed");
+        this.startedTag = mq.tag("workorder-started");
+        this.completedTag = mq.tag("workorder-completed");
         this.qualityTopic = mq.topic("workorder-quality");
         this.defectReportedTag = mq.tag("defect-reported");
         this.defectReversedTag = mq.tag("defect-reversed");
@@ -107,15 +107,15 @@ public class OperationReportingService {
         String status = order.status();
         if ("RELEASED".equals(status)) {
             changeStatus(order.id(), status, "IN_PROGRESS", "FIRST_REPORT", "首次报工 " + reportId, operator);
-            journal.routedEvent(order.id(), "WorkOrderStarted", eventTopic, startedTag, Map.of(
-                "workOrderNo", order.id(), "plannedQty", num(order.planned()), "operationNo", opNo, "reportId", reportId));
+            // 字段按群内约定：eventId、workOrderNo、occurredAt（eventId / occurredAt 由 journal 补充）
+            journal.routedEvent(order.id(), "WorkOrderStarted", eventTopic, startedTag, Map.of("workOrderNo", order.id()));
             status = "IN_PROGRESS";
         }
         List<Progress> updated = progress(order.id());
         Progress last = updated.get(updated.size() - 1);
         if (last.good().compareTo(order.planned()) >= 0) {
             changeStatus(order.id(), status, "COMPLETED", "AUTO_COMPLETE", "末道累计合格数达到计划数", operator);
-            journal.routedEvent(order.id(), "WorkOrderCompleted", eventTopic, completedTag, completedPayload(order, last.good(), false, null));
+            journal.routedEvent(order.id(), "WorkOrderCompleted", eventTopic, completedTag, completedPayload(order, last.good(), last.uom(), false, null));
             status = "COMPLETED";
         }
         LOG.info("报工成功：工单 {} 工序 {} 报工 {} 合格 {} 不良 {} 报废 {} 工单状态 {}", order.id(), opNo, reportId, num(good), num(defect), num(scrap), status);
@@ -198,7 +198,7 @@ public class OperationReportingService {
         BigDecimal lastGood = ops.get(ops.size() - 1).good();
         BigDecimal shortfall = order.planned().subtract(lastGood).max(ZERO);
         changeStatus(order.id(), order.status(), "COMPLETED", "MANUAL_COMPLETE", reason, operator);
-        journal.routedEvent(order.id(), "WorkOrderCompleted", eventTopic, completedTag, completedPayload(order, lastGood, true, reason));
+        journal.routedEvent(order.id(), "WorkOrderCompleted", eventTopic, completedTag, completedPayload(order, lastGood, ops.get(ops.size() - 1).uom(), true, reason));
         LOG.info("手工完工：工单 {} 计划 {} 末道合格 {} 短缺 {} 原因 {}", order.id(), num(order.planned()), num(lastGood), num(shortfall), reason);
         return new WorkOrderCompletionView(progressView(order.id(), "COMPLETED", order.planned(), ops), num(shortfall), reason);
     }
@@ -321,14 +321,19 @@ public class OperationReportingService {
         journal.routedEvent(order.id(), type, qualityTopic, tag, payload);
     }
 
-    private static Map<String, Object> completedPayload(Order order, BigDecimal lastGood, boolean manual, String reason) {
+    /**
+     * WorkOrderCompleted 字段（群内约定）：eventId、workOrderNo、uom、occurredAt、completionMode（AUTO|MANUAL）、
+     * plannedQty、completedQty、shortfallQty（十进制字符串；AUTO 固定为 "0"）、reason（仅 MANUAL）。
+     */
+    private static Map<String, Object> completedPayload(Order order, BigDecimal lastGood, String uom, boolean manual, String reason) {
         var payload = new LinkedHashMap<String, Object>();
         payload.put("workOrderNo", order.id());
+        payload.put("uom", uom);
+        payload.put("completionMode", manual ? "MANUAL" : "AUTO");
         payload.put("plannedQty", num(order.planned()));
         payload.put("completedQty", num(lastGood));
-        payload.put("shortfall", num(order.planned().subtract(lastGood).max(ZERO)));
-        payload.put("manual", manual);
-        payload.put("reason", reason);
+        payload.put("shortfallQty", manual ? num(order.planned().subtract(lastGood).max(ZERO)) : "0");
+        if (manual) payload.put("reason", reason);
         return payload;
     }
 

@@ -12,7 +12,7 @@ import java.util.Map;
 public record MqProperties(Map<String, String> topics, Map<String, String> tags) {
     /** 按配置键取 Topic，例如 workorder-event。 */
     public String topic(String key) { return require(topics, "topics." + key, key); }
-    /** 按配置键取 Tag，例如 work-order-started。 */
+    /** 按配置键取 Tag，例如 workorder-started。 */
     public String tag(String key) { return require(tags, "tags." + key, key); }
 
     private static String require(Map<String, String> map, String path, String key) {
