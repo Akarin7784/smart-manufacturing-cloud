@@ -1,0 +1,798 @@
+# 质检服务（quality-service）不良品处置（NCR）接口契约。
+# 本文件是质检服务对外接口与事件的唯一契约来源：前端、网关路由与契约测试均按本文件生成，
+# 修改接口必须先修改本文件并通过评审，再改实现。CI 使用 Spectral（.spectral.yaml）校验。
+# 设计背景与已拍板决策见 docs/quality-design.md。
+openapi: 3.1.0
+info:
+  title: 质检服务不良品处置接口（quality-service）
+  version: 1.0.0
+  contact:
+    name: smart-manufacturing-cloud 维护者
+    url: https://github.com/Akarin7784/smart-manufacturing-cloud
+  summary: 报工不良品自动生成 NCR，评审、部分处置（返工/报废/让步接收）与关闭。
+  description: |
+    ## 业务概述
+    工单服务在报工产生不良品时发布 `DefectReported` 事件，质检服务据此**一次报工生成一张 NCR**（不合格品处置单）；
+    质检员评审后登记处置（可多次部分处置），处置累计量等于不良量时 NCR 自动变为 `DISPOSED`，再人工关闭。
+    本期不提供手工新建 NCR 的接口，NCR 只由事件生成。
+
+    ## NCR 状态
+    | 状态 | 含义 | 可迁移到 |
+    | --- | --- | --- |
+    | `OPEN` | 已由报工不良生成，待评审 | `UNDER_REVIEW`、`VOIDED` |
+    | `UNDER_REVIEW` | 评审中，可登记（部分）处置 | `DISPOSED`、`VOIDED`（仅无任何处置时） |
+    | `DISPOSED` | 处置累计量 = 不良量 | `CLOSED` |
+    | `CLOSED` | 已关闭 | 终态 |
+    | `VOIDED` | 原报工被冲销而作废 | 终态 |
+
+    ## 冲销与乱序（事件消费侧，无 HTTP 返回）
+    - `DefectReversed` 以 `reversedReportId`（被冲销的原报工）定位 NCR，`reversalId` 为冲销记录本身。
+    - 未处置的 NCR（`OPEN`/`UNDER_REVIEW` 且无处置行）收到冲销 → `VOIDED`。
+    - 冲销先于原报工到达：暂存待对冲（`pending-reversals`），原报工在 TTL（默认 24 小时，可配置）内到达时直接生成 `VOIDED` 的 NCR；
+      超时未对冲的暂存标记为 `EXPIRED` 并告警，由人工核对。
+    - 已有处置的 NCR 收到冲销：**不回退**（实物已返工或报废），NCR 状态与处置量不变，记录一条
+      `DISPOSED_REVERSAL_CONFLICT` 冲突（见 `conflicts`）、计数并告警。该情况不对应任何 Problem type。
+
+    ## 处置与库存
+    处置类型为 `REWORK`（返工）、`SCRAP`（报废）、`CONCESSION`（让步接收）。**本期所有处置（含 SCRAP）只登记记录，
+    不调用库存服务、不改动库存**；处置回写库存在下期契约中定义。
+
+    ## 认证
+    - 用户令牌（受众 manufacturing-api），查询需 `quality:read`，写入需 `quality:write`；本期单人处置，无审批流。
+    - 操作人取自已验证令牌中的 sub，不信任任何请求头声明的身份。
+
+    ## 幂等
+    - 所有修改类接口必须携带 `Idempotency-Key`，作用域为用户 sub，保留 7 天。
+    - 同一作用域内相同键、相同请求：原样返回首次的状态码与响应体；相同键、不同请求体：422（type=idempotency-key-conflict）。
+
+    ## 数量
+    所有数量为 `DECIMAL(18,6)` 的十进制字符串；处置的 `uom` 必须与 NCR 的 `uom` 一致，不做单位换算。
+
+    ## 错误
+    所有错误响应遵循 RFC 7807，媒体类型为 `application/problem+json`，业务错误的 `type` 取值见 `ProblemType`。
+
+    ## 事件
+    质检服务经 outbox 向 `mes-quality-event` 发布 `NcrOpened`、`NcrDisposed`、`NcrClosed`、`NcrVoided`，带 `aggregateVersion`，
+    投递语义为至少一次，消费端按 `eventId` 幂等。本期只发不消费，结构见 `x-events`。
+servers:
+  - url: http://localhost:8080
+    description: 本地经网关访问
+tags:
+  - name: ncr
+    description: 不合格品处置单（NCR）
+  - name: exception
+    description: 冲销对冲异常（暂存冲销与已处置冲突），只读
+security:
+  - userBearer: []
+
+paths:
+  /api/quality/ncrs:
+    get:
+      tags: [ncr]
+      operationId: listNcrs
+      summary: 分页查询 NCR
+      description: 按状态、工单号筛选，按创建时间倒序分页。需要 `quality:read`。
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: NCR 状态。
+          schema:
+            $ref: '#/components/schemas/NcrStatus'
+        - name: workOrderNo
+          in: query
+          required: false
+          description: 工单号。
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: NCR 分页结果。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NcrPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/quality/ncrs/{ncrNo}:
+    get:
+      tags: [ncr]
+      operationId: getNcr
+      summary: 查询 NCR 详情
+      description: 返回 NCR 当前状态与全部处置行。需要 `quality:read`。
+      parameters:
+        - $ref: '#/components/parameters/NcrNo'
+      responses:
+        '200':
+          description: NCR 详情。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ncr'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/quality/ncrs/{ncrNo}/review:
+    post:
+      tags: [ncr]
+      operationId: reviewNcr
+      summary: 开始评审
+      description: |
+        `OPEN` → `UNDER_REVIEW`。对已是 `UNDER_REVIEW` 的 NCR 重复调用返回 200 与当前状态（幂等）；
+        其他状态返回 409（type=invalid-status-transition），已作废返回 409（type=ncr-voided）。需要 `quality:write`。
+      parameters:
+        - $ref: '#/components/parameters/NcrNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 已进入评审，返回最新 NCR。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ncr'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/StatusConflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+
+  /api/quality/ncrs/{ncrNo}/dispositions:
+    post:
+      tags: [ncr]
+      operationId: createDisposition
+      summary: 登记（部分）处置
+      description: |
+        仅 `UNDER_REVIEW` 可登记；可多次部分处置，处置累计量等于不良量时 NCR 自动变为 `DISPOSED`。
+        数量超过剩余待处置量返回 422（type=over-dispose），单位与 NCR 不一致返回 422（type=uom-mismatch）。
+        **本期所有处置类型（含 SCRAP）只登记记录，不调用库存服务、不改动库存。**需要 `quality:write`。
+      parameters:
+        - $ref: '#/components/parameters/NcrNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDispositionRequest'
+      responses:
+        '201':
+          description: 已登记，返回最新 NCR（含新处置行）。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ncr'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/StatusConflict'
+        '422':
+          description: 处置数量超过剩余待处置量（over-dispose）、单位不一致（uom-mismatch）或幂等键冲突（idempotency-key-conflict）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/DispositionUnprocessableProblem'
+
+  /api/quality/ncrs/{ncrNo}/close:
+    post:
+      tags: [ncr]
+      operationId: closeNcr
+      summary: 关闭 NCR
+      description: |
+        `DISPOSED` → `CLOSED`。对已 `CLOSED` 的 NCR 重复调用返回 200；其他状态返回 409（type=invalid-status-transition），
+        已作废返回 409（type=ncr-voided）。需要 `quality:write`。
+      parameters:
+        - $ref: '#/components/parameters/NcrNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 已关闭，返回最新 NCR。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ncr'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/StatusConflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+
+  /api/quality/pending-reversals:
+    get:
+      tags: [exception]
+      operationId: listPendingReversals
+      summary: 查询暂存的冲销
+      description: 冲销先于原报工到达时的暂存记录；`EXPIRED` 表示超时未对冲，需人工按 reversedReportId 去工单侧核对。需要 `quality:read`。
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: 暂存状态。
+          schema:
+            $ref: '#/components/schemas/PendingReversalStatus'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 暂存冲销分页结果。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PendingReversalPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/quality/conflicts:
+    get:
+      tags: [exception]
+      operationId: listConflicts
+      summary: 查询冲销冲突
+      description: 已有处置的 NCR 收到冲销时记录的 `DISPOSED_REVERSAL_CONFLICT`；NCR 本身不回退，由人工线下处理。需要 `quality:read`。
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 冲突记录分页结果。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  securitySchemes:
+    userBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 用户令牌（受众 manufacturing-api），按 permissions 声明授权：查询需 `quality:read`，写入需 `quality:write`。
+
+  parameters:
+    NcrNo:
+      name: ncrNo
+      in: path
+      required: true
+      description: NCR 编号，格式 `NCR-yyyyMMdd-####`。
+      schema:
+        type: string
+        pattern: '^NCR-\d{8}-\d{4,}$'
+      example: NCR-20261012-0001
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 幂等键，作用域为用户 sub；相同键不同请求体返回 422。
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '^[A-Za-z0-9._:-]+$'
+      example: 7f3c9a2e-5b1d-4e8a-9c0f-2d6b8e4a1c33
+    Page:
+      name: page
+      in: query
+      required: false
+      description: 页码，从 0 开始。
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    Size:
+      name: size
+      in: query
+      required: false
+      description: 每页条数。
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 20
+
+  responses:
+    BadRequest:
+      description: 请求参数校验失败（type=validation-error）。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ValidationProblem'
+    Unauthorized:
+      description: 未认证或令牌无效。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: 缺少 quality:read 或 quality:write。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: NCR 不存在（type=ncr-not-found）。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/NcrNotFoundProblem'
+    StatusConflict:
+      description: 当前状态不允许该操作（type=invalid-status-transition）或 NCR 已作废（type=ncr-voided）。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/StatusConflictProblem'
+    IdempotencyConflict:
+      description: 同一作用域内幂等键已用于不同的请求体（type=idempotency-key-conflict）。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/IdempotencyConflictProblem'
+
+  schemas:
+    Quantity:
+      type: string
+      pattern: '^\d{1,12}(\.\d{1,6})?$'
+      description: 非负数量，十进制字符串，最多 12 位整数、6 位小数，对应 DECIMAL(18,6)。
+      examples: ['1.5']
+
+    NcrStatus:
+      type: string
+      enum: [OPEN, UNDER_REVIEW, DISPOSED, CLOSED, VOIDED]
+      description: NCR 状态，迁移规则见文档开头。
+
+    DispositionType:
+      type: string
+      enum: [REWORK, SCRAP, CONCESSION]
+      description: |
+        处置类型：`REWORK` 返工、`SCRAP` 报废、`CONCESSION` 让步接收。本期均只登记记录，不改动库存。
+
+    Ncr:
+      type: object
+      description: 不合格品处置单。
+      required: [ncrNo, status, sourceReportId, workOrderNo, operationNo, materialCode, uom, defectQty, disposedQty, dispositions, createdAt, version]
+      properties:
+        ncrNo:
+          type: string
+          description: NCR 编号。
+        status:
+          $ref: '#/components/schemas/NcrStatus'
+        sourceReportId:
+          type: string
+          description: 来源报工记录 ID（DefectReported.reportId），每次报工唯一对应一张 NCR。
+        workOrderNo:
+          type: string
+          description: 工单号。
+        operationNo:
+          type: string
+          description: 工序号。
+        materialCode:
+          type: string
+          description: 物料编码（取工单产品码）。
+        lotNo:
+          type: [string, 'null']
+          description: 批次号。
+        uom:
+          type: string
+          description: 计量单位编码（主数据编码，如 `件`）。
+        defectQty:
+          $ref: '#/components/schemas/Quantity'
+        disposedQty:
+          $ref: '#/components/schemas/Quantity'
+        voidReason:
+          type: [string, 'null']
+          enum: [REVERSED, REVERSED_BEFORE_REPORTED, null]
+          description: 作废原因：`REVERSED` 正常冲销，`REVERSED_BEFORE_REPORTED` 冲销先于原报工到达后对冲。非作废时为 null。
+        dispositions:
+          type: array
+          description: 处置行，按登记顺序，只追加不修改。
+          items:
+            $ref: '#/components/schemas/Disposition'
+        createdAt:
+          type: string
+          format: date-time
+          description: 创建时间。
+        version:
+          type: integer
+          format: int64
+          description: NCR 版本，每次状态或处置变化递增，与事件 aggregateVersion 一致。
+
+    Disposition:
+      type: object
+      description: 处置行。
+      required: [dispositionId, type, qty, uom, operator, disposedAt]
+      properties:
+        dispositionId:
+          type: string
+          description: 处置行 ID。
+        type:
+          $ref: '#/components/schemas/DispositionType'
+        qty:
+          $ref: '#/components/schemas/Quantity'
+        uom:
+          type: string
+          description: 计量单位，与 NCR 一致。
+        reason:
+          type: [string, 'null']
+          description: 处置说明。
+        operator:
+          type: string
+          description: 操作人（令牌 sub）。
+        disposedAt:
+          type: string
+          format: date-time
+          description: 登记时间。
+
+    CreateDispositionRequest:
+      type: object
+      description: 登记处置请求。
+      required: [type, qty, uom]
+      properties:
+        type:
+          $ref: '#/components/schemas/DispositionType'
+        qty:
+          allOf:
+            - $ref: '#/components/schemas/Quantity'
+          description: 本次处置数量，必须大于 0 且不超过剩余待处置量（defectQty − disposedQty）。
+        uom:
+          type: string
+          maxLength: 16
+          description: 计量单位，必须与 NCR 的 uom 一致，否则 422（type=uom-mismatch）。
+        reason:
+          type: string
+          maxLength: 500
+          description: 处置说明。
+
+    NcrPage:
+      type: object
+      description: NCR 分页结果。
+      required: [items, page, size, total]
+      properties:
+        items:
+          type: array
+          description: 本页 NCR。
+          items:
+            $ref: '#/components/schemas/Ncr'
+        page:
+          type: integer
+          description: 页码。
+        size:
+          type: integer
+          description: 每页条数。
+        total:
+          type: integer
+          format: int64
+          description: 总条数。
+
+    PendingReversalStatus:
+      type: string
+      enum: [WAITING, MATCHED, EXPIRED]
+      description: 暂存冲销状态：等待原报工、已对冲、超时未对冲。
+
+    PendingReversal:
+      type: object
+      description: 先于原报工到达的冲销暂存记录。
+      required: [reversedReportId, reversalId, status, receivedAt]
+      properties:
+        reversedReportId:
+          type: string
+          description: 被冲销的原报工记录 ID。
+        reversalId:
+          type: string
+          description: 冲销记录 ID。
+        status:
+          $ref: '#/components/schemas/PendingReversalStatus'
+        receivedAt:
+          type: string
+          format: date-time
+          description: 收到冲销事件的时间。
+        ncrNo:
+          type: [string, 'null']
+          description: 对冲后生成的（已作废）NCR 编号；未对冲时为 null。
+
+    PendingReversalPage:
+      type: object
+      description: 暂存冲销分页结果。
+      required: [items, page, size, total]
+      properties:
+        items:
+          type: array
+          description: 本页记录。
+          items:
+            $ref: '#/components/schemas/PendingReversal'
+        page:
+          type: integer
+          description: 页码。
+        size:
+          type: integer
+          description: 每页条数。
+        total:
+          type: integer
+          format: int64
+          description: 总条数。
+
+    Conflict:
+      type: object
+      description: 冲销冲突记录（事件消费侧产生，无 HTTP 返回）。
+      required: [eventId, type, ncrNo, reversedReportId, reversalId, disposedQty, recordedAt]
+      properties:
+        eventId:
+          type: string
+          description: 触发冲突的 DefectReversed 事件 ID。
+        type:
+          type: string
+          const: DISPOSED_REVERSAL_CONFLICT
+          description: 冲突类型；本期仅此一种。
+        ncrNo:
+          type: string
+          description: 受影响的 NCR（状态与处置量保持不变）。
+        reversedReportId:
+          type: string
+          description: 被冲销的原报工记录 ID。
+        reversalId:
+          type: string
+          description: 冲销记录 ID。
+        disposedQty:
+          $ref: '#/components/schemas/Quantity'
+        recordedAt:
+          type: string
+          format: date-time
+          description: 记录时间。
+
+    ConflictPage:
+      type: object
+      description: 冲突记录分页结果。
+      required: [items, page, size, total]
+      properties:
+        items:
+          type: array
+          description: 本页记录。
+          items:
+            $ref: '#/components/schemas/Conflict'
+        page:
+          type: integer
+          description: 页码。
+        size:
+          type: integer
+          description: 每页条数。
+        total:
+          type: integer
+          format: int64
+          description: 总条数。
+
+    ProblemType:
+      type: string
+      enum:
+        - validation-error
+        - idempotency-key-conflict
+        - uom-mismatch
+        - over-dispose
+        - invalid-status-transition
+        - ncr-voided
+        - ncr-not-found
+      description: |
+        固定的错误类型枚举（共 7 种），调用方按此分支处理，不解析 `detail`。
+        | type | HTTP 状态 | 含义 |
+        | --- | --- | --- |
+        | `validation-error` | 400 | 请求参数校验失败 |
+        | `idempotency-key-conflict` | 422 | 同一作用域内幂等键已用于不同请求体 |
+        | `uom-mismatch` | 422 | 处置单位与 NCR 单位不一致 |
+        | `over-dispose` | 422 | 处置数量超过剩余待处置量 |
+        | `invalid-status-transition` | 409 | 当前状态不允许该操作 |
+        | `ncr-voided` | 409 | NCR 已作废，不能再评审、处置或关闭 |
+        | `ncr-not-found` | 404 | 路径中的 NCR 编号不存在 |
+        401/403 由框架统一处理，type 为 `about:blank`。已处置 NCR 被冲销属于事件消费侧冲突，不对应任何 Problem type。
+
+    Problem:
+      type: object
+      description: RFC 7807 错误响应。
+      properties:
+        type:
+          type: string
+          description: 错误类型；业务错误取值见 ProblemType，401/403 为 `about:blank`。
+        title:
+          type: string
+          description: 错误简述。
+        status:
+          type: integer
+          description: HTTP 状态码。
+        detail:
+          type: string
+          description: 本次错误的具体说明。
+        instance:
+          type: string
+          format: uri-reference
+          description: 出错的请求资源。
+
+    ValidationProblem:
+      description: 参数校验错误。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              const: validation-error
+    NcrNotFoundProblem:
+      description: NCR 不存在。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              const: ncr-not-found
+    IdempotencyConflictProblem:
+      description: 幂等键冲突。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              const: idempotency-key-conflict
+    StatusConflictProblem:
+      description: 409 错误：状态不允许或 NCR 已作废。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              enum: [invalid-status-transition, ncr-voided]
+    DispositionUnprocessableProblem:
+      description: 422 错误：超处置、单位不一致或幂等键冲突。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              enum: [over-dispose, uom-mismatch, idempotency-key-conflict]
+
+    # ---------- 事件（只被 x-events 引用） ----------
+    NcrEventBase:
+      type: object
+      description: 质检事件公共字段；消费端按 eventId 幂等，按 ncrNo + aggregateVersion 取最新状态。
+      required: [eventId, eventType, ncrNo, sourceReportId, workOrderNo, status, aggregateVersion, occurredAt]
+      properties:
+        eventId:
+          type: string
+          description: 事件唯一 ID，outbox 补发时保持不变。
+        eventType:
+          type: string
+          enum: [NcrOpened, NcrDisposed, NcrClosed, NcrVoided]
+          description: 事件类型，与 RocketMQ tag 一一对应。
+        ncrNo:
+          type: string
+          description: NCR 编号。
+        sourceReportId:
+          type: string
+          description: 来源报工记录 ID。
+        workOrderNo:
+          type: string
+          description: 工单号。
+        status:
+          $ref: '#/components/schemas/NcrStatus'
+        aggregateVersion:
+          type: integer
+          format: int64
+          minimum: 0
+          description: NCR 版本，按 NCR 单调递增、可能不连续；消费端丢弃不大于本地已处理版本的事件。
+        occurredAt:
+          type: string
+          format: date-time
+          description: 发生时间，只用于展示和审计。
+    NcrOpenedEvent:
+      description: NCR 生成事件（tag `NcrOpened`）。
+      allOf:
+        - $ref: '#/components/schemas/NcrEventBase'
+        - type: object
+          required: [materialCode, uom, defectQty]
+          properties:
+            materialCode:
+              type: string
+              description: 物料编码（工单产品码）。
+            uom:
+              type: string
+              description: 计量单位。
+            defectQty:
+              $ref: '#/components/schemas/Quantity'
+    NcrDisposedEvent:
+      description: 登记处置事件（tag `NcrDisposed`），每登记一条处置行发一次；本期只发不消费，不触发库存变动。
+      allOf:
+        - $ref: '#/components/schemas/NcrEventBase'
+        - type: object
+          required: [disposition, disposedQty, defectQty]
+          properties:
+            disposition:
+              $ref: '#/components/schemas/Disposition'
+            disposedQty:
+              $ref: '#/components/schemas/Quantity'
+            defectQty:
+              $ref: '#/components/schemas/Quantity'
+    NcrClosedEvent:
+      description: NCR 关闭事件（tag `NcrClosed`）。
+      allOf:
+        - $ref: '#/components/schemas/NcrEventBase'
+    NcrVoidedEvent:
+      description: NCR 作废事件（tag `NcrVoided`）。
+      allOf:
+        - $ref: '#/components/schemas/NcrEventBase'
+        - type: object
+          required: [reversedReportId, reversalId, voidReason]
+          properties:
+            reversedReportId:
+              type: string
+              description: 被冲销的原报工记录 ID。
+            reversalId:
+              type: string
+              description: 冲销记录 ID。
+            voidReason:
+              type: string
+              enum: [REVERSED, REVERSED_BEFORE_REPORTED]
+              description: 作废原因。
+
+# 事件投递约定：topic 与 tag 实际值由运维登记到 Nacos manufacturing.mq.*，此处为约定默认值。
+x-events:
+  transport: RocketMQ
+  publishVia: outbox
+  delivery: at-least-once
+  topic: mes-quality-event
+  topicConfigKey: manufacturing.mq.*
+  messageKey: ncrNo
+  consumerIdempotency: eventId
+  # 本期只发不消费，暂无订阅方。
+  consumerGroups: []
+  events:
+    - tag: NcrOpened
+      schema: '#/components/schemas/NcrOpenedEvent'
+    - tag: NcrDisposed
+      schema: '#/components/schemas/NcrDisposedEvent'
+    - tag: NcrClosed
+      schema: '#/components/schemas/NcrClosedEvent'
+    - tag: NcrVoided
+      schema: '#/components/schemas/NcrVoidedEvent'
+  # 本服务消费的上游事件（工单服务发布），字段以 docs/messaging.md 为准。
+  consumes:
+    topic: mes-workorder-quality
+    consumerGroup: CG_QUALITY_DEFECT
+    tags: [DefectReported, DefectReversed]
+    reversalKeys: [reversedReportId, reversalId]
