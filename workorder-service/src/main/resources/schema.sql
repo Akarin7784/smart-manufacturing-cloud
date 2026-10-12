@@ -6,3 +6,15 @@ CREATE TABLE IF NOT EXISTS work_order (
   quantity INT NOT NULL,
   status VARCHAR(16) NOT NULL
 );
+
+-- 创建工单幂等记录：按（调用方、幂等键）唯一，保存请求摘要与首次生成的工单号。
+-- 单独建表而非给 work_order 加列，原因是 CREATE TABLE IF NOT EXISTS 无法为已有开发库补列；
+-- 上线改 Flyway 后可合并为正式迁移脚本。与工单写入在同一本地事务中提交，保证“有记录必有工单”。
+CREATE TABLE IF NOT EXISTS work_order_request (
+  principal VARCHAR(128) NOT NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  order_id VARCHAR(64) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT pk_work_order_request PRIMARY KEY (principal, idempotency_key)
+);

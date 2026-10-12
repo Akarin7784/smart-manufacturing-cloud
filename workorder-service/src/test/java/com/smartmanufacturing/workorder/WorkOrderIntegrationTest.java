@@ -2,6 +2,7 @@ package com.smartmanufacturing.workorder;
 import com.smartmanufacturing.api.*;
 import com.smartmanufacturing.common.BusinessException;
 import feign.*;
+import java.util.UUID;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -30,11 +31,11 @@ class WorkOrderIntegrationTest {
         return org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt()
             .authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("workorder:write"));
     }
-    @BeforeEach void clearOrders() { jdbc.update("delete from work_order"); }
+    @BeforeEach void clearOrders() { jdbc.update("delete from work_order_request"); jdbc.update("delete from work_order"); }
     /** 验证在线设备允许创建工单，并实际写入数据库。 */
     @Test void createsAndPersistsOrder() throws Exception {
         when(devices.get("D001")).thenReturn(ApiResponse.ok(new Device("D001", "CNC", "ONLINE")));
-        mvc.perform(post("/workorders").with(operator()).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/workorders").with(operator()).header("Idempotency-Key", UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON)
             .content("{\"deviceId\":\"D001\",\"product\":\"轴承\",\"quantity\":10}"))
             .andExpect(status().isCreated()).andExpect(jsonPath("$.data.status").value("CREATED"));
         assertEquals(1, jdbc.queryForObject("select count(*) from work_order", Integer.class));
@@ -42,7 +43,7 @@ class WorkOrderIntegrationTest {
     /** 验证离线设备返回冲突错误，且不产生工单。 */
     @Test void offlineDeviceDoesNotCreateOrder() throws Exception {
         when(devices.get("D002")).thenReturn(ApiResponse.ok(new Device("D002", "robot", "OFFLINE")));
-        mvc.perform(post("/workorders").with(operator()).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/workorders").with(operator()).header("Idempotency-Key", UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON)
             .content("{\"deviceId\":\"D002\",\"product\":\"轴承\",\"quantity\":10}"))
             .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("DEVICE_OFFLINE"));
         assertEquals(0, jdbc.queryForObject("select count(*) from work_order", Integer.class));
@@ -50,14 +51,14 @@ class WorkOrderIntegrationTest {
     /** 验证设备服务不可用时返回 503，数据库保持为空。 */
     @Test void unavailableDeviceDoesNotCreateOrder() throws Exception {
         when(devices.get("D001")).thenThrow(new BusinessException("DEVICE_SERVICE_UNAVAILABLE", "unavailable", HttpStatus.SERVICE_UNAVAILABLE));
-        mvc.perform(post("/workorders").with(operator()).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/workorders").with(operator()).header("Idempotency-Key", UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON)
             .content("{\"deviceId\":\"D001\",\"product\":\"轴承\",\"quantity\":10}"))
             .andExpect(status().isServiceUnavailable());
         assertEquals(0, jdbc.queryForObject("select count(*) from work_order", Integer.class));
     }
     /** 验证非法数量在入口被拒绝，不触发远程调用。 */
     @Test void validatesQuantityBeforeCallingDevice() throws Exception {
-        mvc.perform(post("/workorders").with(operator()).contentType(MediaType.APPLICATION_JSON)
+        mvc.perform(post("/workorders").with(operator()).header("Idempotency-Key", UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON)
             .content("{\"deviceId\":\"D001\",\"product\":\"轴承\",\"quantity\":0}"))
             .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
         verifyNoInteractions(devices);
@@ -105,5 +106,79 @@ class WorkOrderIntegrationTest {
         } finally {
             org.springframework.security.core.context.SecurityContextHolder.clearContext();
         }
+    }
+
+    /** 按指定 subject 构造操作员令牌，用于验证幂等键按调用方隔离。 */
+    private org.springframework.test.web.servlet.request.RequestPostProcessor operatorAs(String subject) {
+        return org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt()
+            .jwt(j -> j.subject(subject))
+            .authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("workorder:write"));
+    }
+    private static final String BODY = "{\"deviceId\":\"D001\",\"product\":\"减速机\",\"quantity\":5}";
+    private void deviceOnline() {
+        when(devices.get("D001")).thenReturn(ApiResponse.ok(new Device("D001", "CNC", "ONLINE")));
+    }
+
+    /** 缺少幂等键时在远程调用与写库之前返回 400，防止产生无法去重的工单。 */
+    @Test void missingIdempotencyKeyIsRejected() throws Exception {
+        mvc.perform(post("/workorders").with(operator()).contentType(MediaType.APPLICATION_JSON).content(BODY))
+            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REQUIRED"));
+        verifyNoInteractions(devices);
+        assertEquals(0, jdbc.queryForObject("select count(*) from work_order", Integer.class));
+    }
+
+    /** 同键同内容重放：返回 200 与首次工单，只写一条，且重放不再调用设备服务。 */
+    @Test void replayReturnsOriginalOrder() throws Exception {
+        deviceOnline();
+        String first = mvc.perform(post("/workorders").with(operator()).header("Idempotency-Key", "K-1")
+                .contentType(MediaType.APPLICATION_JSON).content(BODY))
+            .andExpect(status().isCreated()).andExpect(header().string("Idempotent-Replayed", "false"))
+            .andReturn().getResponse().getContentAsString();
+        String id = com.jayway.jsonpath.JsonPath.read(first, "$.data.id");
+        mvc.perform(post("/workorders").with(operator()).header("Idempotency-Key", "K-1")
+                .contentType(MediaType.APPLICATION_JSON).content(BODY))
+            .andExpect(status().isOk()).andExpect(header().string("Idempotent-Replayed", "true"))
+            .andExpect(jsonPath("$.data.id").value(id));
+        verify(devices, times(1)).get("D001");
+        assertEquals(1, jdbc.queryForObject("select count(*) from work_order", Integer.class));
+    }
+
+    /** 同键不同内容视为客户端错误返回 422，不覆盖也不新建工单。 */
+    @Test void reusedKeyWithDifferentBodyIsRejected() throws Exception {
+        deviceOnline();
+        mvc.perform(post("/workorders").with(operator()).header("Idempotency-Key", "K-2")
+            .contentType(MediaType.APPLICATION_JSON).content(BODY)).andExpect(status().isCreated());
+        mvc.perform(post("/workorders").with(operator()).header("Idempotency-Key", "K-2")
+                .contentType(MediaType.APPLICATION_JSON).content(BODY.replace("5", "6")))
+            .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REUSED"));
+        assertEquals(1, jdbc.queryForObject("select count(*) from work_order", Integer.class));
+    }
+
+    /** 幂等键按调用方隔离：不同用户使用相同键不会拿到他人的工单。 */
+    @Test void sameKeyDifferentPrincipalsCreateSeparateOrders() throws Exception {
+        deviceOnline();
+        for (String user : new String[] { "alice", "bob" })
+            mvc.perform(post("/workorders").with(operatorAs(user)).header("Idempotency-Key", "K-3")
+                .contentType(MediaType.APPLICATION_JSON).content(BODY)).andExpect(status().isCreated());
+        assertEquals(2, jdbc.queryForObject("select count(*) from work_order", Integer.class));
+    }
+
+    /**
+     * 模拟并发竞争：在本请求完成设备校验后、写库前，另一请求已用同键提交成功。
+     * 期望唯一约束裁决后本请求整笔回滚并返回胜者工单，库中只有一条工单。
+     * 真实多线程 + MySQL 的并发用例见 PR 说明中的 Testcontainers TODO。
+     */
+    @Test void concurrentDuplicateResolvesToWinner() throws Exception {
+        String winner = "winner-order";
+        when(devices.get("D001")).thenAnswer(inv -> {
+            jdbc.update("insert into work_order (id, device_id, product, quantity, status) values (?, 'D001', '减速机', 5, 'CREATED')", winner);
+            jdbc.update("insert into work_order_request (principal, idempotency_key, request_hash, order_id) values ('user', 'K-4', ?, ?)",
+                WorkOrderService.hash(new CreateWorkOrder("D001", "减速机", 5)), winner);
+            return ApiResponse.ok(new Device("D001", "CNC", "ONLINE"));
+        });
+        mvc.perform(post("/workorders").with(operator()).header("Idempotency-Key", "K-4")
+                .contentType(MediaType.APPLICATION_JSON).content(BODY))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value(winner));
+        assertEquals(1, jdbc.queryForObject("select count(*) from work_order", Integer.class));
     }
 }

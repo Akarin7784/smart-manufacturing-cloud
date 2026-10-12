@@ -140,7 +140,8 @@ $login = Invoke-RestMethod http://localhost:8080/api/auth/login -Method Post -Co
     @{username='admin';password=$env:AUTH_BOOTSTRAP_PASSWORD} | ConvertTo-Json -Compress)
 $headers = @{Authorization="Bearer $($login.data.accessToken)"}
 Invoke-RestMethod http://localhost:8080/api/devices/D001 -Headers $headers
-Invoke-RestMethod http://localhost:8080/api/workorders -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
+# 创建工单必须携带 Idempotency-Key；同一业务请求重试时复用同一个键（重放返回 200 与首次结果，同键不同内容返回 422）。
+Invoke-RestMethod http://localhost:8080/api/workorders -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
 Invoke-RestMethod http://localhost:8080/api/workorders -Headers $headers
 ```
 

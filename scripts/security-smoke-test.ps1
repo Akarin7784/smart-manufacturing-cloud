@@ -26,9 +26,9 @@ try {
         Assert-Denied { Invoke-RestMethod "$BaseUrl/api/auth/users" -Headers $headers } 403
         Assert-Denied { Invoke-RestMethod "$BaseUrl/api/devices/config" -Headers $headers } 403
         if ($role -eq 'VIEWER') {
-            Assert-Denied { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"qa","quantity":1}' } 403
+            Assert-Denied { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"qa","quantity":1}' } 403
         } else {
-            Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"qa","quantity":1}' | Out-Null
+            Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"qa","quantity":1}' | Out-Null
         }
     }
     Assert-Denied { Invoke-RestMethod "$BaseUrl/api/devices" -Headers @{'X-Role'='ADMIN'} } 401
