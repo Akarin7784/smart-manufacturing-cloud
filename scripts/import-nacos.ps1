@@ -1,4 +1,4 @@
-# 等待 Nacos 就绪后初始化管理员密码并导入项目配置；使用 Nacos 3 运维接口和统一配置分组。
+﻿# 等待 Nacos 就绪后初始化管理员密码并导入项目配置；使用 Nacos 3 运维接口和统一配置分组。
 # Nacos 已开启鉴权：账号密码来自 .env（经 init-env.ps1 加载），导入请求携带登录得到的 accessToken。
 # compose 的 nacos-config-init 容器会自动执行同样逻辑（import-nacos.sh），本脚本用于手动重新导入。
 param([string]$NacosUrl = 'http://localhost:8848', [string]$Namespace = '')

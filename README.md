@@ -99,7 +99,11 @@ make demo-reset    # 删除数据卷和本项目构建的本地镜像后重建
 
 `make demo` 会：缺少 `.env` 时从 `.env.example` 生成并填充随机密钥（`.env` 不入库）→ 构建并启动全部容器 → `db-init` 初始化数据库账号、`nacos-config-init` 初始化 Nacos 管理员并导入 `infra/nacos` 配置 → 等待所有业务服务 healthy（网关在下游 healthy 后才启动）→ 运行 `scripts/smoke-test.sh`。Nacos 已开启鉴权，控制台账号为 `.env` 中的 `NACOS_USERNAME`/`NACOS_PASSWORD`。已有旧数据卷时如出现 Nacos 登录失败，执行 `make demo-reset`。表结构由各服务启动时的 Flyway 迁移创建，演示数据（`db/demo`）只在 demo profile 加载，详见 docs/architecture.md。
 
-> 注意：Windows 脚本 `scripts/demo.ps1`、`init-env.ps1`、`import-nacos.ps1` 以及 `start-local.ps1 -Profile cloud` 尚未在 Windows 上实际运行验证（CI 只在 Linux 上跑演示环境）。遇到问题请反馈，或优先使用 WSL/Git Bash 执行 `make demo`。
+> Windows 脚本验证状态（PowerShell 5.1 / 中文系统，由实机验证更新）：
+> - `init-env.ps1`：已在 Windows PowerShell 5.1 实测通过（须以 UTF-8 BOM 保存；CI 会校验全部 `*.ps1`）。
+> - `import-nacos.ps1`：已修复与 `init-env.ps1` 相同的缺 BOM 问题，尚未在 Windows 上实际跑通导入流程。
+> - `smoke-test.ps1`：脚本本身在 Windows 上可正常执行；完整链路（含 BOM 展开、服务身份、RocketMQ 回环等）待在 main 版环境上复验。
+> - `demo.ps1`、`start-local.ps1 -Profile cloud`：尚未在 Windows 上实际运行验证（CI 只在 Linux 上跑演示环境）。遇到问题请反馈，或优先使用 WSL/Git Bash 执行 `make demo`。
 
 ### 本机运行服务（便于 IDE 调试）
 
