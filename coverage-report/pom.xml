@@ -14,6 +14,7 @@
     <dependency><groupId>com.smartmanufacturing</groupId><artifactId>cloud-gateway</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.smartmanufacturing</groupId><artifactId>device-service</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.smartmanufacturing</groupId><artifactId>workorder-service</artifactId><version>${project.version}</version></dependency>
+    <dependency><groupId>com.smartmanufacturing</groupId><artifactId>masterdata-service</artifactId><version>${project.version}</version></dependency>
   </dependencies>
   <build><plugins>
     <plugin>

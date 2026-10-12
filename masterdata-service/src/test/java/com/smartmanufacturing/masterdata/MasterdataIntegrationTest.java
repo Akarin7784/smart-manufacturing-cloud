@@ -161,6 +161,26 @@ class MasterdataIntegrationTest {
             .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.code").value("WORK_CENTER_NOT_FOUND"));
     }
 
+    /**
+     * 数据库级兜底：每个产品至多一个“已发布且未截断”的版本（uk_bom_header_current）。
+     * 1) 直接写库插入第二个开放版本被唯一约束拒绝；2) 绕过服务造成脏数据后，服务发布返回 409 BOM_RELEASE_CONFLICT 且整笔回滚。
+     */
+    @Test void uniqueCurrentVersionGuard() throws Exception {
+        material("T7-FG", "PART", "MAKE");
+        material("T7-RM", "RM", "BUY");
+        post("/boms", bomBody("T7-FG", "A01", "2026-10-01", "T7-RM", null), admin()).andExpect(status().isCreated());
+        post("/boms/T7-FG/A01/release", "", admin()).andExpect(status().isOk());
+        org.junit.jupiter.api.Assertions.assertThrows(org.springframework.dao.DuplicateKeyException.class, () ->
+            jdbc.update("insert into bom_header (product_code, version, status, effective_from) values ('T7-FG', 'A09', 'RELEASED', DATE '2027-01-01')"));
+        // 构造脏数据：较早的 A00 保持开放、最新的 A01 已截断，服务只截断最新版本，发布 A02 时由约束兜底。
+        jdbc.update("insert into bom_header (product_code, version, status, effective_from, effective_to) values ('T7-FG', 'A00', 'RELEASED', DATE '2026-09-01', DATE '2026-09-15')");
+        jdbc.update("update bom_header set effective_to = DATE '2026-10-15' where product_code = 'T7-FG' and version = 'A01'");
+        jdbc.update("update bom_header set effective_to = null where product_code = 'T7-FG' and version = 'A00'");
+        post("/boms", bomBody("T7-FG", "A02", "2026-11-01", "T7-RM", null), admin()).andExpect(status().isCreated());
+        post("/boms/T7-FG/A02/release", "", admin()).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("BOM_RELEASE_CONFLICT"));
+        org.junit.jupiter.api.Assertions.assertEquals("DRAFT", jdbc.queryForObject("select status from bom_header where product_code = 'T7-FG' and version = 'A02'", String.class));
+    }
+
     /** 未认证请求返回 401，不能用伪造角色头访问。 */
     @Test void anonymousRejected() throws Exception {
         mvc.perform(get("/materials").header("X-Role", "ADMIN")).andExpect(status().isUnauthorized());
