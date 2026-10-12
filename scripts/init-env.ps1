@@ -1,4 +1,4 @@
-# 生成并加载本地 .env（PowerShell 版，对应 init-env.sh）：不存在时从 .env.example 复制，为留空密钥填充随机值，
+﻿# 生成并加载本地 .env（PowerShell 版，对应 init-env.sh）：不存在时从 .env.example 复制，为留空密钥填充随机值，
 # 然后把全部键值导入当前进程环境变量，供 import-nacos.ps1、start-local.ps1、smoke-test.ps1 使用。
 # 已有非空值保持不变，避免与已初始化的数据卷密码失配。
 $ErrorActionPreference = 'Stop'
@@ -44,7 +44,12 @@ function New-BcryptHash([string]$Secret) {
     # 使用非空占位用户名 svc，避免空字符串参数在 Windows PowerShell 5.1 与 PowerShell 7 下传参行为不一致；
     # 输出为 "svc:散列"，取第一个冒号之后的部分。cost 固定为 10，须与认证服务 ServiceClientRegistry.EXPECTED_COST 一致。
     if ($htpasswd) { $out = $Secret | & $htpasswd.Source -niBC 10 svc }
-    else { $out = $Secret | & docker run --rm -i httpd:2.4-alpine htpasswd -niBC 10 svc }
+    else {
+        # PowerShell 5.1 会把 docker 拉取进度（stderr）渲染成红色 NativeCommandError；
+        # 先静默拉取镜像，再生成散列。散列走 stdout，不能重定向掉；失败由下方 $2 前缀校验报错。
+        & docker pull -q httpd:2.4-alpine 2>$null | Out-Null
+        $out = $Secret | & docker run --rm -i httpd:2.4-alpine htpasswd -niBC 10 svc 2>$null
+    }
     $line = ("$out").Trim()
     $hash = $line.Substring($line.IndexOf(':') + 1)
     if (-not $hash.StartsWith('$2')) { throw 'BCrypt 散列生成失败：请安装 htpasswd 或启动 Docker' }
