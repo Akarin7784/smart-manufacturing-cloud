@@ -47,3 +47,10 @@ spring:
                 - Path=/api/inventory/**
               filters:
                 - StripPrefix=1
+            # 质检服务：NCR 查询与评审/处置/关闭、暂存冲销与冲突查询（用户令牌）。
+            - id: quality-service
+              uri: ${QUALITY_SERVICE_URL:http://localhost:8086}
+              predicates:
+                - Path=/api/quality/**
+              filters:
+                - StripPrefix=1
