@@ -31,7 +31,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class ReservationContractTest {
-    private static final String BASE = "/api/inventory/reservations";
+    /** 契约中的路径即服务内直连路径（不经网关）。 */
+    private static final String BASE = "/inventory/reservations";
     private static final String ONE = BASE + "/{reservationId}";
 
     @Autowired MockMvc mvc;
@@ -114,7 +115,8 @@ class ReservationContractTest {
         MvcResult first = mvc.perform(postJson(svc(BASE), k, body).with(service())).andReturn();
         JsonNode created = OpenApiContract.assertConforms(BASE, "post", first);
         assertThat(first.getResponse().getStatus()).isEqualTo(201);
-        assertThat(first.getResponse().getHeader("Location")).endsWith(created.get("reservationId").asText());
+        // Location 必须是直连地址，不带网关前缀 /api。
+        assertThat(first.getResponse().getHeader("Location")).isEqualTo("/inventory/reservations/" + created.get("reservationId").asText());
         MvcResult replay = mvc.perform(postJson(svc(BASE), k, body).with(service())).andReturn();
         assertThat(replay.getResponse().getStatus()).isEqualTo(201);
         assertThat(replay.getResponse().getContentAsString()).isEqualTo(first.getResponse().getContentAsString());

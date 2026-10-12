@@ -12,7 +12,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 /**
- * 预留接口 HTTP 入口（经网关为 /api/inventory/reservations/**）。
+ * 预留接口 HTTP 入口：服务内路径 /inventory/reservations/**，只能由工单服务直连调用（网关对 /api/inventory/reservations/** 返回 404）。
  * 认证与授权由 {@link InventorySecurityConfiguration} 的预留过滤链完成（服务令牌，aud=inventory-service，scope=inventory:reserve）。
  * 修改类接口必须带 Idempotency-Key，作用域为调用方 client_id；重放原样返回首次状态码与响应体。
  */
@@ -28,7 +28,7 @@ public class ReservationController {
         this.reservations = reservations; this.idempotency = idempotency; this.mapper = mapper; this.metrics = metrics;
     }
 
-    /** 整单预留：首次 201 并带 Location；重放同样带 Location（从首次响应体解析）。 */
+    /** 整单预留：首次 201 并带 Location（直连地址 /inventory/reservations/{id}，不带网关前缀）；重放同样带 Location（从首次响应体解析）。 */
     @PostMapping
     public ResponseEntity<String> create(@RequestHeader(value = "Idempotency-Key", required = false) String key,
                                          @Valid @RequestBody CreateReservation request, Authentication auth) {
@@ -51,7 +51,7 @@ public class ReservationController {
         try {
             String id = mapper.readTree(r.body()).path("reservationId").asText();
             return ResponseEntity.status(response.getStatusCode()).headers(response.getHeaders())
-                .header("Location", "/api/inventory/reservations/" + id).body(r.body());
+                .header("Location", "/inventory/reservations/" + id).body(r.body());
         } catch (Exception e) {
             return response;
         }

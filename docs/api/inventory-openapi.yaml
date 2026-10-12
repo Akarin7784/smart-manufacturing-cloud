@@ -28,7 +28,7 @@ info:
     ## 认证与调用方身份
     - 工单服务以**服务身份**调用本服务：通过认证服务的 OAuth2 客户端凭证模式（client credentials）获取访问令牌，scope 为 `inventory:reserve`。
       续期作业、补偿释放等无用户上下文的系统调用同样使用该服务身份，不透传终端用户令牌。
-    - 网关与库存服务分别校验令牌；所有接口均要求 `inventory:reserve`。
+    - **只能由服务直连调用**：预留接口路径为库存服务自身的 `/inventory/reservations/**`（见各接口的 `servers`），工单服务经 Nacos 服务发现直连，不经网关；经网关访问 `/api/inventory/reservations/**` 返回 404。所有接口均要求 `inventory:reserve`。
     - 调用方身份取自已验证令牌中的客户端标识（client_id），不信任任何请求头声明的身份。
 
     ## 质检隔离库位 QC-HOLD（质检回写库存，设计见 docs/quality-inventory-writeback-design.md）
@@ -79,8 +79,11 @@ security:
   - serviceClient: [inventory:reserve]
 
 paths:
-  /api/inventory/reservations:
+  /inventory/reservations:
     post:
+      servers:
+        - url: http://inventory-service:8085
+          description: 内部直连库存服务（工单服务经 Nacos 服务发现访问），不经网关；经网关访问 /api/inventory/reservations/** 返回 404。
       tags: [reservation]
       operationId: createReservation
       summary: 整单创建预留
@@ -100,7 +103,7 @@ paths:
           description: 预留成功。
           headers:
             Location:
-              description: 新建预留单的地址。
+              description: 新建预留单的直连地址 `/inventory/reservations/{reservationId}`（服务内路径，不带网关前缀 /api）。
               schema:
                 type: string
           content:
@@ -122,8 +125,11 @@ paths:
         '422':
           $ref: '#/components/responses/MovementUnprocessable'
 
-  /api/inventory/reservations/{reservationId}:
+  /inventory/reservations/{reservationId}:
     get:
+      servers:
+        - url: http://inventory-service:8085
+          description: 内部直连库存服务（工单服务经 Nacos 服务发现访问），不经网关；经网关访问 /api/inventory/reservations/** 返回 404。
       tags: [reservation]
       operationId: getReservation
       summary: 查询预留单
@@ -144,8 +150,11 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /api/inventory/reservations/{reservationId}/renew:
+  /inventory/reservations/{reservationId}/renew:
     post:
+      servers:
+        - url: http://inventory-service:8085
+          description: 内部直连库存服务（工单服务经 Nacos 服务发现访问），不经网关；经网关访问 /api/inventory/reservations/** 返回 404。
       tags: [reservation]
       operationId: renewReservation
       summary: 整单续期
@@ -186,8 +195,11 @@ paths:
         '422':
           $ref: '#/components/responses/IdempotencyConflict'
 
-  /api/inventory/reservations/{reservationId}/release:
+  /inventory/reservations/{reservationId}/release:
     post:
+      servers:
+        - url: http://inventory-service:8085
+          description: 内部直连库存服务（工单服务经 Nacos 服务发现访问），不经网关；经网关访问 /api/inventory/reservations/** 返回 404。
       tags: [reservation]
       operationId: releaseReservation
       summary: 整单释放
@@ -229,8 +241,11 @@ paths:
         '422':
           $ref: '#/components/responses/IdempotencyConflict'
 
-  /api/inventory/reservations/{reservationId}/lines/{lineId}/consume:
+  /inventory/reservations/{reservationId}/lines/{lineId}/consume:
     post:
+      servers:
+        - url: http://inventory-service:8085
+          description: 内部直连库存服务（工单服务经 Nacos 服务发现访问），不经网关；经网关访问 /api/inventory/reservations/** 返回 404。
       tags: [reservation]
       operationId: consumeReservationLine
       summary: 按行扣减
