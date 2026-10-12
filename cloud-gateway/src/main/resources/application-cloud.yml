@@ -52,3 +52,11 @@ spring:
       transport:
         dashboard: ${SENTINEL_DASHBOARD:localhost:8858}
         port: ${SENTINEL_CLIENT_PORT:9080}
+
+# 容器环境把 actuator 迁到独立管理端口：compose 内网可达、不映射到宿主机，Prometheus 匿名抓取 /actuator/prometheus；
+# 业务端口（网关为对外发布的 8080）不再提供 actuator，网关路由也只转发 /api/**，外部无法经网关访问下游 actuator。
+management:
+  server:
+    port: ${MANAGEMENT_PORT:18080}
+  # 网关在业务端口 8080 额外提供 /livez、/readyz，宿主机仍可确认网关存活（不暴露其他 actuator 端点）。
+  endpoint.health.probes.add-additional-paths: true

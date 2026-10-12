@@ -118,8 +118,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 | http://localhost:8080/api/auth/me | 当前身份，需 Bearer 令牌 |
 | http://localhost:8080/api/devices | 设备列表，需查询权限 |
 | http://localhost:8080/api/workorders | 工单列表 / 创建 |
-| http://localhost:8080/actuator/health | 网关健康 |
-| http://localhost:8081/actuator/prometheus | 设备指标，需管理员令牌（容器模式不暴露业务端口） |
+| http://localhost:8080/readyz | 网关健康（容器模式下 actuator 在内网管理端口，见 docs/observability.md） |
+| http://localhost:9090 / http://localhost:3000 | 可选监控栈 Prometheus / Grafana（`--profile monitoring`，见 docs/observability.md） |
 | http://localhost:8849 | Nacos 3 控制台 |
 | http://localhost:8858 | Sentinel 控制台，sentinel / sentinel |
 

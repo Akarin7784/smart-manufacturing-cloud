@@ -79,6 +79,14 @@ jobs:
         if: runner.os == 'Linux'
         # compose 中密钥均为必填变量，先用 init-env.sh 生成临时 .env 再校验。
         run: sh scripts/init-env.sh && docker compose --profile app config --quiet
+      # 监控 profile 必须可选：默认 app profile 不得包含 prometheus/grafana（演示栈已占约 4.6G 内存），叠加 monitoring 后配置也要合法。
+      - name: Validate monitoring profile is opt-in
+        if: runner.os == 'Linux'
+        run: |
+          if docker compose --profile app config --services | grep -qxE 'prometheus|grafana'; then
+            echo "::error::app profile 不应包含 prometheus/grafana"; exit 1
+          fi
+          docker compose --profile app --profile monitoring config --quiet
       # 即使测试失败也保留报告，便于查看断言、堆栈和具体失败用例。
       - name: Upload test reports
         if: always()
@@ -128,21 +136,41 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Start demo environment and run smoke test
         run: make demo
+      # 可选监控栈：复用已启动的演示环境，只额外拉起 prometheus/grafana（约 1–2 分钟），
+      # 不单独开 job 是因为那样要再构建并启动整套服务（约 10 分钟以上）。
+      - name: Start monitoring profile and run monitoring smoke
+        run: |
+          docker compose --profile app --profile monitoring up -d --wait --wait-timeout 180 prometheus grafana
+          sh scripts/monitoring-smoke.sh
       # 失败时输出容器状态和日志，便于定位是哪个服务未就绪。
       - name: Dump compose state on failure
         if: failure()
         run: |
-          docker compose --profile app ps -a
-          docker compose --profile app logs --no-color --tail=200
+          docker compose --profile app --profile monitoring ps -a
+          docker compose --profile app --profile monitoring logs --no-color --tail=200
           # 单独输出建 Topic 一次性容器的完整日志，便于定位 Broker 未注册或建 Topic 失败。
           echo "===== rocketmq-init ====="; docker compose --profile app logs --no-color rocketmq-init || true
       # 记录 RocketMQ 容器内存占用，确认 Broker 堆上限生效。
       - name: Report RocketMQ memory
         if: success()
-        run: docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' | grep -E 'namesrv|broker'
+        run: docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' | grep -E 'namesrv|broker|prometheus|grafana'
+      # 叠加 monitoring profile，确保监控容器和数据卷也一并清理。
       - name: Tear down
         if: always()
-        run: docker compose --profile app down -v --rmi local
+        run: docker compose --profile app --profile monitoring down -v --rmi local
+
+  # 监控配置静态校验：promtool 检查抓取配置与告警规则；确认提交的看板 JSON 与生成脚本一致（防止手改漂移）。
+  observability-lint:
+    name: observability-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check Prometheus config and alert rules
+        run: docker run --rm --entrypoint promtool -v "$PWD/infra/observability/prometheus:/etc/prometheus:ro" prom/prometheus:v3.5.0 check config /etc/prometheus/prometheus.yml
+      - name: Dashboard JSON is up to date
+        run: python3 infra/observability/grafana/generate-dashboard.py && git diff --exit-code -- infra/observability/grafana/dashboards
 
   # 迁移双跑校验：每个服务在同一 MySQL 8.4 库上执行两次 Flyway 迁移（第二次强制重放 R__ 演示数据脚本），
   # 断言业务表行数一致且 R__ 确实重放，证明演示数据幂等。Testcontainers 迁移集成测试归测试与质量负责，此处只做双跑。
