@@ -30,6 +30,13 @@ class MaterialRepository {
         for (String code : codes) if (find(code).isPresent()) found.add(code);
         return found;
     }
+    /**
+     * 对产品物料行加排他锁（SELECT ... FOR UPDATE），用于串行化同一产品的 BOM / 工艺路线发布。
+     * 必须在事务内调用；锁随事务提交或回滚释放。返回 false 表示物料不存在。
+     */
+    boolean lockForUpdate(String code) {
+        return !jdbc.queryForList("select code from material where code = ? for update", String.class, code).isEmpty();
+    }
     void insert(CreateMaterial m) {
         jdbc.update("insert into material (code, name, type, uom, trace_mode, source, active, version) values (?, ?, ?, ?, ?, ?, true, 0)",
             m.code(), m.name(), m.type().name(), m.uom(), m.traceMode().name(), m.source().name());

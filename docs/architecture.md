@@ -28,7 +28,7 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 ### 数据库迁移（Flyway）
 
 - 表结构位于各服务 `src/main/resources/db/migration`（`V<版本>__<说明>.sql`），服务启动时由 Flyway 执行；不再使用 `spring.sql.init`。已发布的 V 脚本不可修改，结构变更一律新增版本。
-- 演示数据位于 `db/demo`（`R__*.sql` 可重复迁移），只在 `demo` profile 中追加到 `spring.flyway.locations`；脚本必须幂等（固定主键 + `ON DUPLICATE KEY UPDATE`，禁止无条件 DELETE）。CI 的 `migrations twice` job 在同一库上执行两次迁移（第二次强制重放 R__），校验行数一致。
+- 演示数据位于 `db/demo`（`R__*.sql` 可重复迁移），只在 `demo` profile 中追加到 `spring.flyway.locations`；脚本必须幂等（固定主键 + `ON DUPLICATE KEY UPDATE` 或 `INSERT IGNORE`；主数据用 INSERT IGNORE，避免重放覆盖已发布的只读版本；禁止无条件 DELETE）。CI 的 `migrations twice` job 在同一库上执行两次迁移（第二次强制重放 R__），校验行数一致。
 - test profile 只执行 `db/migration`（设备服务另含测试资源 `db/testdata`），不加载 `db/demo`；Testcontainers MySQL 集成测试使用同一套迁移脚本（归 MES测试与质量维护）。
 - 旧开发库（已有表、无迁移历史）通过 `baseline-on-migrate`、基线版本 0 接入，V1 使用 `IF NOT EXISTS` 补齐。
 - 工单幂等记录保留 7 天，由 `IdempotencyRecordCleaner` 每天定时按 `created_at` 索引分批删除；多实例并发执行结果幂等，暂未引入 ShedLock。

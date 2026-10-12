@@ -86,14 +86,24 @@ public class BomService {
      */
     @Transactional
     public Bom release(String product, String version) {
+        // 并发控制：同一产品不同草稿并发发布时，“读取最新已发布版本 → 校验生效日 → 发布 → 截断上一版本”
+        // 必须串行，否则两个事务都以同一旧版本为基准，产生两个 effective_to 为空的 RELEASED 版本。
+        // 以产品物料行作为锁对象（FOR UPDATE），BOM 与工艺路线各自的发布也因此互斥，锁粒度为单个产品。
+        if (!materials.lockForUpdate(product)) throw Errors.notFound("BOM_NOT_FOUND", "BOM不存在: " + product + "/" + version);
         Bom draft = get(product, version);
         if (draft.status() != LifecycleStatus.DRAFT) throw Errors.conflict("BOM_NOT_DRAFT", "只有草稿 BOM 可发布: " + product + "/" + version);
         validateForRelease(draft);
         Optional<VersionedHeaderDao.Header> previous = headers.latestReleased(product);
         if (previous.isPresent() && !draft.effectiveFrom().isAfter(previous.get().effectiveFrom()))
             throw Errors.conflict("EFFECTIVE_DATE_CONFLICT", "生效日必须晚于当前已发布版本 " + previous.get().version() + " 的生效日 " + previous.get().effectiveFrom());
-        if (headers.release(product, version) == 0) throw Errors.conflict("BOM_NOT_DRAFT", "BOM 已被并发发布: " + product + "/" + version);
+        // 先截断上一版本再发布本版本：两步之间不会出现两个开放区间，满足 uk_*_current 唯一约束。
         previous.ifPresent(p -> headers.truncate(product, p.version(), draft.effectiveFrom()));
+        try {
+            if (headers.release(product, version) == 0) throw Errors.conflict("BOM_NOT_DRAFT", "BOM 已被并发发布: " + product + "/" + version);
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            // 行锁之外的兜底（如绕过服务直接写库）：唯一约束拒绝第二个当前版本，整笔事务回滚。
+            throw Errors.conflict("BOM_RELEASE_CONFLICT", "该产品已存在其他当前生效的已发布版本: " + product);
+        }
         return get(product, version);
     }
 

@@ -1,12 +1,14 @@
 -- GR-60 二级圆柱斜齿轮减速机演示主数据（与 docs/mes-product-domain-design.md 第 4 节一致）。
--- 仅在 demo profile 由 Flyway 作为 db/demo 下的可重复迁移（R__）执行；脚本校验和变化时自动重放。
--- 幂等约定：固定业务编码 + INSERT ... ON DUPLICATE KEY UPDATE，不依赖自增 ID、不做无条件 DELETE，重复执行结果一致。
+-- 仅在 demo profile 由 Flyway 作为 db/demo 下的可重复迁移（R__）执行；脚本校验和变化时自动重放，INSERT IGNORE 保证重放无副作用。
+-- 幂等约定：固定业务编码 + INSERT IGNORE（只补缺失行、从不覆盖已有行），不依赖自增 ID、不做无条件 DELETE。
+-- 不使用 ON DUPLICATE KEY UPDATE：重跑会绕过物料乐观锁版本、覆盖已发布（只读）BOM/工艺行，违反发布后不可变约束。
+-- 代价：修改演示数据需新增版本（如 BOM A02）或重建演示库（make demo-reset），不能靠改本文件就地更新。
 -- 物料编码统一大写（如 20CRMNTI），与接口的编码格式校验一致；材料牌号原始写法保留在名称中。
 -- BOM 与工艺路线直接写入 RELEASED 状态（版本 A01 / R01，生效日 2026-10-01）；其一致性（组件存在、消耗工序存在、无循环）
 -- 由 DemoDataTest 以服务端发布规则逐一校验，防止演示数据绕过业务约束。
 
 -- 物料主数据（27 种）
-INSERT INTO material (code, name, type, uom, trace_mode, source, active, version) VALUES
+INSERT IGNORE INTO material (code, name, type, uom, trace_mode, source, active, version) VALUES
   ('FG-GR60-20', 'GR-60 减速机 i=20', 'FG', '台', 'SERIAL', 'MAKE', TRUE, 0),
   ('SA-GR60-HSG', '箱体组件（含轴承外圈）', 'SA', '件', 'LOT', 'MAKE', TRUE, 0),
   ('SA-GR60-IN', '输入轴组件', 'SA', '件', 'SERIAL', 'MAKE', TRUE, 0),
@@ -33,21 +35,19 @@ INSERT INTO material (code, name, type, uom, trace_mode, source, active, version
   ('PP-GASKET', '端盖密封垫', 'PURCHASED', '个', 'NONE', 'BUY', TRUE, 0),
   ('PP-OIL-220', '合成齿轮油 VG220', 'AUX', 'L', 'LOT', 'BUY', TRUE, 0),
   ('PK-BOX-GR60', '包装纸箱', 'PACK', '个', 'NONE', 'BUY', TRUE, 0),
-  ('PK-LBL-NP', '铭牌标签', 'PACK', '张', 'NONE', 'BUY', TRUE, 0)
-ON DUPLICATE KEY UPDATE name = VALUES(name), type = VALUES(type), uom = VALUES(uom), trace_mode = VALUES(trace_mode), source = VALUES(source);
+  ('PK-LBL-NP', '铭牌标签', 'PACK', '张', 'NONE', 'BUY', TRUE, 0);
 
 -- 工作中心与工位（设备实例由 device-service 按工位编码绑定）
-INSERT INTO work_center (code, name, workshop, outsourced) VALUES
+INSERT IGNORE INTO work_center (code, name, workshop, outsourced) VALUES
   ('WC-CNC', '数控加工', '机加车间 W01', FALSE),
   ('WC-GEAR', '齿加工', '机加车间 W01', FALSE),
   ('WC-HT', '热处理（外协）', '机加车间 W01', TRUE),
   ('WC-MQC', '机加检测', '机加车间 W01', FALSE),
   ('WC-ASM', '装配线', '装配车间 W02', FALSE),
   ('WC-TEST', '测试', '装配车间 W02', FALSE),
-  ('WC-PACK', '包装', '装配车间 W02', FALSE)
-ON DUPLICATE KEY UPDATE name = VALUES(name), workshop = VALUES(workshop), outsourced = VALUES(outsourced);
+  ('WC-PACK', '包装', '装配车间 W02', FALSE);
 
-INSERT INTO station (code, name, work_center_code) VALUES
+INSERT IGNORE INTO station (code, name, work_center_code) VALUES
   ('ST-CNC-01', '立式加工中心工位', 'WC-CNC'),
   ('ST-CNC-02', '数控车床工位', 'WC-CNC'),
   ('ST-HOB-01', '滚齿工位', 'WC-GEAR'),
@@ -60,11 +60,10 @@ INSERT INTO station (code, name, work_center_code) VALUES
   ('ST-ASM-03', '加油工位', 'WC-ASM'),
   ('ST-TEST-01', '跑合测试工位', 'WC-TEST'),
   ('ST-LEAK-01', '气密检测工位', 'WC-TEST'),
-  ('ST-PACK-01', '包装贴标工位', 'WC-PACK')
-ON DUPLICATE KEY UPDATE name = VALUES(name), work_center_code = VALUES(work_center_code);
+  ('ST-PACK-01', '包装贴标工位', 'WC-PACK');
 
 -- 工艺路线 R01：成品、4 个组件、7 个机加零件
-INSERT INTO routing_header (product_code, version, status, effective_from, effective_to) VALUES
+INSERT IGNORE INTO routing_header (product_code, version, status, effective_from, effective_to) VALUES
   ('FG-GR60-20', 'R01', 'RELEASED', DATE '2026-10-01', NULL),
   ('SA-GR60-HSG', 'R01', 'RELEASED', DATE '2026-10-01', NULL),
   ('SA-GR60-IN', 'R01', 'RELEASED', DATE '2026-10-01', NULL),
@@ -76,10 +75,9 @@ INSERT INTO routing_header (product_code, version, status, effective_from, effec
   ('PT-GR60-G2', 'R01', 'RELEASED', DATE '2026-10-01', NULL),
   ('PT-GR60-G3', 'R01', 'RELEASED', DATE '2026-10-01', NULL),
   ('PT-GR60-G4', 'R01', 'RELEASED', DATE '2026-10-01', NULL),
-  ('PT-GR60-SHO', 'R01', 'RELEASED', DATE '2026-10-01', NULL)
-ON DUPLICATE KEY UPDATE status = VALUES(status), effective_from = VALUES(effective_from);
+  ('PT-GR60-SHO', 'R01', 'RELEASED', DATE '2026-10-01', NULL);
 
-INSERT INTO routing_operation (product_code, version, op_no, seq, name, work_center_code, setup_minutes, run_seconds_per_unit, report_point, first_article_required, inspection_point_codes) VALUES
+INSERT IGNORE INTO routing_operation (product_code, version, op_no, seq, name, work_center_code, setup_minutes, run_seconds_per_unit, report_point, first_article_required, inspection_point_codes) VALUES
   ('FG-GR60-20', 'R01', 'OP10', 10, '物料齐套与上线', 'WC-ASM', 10, 30, FALSE, FALSE, ''),
   ('FG-GR60-20', 'R01', 'OP20', 20, '输出轴打码绑定 SN', 'WC-ASM', 5, 20, FALSE, FALSE, ''),
   ('FG-GR60-20', 'R01', 'OP30', 30, '轴承压装', 'WC-ASM', 15, 90, TRUE, FALSE, 'IP-ASM-PRESS'),
@@ -123,11 +121,10 @@ INSERT INTO routing_operation (product_code, version, op_no, seq, name, work_cen
   ('PT-GR60-SHO', 'R01', 'OP20', 20, '铣键槽', 'WC-CNC', 15, 180, TRUE, FALSE, ''),
   ('PT-GR60-SHO', 'R01', 'OP30', 30, '调质（委外）', 'WC-HT', 0, 0, TRUE, FALSE, 'IP-HT-IQC'),
   ('PT-GR60-SHO', 'R01', 'OP40', 40, '磨外圆', 'WC-CNC', 15, 240, TRUE, FALSE, ''),
-  ('PT-GR60-SHO', 'R01', 'OP50', 50, '终检', 'WC-MQC', 5, 180, TRUE, FALSE, 'IP-MC-FINAL')
-ON DUPLICATE KEY UPDATE name = VALUES(name), work_center_code = VALUES(work_center_code), setup_minutes = VALUES(setup_minutes), run_seconds_per_unit = VALUES(run_seconds_per_unit), report_point = VALUES(report_point), first_article_required = VALUES(first_article_required), inspection_point_codes = VALUES(inspection_point_codes);
+  ('PT-GR60-SHO', 'R01', 'OP50', 50, '终检', 'WC-MQC', 5, 180, TRUE, FALSE, 'IP-MC-FINAL');
 
 -- 多层 BOM A01：成品 → 组件 → 零件 → 原材料（四层）
-INSERT INTO bom_header (product_code, version, status, effective_from, effective_to) VALUES
+INSERT IGNORE INTO bom_header (product_code, version, status, effective_from, effective_to) VALUES
   ('FG-GR60-20', 'A01', 'RELEASED', DATE '2026-10-01', NULL),
   ('SA-GR60-HSG', 'A01', 'RELEASED', DATE '2026-10-01', NULL),
   ('SA-GR60-IN', 'A01', 'RELEASED', DATE '2026-10-01', NULL),
@@ -139,10 +136,9 @@ INSERT INTO bom_header (product_code, version, status, effective_from, effective
   ('PT-GR60-G3', 'A01', 'RELEASED', DATE '2026-10-01', NULL),
   ('PT-GR60-G2', 'A01', 'RELEASED', DATE '2026-10-01', NULL),
   ('PT-GR60-G4', 'A01', 'RELEASED', DATE '2026-10-01', NULL),
-  ('PT-GR60-SHO', 'A01', 'RELEASED', DATE '2026-10-01', NULL)
-ON DUPLICATE KEY UPDATE status = VALUES(status), effective_from = VALUES(effective_from);
+  ('PT-GR60-SHO', 'A01', 'RELEASED', DATE '2026-10-01', NULL);
 
-INSERT INTO bom_line (product_code, version, line_no, component_code, qty_per, uom, scrap_rate, issue_mode, consume_op_no, phantom) VALUES
+INSERT IGNORE INTO bom_line (product_code, version, line_no, component_code, qty_per, uom, scrap_rate, issue_mode, consume_op_no, phantom) VALUES
   ('FG-GR60-20', 'A01', 10, 'SA-GR60-HSG', 1, '件', 0, 'PICK', 'OP40', FALSE),
   ('FG-GR60-20', 'A01', 20, 'SA-GR60-IN', 1, '件', 0, 'PICK', 'OP40', FALSE),
   ('FG-GR60-20', 'A01', 30, 'SA-GR60-MID', 1, '件', 0, 'PICK', 'OP40', FALSE),
@@ -172,5 +168,4 @@ INSERT INTO bom_line (product_code, version, line_no, component_code, qty_per, u
   ('PT-GR60-G3', 'A01', 10, 'RM-20CRMNTI-D30', 0.55, 'kg', 0.05, 'PICK', 'OP10', FALSE),
   ('PT-GR60-G2', 'A01', 10, 'RM-20CRMNTI-D90', 1, '件', 0, 'PICK', 'OP10', FALSE),
   ('PT-GR60-G4', 'A01', 10, 'RM-20CRMNTI-D90', 1, '件', 0, 'PICK', 'OP10', FALSE),
-  ('PT-GR60-SHO', 'A01', 10, 'RM-40CR-D25', 0.6, 'kg', 0.05, 'PICK', 'OP10', FALSE)
-ON DUPLICATE KEY UPDATE component_code = VALUES(component_code), qty_per = VALUES(qty_per), uom = VALUES(uom), scrap_rate = VALUES(scrap_rate), issue_mode = VALUES(issue_mode), consume_op_no = VALUES(consume_op_no), phantom = VALUES(phantom);
+  ('PT-GR60-SHO', 'A01', 10, 'RM-40CR-D25', 0.6, 'kg', 0.05, 'PICK', 'OP10', FALSE);

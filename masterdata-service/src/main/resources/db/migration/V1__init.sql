@@ -1,4 +1,4 @@
--- 主数据服务初始表结构（Flyway V1，由原 schema.sql 转换）。只建表，不含任何业务数据；
+-- 主数据服务初始表结构（Flyway V1，由原 schema.sql 转换，含 #10 的“每个产品至多一个当前已发布版本”生成列唯一约束）。只建表，不含任何业务数据；
 -- 演示数据在 db/demo，只在 demo profile 由 Flyway 加载。各表以业务编码为主键，便于其他服务按编码引用且无需跨库外键。
 
 -- 物料主数据；version 为乐观锁版本号，更新时条件匹配，防止并发覆盖。
@@ -36,7 +36,11 @@ CREATE TABLE IF NOT EXISTS bom_header (
   status VARCHAR(16) NOT NULL,
   effective_from DATE NOT NULL,
   effective_to DATE NULL,
+  -- 数据库级兜底：当前开放版本标志。仅“已发布且未截断”的行取 1，其余为 NULL；
+  -- 唯一约束 (product_code, current_flag) 保证每个产品至多一个当前生效的已发布版本（唯一索引允许多个 NULL）。
+  current_flag TINYINT GENERATED ALWAYS AS (CASE WHEN status = 'RELEASED' AND effective_to IS NULL THEN 1 ELSE NULL END),
   CONSTRAINT pk_bom_header PRIMARY KEY (product_code, version),
+  CONSTRAINT uk_bom_header_current UNIQUE (product_code, current_flag),
   CONSTRAINT fk_bom_product FOREIGN KEY (product_code) REFERENCES material (code)
 );
 
@@ -64,7 +68,11 @@ CREATE TABLE IF NOT EXISTS routing_header (
   status VARCHAR(16) NOT NULL,
   effective_from DATE NOT NULL,
   effective_to DATE NULL,
+  -- 数据库级兜底：当前开放版本标志。仅“已发布且未截断”的行取 1，其余为 NULL；
+  -- 唯一约束 (product_code, current_flag) 保证每个产品至多一个当前生效的已发布版本（唯一索引允许多个 NULL）。
+  current_flag TINYINT GENERATED ALWAYS AS (CASE WHEN status = 'RELEASED' AND effective_to IS NULL THEN 1 ELSE NULL END),
   CONSTRAINT pk_routing_header PRIMARY KEY (product_code, version),
+  CONSTRAINT uk_routing_header_current UNIQUE (product_code, current_flag),
   CONSTRAINT fk_routing_product FOREIGN KEY (product_code) REFERENCES material (code)
 );
 
