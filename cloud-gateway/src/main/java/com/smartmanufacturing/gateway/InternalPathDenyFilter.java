@@ -53,7 +53,33 @@ public class InternalPathDenyFilter implements WebFilter {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         String raw = exchange.getRequest().getPath().pathWithinApplication().value();
-        return isInternal(raw) ? notFound(exchange) : chain.filter(exchange);
+        return hasDotSegmentOrBackslash(raw) || isInternal(raw) ? notFound(exchange) : chain.filter(exchange);
+    }
+
+    /**
+     * 全网关拒绝含点段（{@code .}、{@code ..}）、反斜杠或双重编码的路径，不只针对内部清单。
+     * <p>原因：网关按原样转发路径，而下游 Tomcat/Spring 会再做一次规范化，{@code /api/inventory/x/../qc-hold/receipts}
+     * 在网关看来不在清单内，到下游却变成 {@code /inventory/qc-hold/receipts}，绕过清单与网关权限规则。
+     * 与其让网关精确模拟下游的规范化算法（各容器对 {@code ;}、编码点、反斜杠的处理并不一致），
+     * 不如直接拒绝：正常客户端从不发送点段或反斜杠，拒绝它们没有业务代价。</p>
+     * <p>判定方式：只解码一次（覆盖 {@code %2e}、{@code %2E}、{@code .%2e}、{@code %5C}）。解码后仍含 {@code %}
+     * 说明是双重编码（如 {@code %252e}），正常客户端不会这样发送，直接拒绝，避免网关与下游解码次数不一致。
+     * 原始路径与解码后路径都检查反斜杠，并按 {@code /} 与反斜杠切段、去掉各段 {@code ;} 参数后看是否有
+     * {@code .} 或 {@code ..}（覆盖 {@code ..;/}）。返回与内部路径相同的 404 gateway-not-found，不暴露拒绝原因。</p>
+     */
+    static boolean hasDotSegmentOrBackslash(String rawPath) {
+        String decoded;
+        try { decoded = URLDecoder.decode(rawPath.replace("+", "%2B"), StandardCharsets.UTF_8); }
+        catch (IllegalArgumentException e) { return true; } // 非法百分号编码同样拒绝，下游行为不可预期
+        if (decoded.indexOf('%') >= 0) return true; // 双重编码
+        for (String path : new String[] { rawPath, decoded }) {
+            if (path.indexOf('\\') >= 0) return true;
+            for (String segment : path.split("[/\\\\]", -1)) {
+                String name = segment.contains(";") ? segment.substring(0, segment.indexOf(';')) : segment;
+                if (name.equals(".") || name.equals("..")) return true;
+            }
+        }
+        return false;
     }
 
     /** 原始路径或规范化后的路径命中任一内部模式即视为内部接口。 */

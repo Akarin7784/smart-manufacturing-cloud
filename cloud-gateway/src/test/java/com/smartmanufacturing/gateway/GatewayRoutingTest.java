@@ -225,6 +225,41 @@ class GatewayRoutingTest {
             .expectBody().jsonPath("$.instance").isEqualTo("/api/inventory/reservations/R1");
     }
 
+    /**
+     * 点段与反斜杠在全网关拒绝：明文、编码（%2e/%2E/.%2e/%2e%2e/%252e）与 ..;/ 变体都返回 404 gateway-not-found，
+     * 即使目标是普通用户路径也不转发，防止下游规范化后落到内部路径。
+     */
+    @Test void rejectsDotSegmentsAndBackslashEverywhere() {
+        String all = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("inventory:read", "inventory:write"));
+        List<String> paths = List.of(
+            "/api/inventory/./qc-hold/receipts", "/api/inventory/x/../qc-hold/receipts",
+            "/api/inventory/%2e/qc-hold/receipts", "/api/inventory/%2E%2E/inventory/qc-hold/scraps",
+            "/api/inventory/x/%2e%2e/qc-hold/releases", "/api/inventory/x/.%2e/qc-hold/releases",
+            "/api/inventory/x/%252e%252e/qc-hold/releases", "/api/inventory/x/..;/qc-hold/receipts",
+            "/api/inventory/x/..;jsessionid=1/reservations", "/api/inventory/x%5C..%5Cqc-hold/receipts",
+            "/api/inventory/./stock", "/api/x/../inventory/stock");
+        for (String path : paths) {
+            URI uri = URI.create("http://localhost:" + port + path);
+            client().post().uri(uri).exchange().expectStatus().isNotFound()
+                .expectBody().jsonPath("$.type").isEqualTo("gateway-not-found").jsonPath("$.code").doesNotExist();
+            client().get().uri(uri).headers(h -> h.setBearerAuth(all)).exchange().expectStatus().isNotFound()
+                .expectBody().jsonPath("$.type").isEqualTo("gateway-not-found");
+        }
+    }
+
+    /** 判定函数直接覆盖无法经 URI 发送的形式（明文反斜杠），以及不应误判的正常路径（含点的文件名式段）。 */
+    @Test void dotSegmentDetection() {
+        Assertions.assertTrue(InternalPathDenyFilter.hasDotSegmentOrBackslash("/api/inventory\\..\\qc-hold/receipts"));
+        Assertions.assertTrue(InternalPathDenyFilter.hasDotSegmentOrBackslash("/api/a/..;/b"));
+        Assertions.assertTrue(InternalPathDenyFilter.hasDotSegmentOrBackslash("/api/a/%2e%2E/b"));
+        // 只解码一次：解码后仍含 % 即双重编码，拒绝。
+        Assertions.assertTrue(InternalPathDenyFilter.hasDotSegmentOrBackslash("/api/a/%252e%252e/b"));
+        Assertions.assertTrue(InternalPathDenyFilter.hasDotSegmentOrBackslash("/api/inventory/%252Fqc-hold"));
+        Assertions.assertFalse(InternalPathDenyFilter.hasDotSegmentOrBackslash("/api/inventory/stock"));
+        Assertions.assertFalse(InternalPathDenyFilter.hasDotSegmentOrBackslash("/api/materials/GR-60.v2"));
+        Assertions.assertFalse(InternalPathDenyFilter.hasDotSegmentOrBackslash("/api/a/.../b"));
+    }
+
     /** 内部路径清单不误伤正常用户路径：相邻前缀与常规库存接口仍按原规则授权并转发。 */
     @Test void userInventoryPathsStillRoute() {
         String all = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("inventory:read", "inventory:write"));
