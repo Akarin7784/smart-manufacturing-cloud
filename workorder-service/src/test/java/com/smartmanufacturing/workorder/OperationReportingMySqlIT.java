@@ -93,6 +93,11 @@ class OperationReportingMySqlIT {
         assertThat(json(r).get("type").asText()).isEqualTo(type);
     }
 
+    private double transitions(String from, String to) {
+        var c = meters.find("mes.workorder.status.transition").tag("from", from).tag("to", to).counter();
+        return c == null ? 0 : c.count();
+    }
+
     private double counter(String name, String tag, String value) {
         var c = meters.find(name).tag(tag, value).counter();
         return c == null ? 0 : c.count();
@@ -156,7 +161,7 @@ class OperationReportingMySqlIT {
     @Test void concurrentReportsNeverExceedLimit() throws Exception {
         String id = released(10);
         double ok0 = counter("mes.workorder.report", "result", "ok"), over0 = counter("mes.workorder.report", "result", "over_report");
-        double prog0 = counter("mes.workorder.status.transition", "to", "IN_PROGRESS");
+        double prog0 = transitions("RELEASED", "IN_PROGRESS");
         long lock0 = meters.get("mes.workorder.report.lock.wait").timer().count();
         double defect0 = meters.find("mes.workorder.report.qty").tag("kind", "defect").tag("uom", "PCS").counter() == null ? 0 : meters.get("mes.workorder.report.qty").tag("kind", "defect").tag("uom", "PCS").counter().count();
         int threads = 12;
@@ -193,8 +198,8 @@ class OperationReportingMySqlIT {
         call(path, "m-2", body);
         assertThat(counter("mes.workorder.report", "result", "workorder_closed") - closed0).isEqualTo(1);
         assertThat(meters.get("mes.workorder.outbox.pending").gauge().value())
-            .isEqualTo(jdbc.queryForObject("select count(*) from outbox_event where published_at is null", Long.class).doubleValue());
-        assertThat(counter("mes.workorder.status.transition", "to", "IN_PROGRESS") - prog0).isEqualTo(1);
+            .isEqualTo(jdbc.queryForObject("select count(*) from outbox_event where status = 'NEW'", Long.class).doubleValue());
+        assertThat(transitions("RELEASED", "IN_PROGRESS") - prog0).isEqualTo(1);
         assertThat(meters.get("mes.workorder.report.qty").tag("kind", "defect").tag("uom", "PCS").counter().count() - defect0).isEqualTo(2.5);
         assertThat(meters.get("mes.workorder.report.lock.wait").timer().count() - lock0).isEqualTo(threads + 3); // 并发 12 次 + 重放校验 2 次 + 关闭校验 1 次
     }
@@ -243,6 +248,7 @@ class OperationReportingMySqlIT {
         assertThat(defectRev.get(0).get("reversedReportId").asText()).isEqualTo(bid);
         assertThat(defectRev.get(0).get("reversalId").asText()).isEqualTo(rev.at("/data/report/reportId").asText());
         assertThat(defectRev.get(0).has("originalReportId")).isFalse();
+        assertThat(defectRev.get(0).has("reportId")).isFalse();
         assertThat(defectRev.get(0).get("defectQty").asText()).isEqualTo("1.000000");
         assertThat(defectRev.get(0).get("materialCode").asText()).isEqualTo(ReleaseFixtures.PRODUCT);
         assertThat(defectRev.get(0).get("lotNo").asText()).isEqualTo("LOT-1");
@@ -319,6 +325,35 @@ class OperationReportingMySqlIT {
         assertThat(report(id, "OP10", "1.376543", "0", "0").getResponse().getStatus()).isEqualTo(201);
         assertProblem(report(id, "OP10", "0.000001", "0", "0"), 422, "over-report");
         assertProblem(report(id, "OP10", "0.0000001", "0", "0"), 400, "validation-error");
+    }
+
+    /** 同一工单内计量单位不一致返回 422 uom-mismatch，并计入 result="uom_mismatch"。 */
+    @Test void uomMismatchIs422() throws Exception {
+        String id = released(10);
+        report(id, "OP10", "1", "0", "0");
+        double before = counter("mes.workorder.report", "result", "uom_mismatch");
+        MvcResult r = call("/workorders/" + id + "/operations/OP10/reports", UUID.randomUUID().toString(),
+            "{\"goodQty\":1,\"defectQty\":0,\"scrapQty\":0,\"uom\":\"KG\"}");
+        assertProblem(r, 422, "uom-mismatch");
+        assertThat(json(r).at("/data/expectedUom").asText()).isEqualTo("PCS");
+        assertThat(counter("mes.workorder.report", "result", "uom_mismatch") - before).isEqualTo(1);
+    }
+
+    /** 下达、冻结、恢复同样计入 mes_workorder_status_transition_total{from,to}；追加第二个冻结原因不计。 */
+    @Test void lifecycleTransitionsAreCounted() {
+        double rel0 = transitions("CREATED", "RELEASED"), hold0 = transitions("RELEASED", "ON_HOLD"), res0 = transitions("ON_HOLD", "RELEASED");
+        String id = released(5);
+        release.hold(id, com.smartmanufacturing.api.workorder.HoldReason.MANUAL, null, "u");
+        release.hold(id, com.smartmanufacturing.api.workorder.HoldReason.LOT_HELD, null, "u");
+        release.resume(id, com.smartmanufacturing.api.workorder.HoldReason.MANUAL, null, "u");
+        release.resume(id, com.smartmanufacturing.api.workorder.HoldReason.LOT_HELD, null, "u");
+        assertThat(transitions("CREATED", "RELEASED") - rel0).isEqualTo(1);
+        assertThat(transitions("RELEASED", "ON_HOLD") - hold0).isEqualTo(1);
+        assertThat(transitions("ON_HOLD", "RELEASED") - res0).isEqualTo(1);
+        // 生命周期事件已带投递目标与 aggregateVersion
+        assertThat(jdbc.queryForList("select tag from outbox_event where aggregate_id = ? and topic = 'mes-workorder-event' order by occurred_at", String.class, id))
+            .contains("WorkOrderReleased", "WorkOrderHeld", "WorkOrderHoldReasonCleared", "WorkOrderResumed");
+        assertThat(jdbc.queryForObject("select count(*) from outbox_event where aggregate_id = ? and (topic is null or tag is null)", Integer.class, id)).isZero();
     }
 
     /** 门槛 6：手工完工——存在未报工工序 409；成功后写审计、发 WorkOrderCompleted，shortfall = 计划 − 末道合格。 */

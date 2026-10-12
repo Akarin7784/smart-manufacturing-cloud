@@ -58,6 +58,27 @@ CREATE TABLE wo_command_request (
 ALTER TABLE outbox_event ADD COLUMN topic VARCHAR(128) NULL;
 ALTER TABLE outbox_event ADD COLUMN tag VARCHAR(64) NULL;
 
+-- 投递状态（中继 WorkOrderOutboxRelay 使用）：NEW 待投递、SENT 已投递、DISCARDED 永不投递（discard_reason 说明原因）。
+-- 失败时 attempts + 1 并按指数退避写 next_attempt_at；event_id 在重发时保持不变，消费端据此幂等。
+ALTER TABLE outbox_event ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'NEW';
+ALTER TABLE outbox_event ADD COLUMN attempts INT NOT NULL DEFAULT 0;
+ALTER TABLE outbox_event ADD COLUMN next_attempt_at TIMESTAMP NULL;
+ALTER TABLE outbox_event ADD COLUMN last_error VARCHAR(512) NULL;
+ALTER TABLE outbox_event ADD COLUMN discard_reason VARCHAR(128) NULL;
+ALTER TABLE outbox_event ADD CONSTRAINT ck_outbox_event_status CHECK (status IN ('NEW', 'SENT', 'DISCARDED'));
+CREATE INDEX idx_outbox_event_relay ON outbox_event (status, next_attempt_at, occurred_at);
+
+-- 回填 V2 遗留事件。迁移脚本无法读取 Nacos，这里的 Topic / Tag 与 infra/nacos/common.yml 当前值一致（见 docs/messaging.md）。
+-- 1) 已投递过的行标记为 SENT（V2 尚无中继，正常不存在，仅为防御）。
+UPDATE outbox_event SET status = 'SENT' WHERE published_at IS NOT NULL;
+-- 2) 按事件类型补齐投递目标：下达 / 冻结 / 恢复类生命周期事件 → mes-workorder-event，Tag 与事件类型同名。
+UPDATE outbox_event SET topic = 'mes-workorder-event', tag = event_type
+ WHERE topic IS NULL AND status = 'NEW'
+   AND event_type IN ('WorkOrderReleased', 'WorkOrderHeld', 'WorkOrderResumed', 'WorkOrderHoldReasonCleared');
+-- 3) 其余无法映射的事件类型标记为 DISCARDED，永不投递，也不计入 mes_workorder_outbox_pending。
+UPDATE outbox_event SET status = 'DISCARDED', discard_reason = 'V3_UNMAPPED_EVENT_TYPE'
+ WHERE topic IS NULL AND status = 'NEW';
+
 -- 工单聚合版本：每次状态变更（下达、冻结、恢复、开工、完工、重开）递增 1，随全部工单状态事件以 aggregateVersion 发布；
 -- 消费端丢弃版本不高于本地已处理版本的事件（Topic 为普通消息，不保证顺序），occurredAt 仅用于展示与审计。
 ALTER TABLE work_order ADD COLUMN version BIGINT NOT NULL DEFAULT 0;

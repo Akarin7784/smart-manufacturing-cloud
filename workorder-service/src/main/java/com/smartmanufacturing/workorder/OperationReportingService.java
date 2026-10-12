@@ -101,7 +101,8 @@ public class OperationReportingService {
         Progress cur = ops.get(k);
         String uom = ops.stream().map(Progress::uom).filter(Objects::nonNull).findFirst().orElse(null);
         if (uom != null && !uom.equals(req.uom()))
-            throw WorkOrderProblemType.VALIDATION_ERROR.exception("报工单位 " + req.uom() + " 与本工单已报工单位 " + uom + " 不一致");
+            throw WorkOrderProblemType.UOM_MISMATCH.exception("报工单位 " + req.uom() + " 与本工单已报工单位 " + uom + " 不一致",
+                Map.of("expectedUom", uom, "requestedUom", req.uom()));
         BigDecimal limit = limit(order, ops, k);
         BigDecimal after = cur.total().add(requested);
         if (after.compareTo(limit) > 0) {
@@ -335,7 +336,6 @@ public class OperationReportingService {
         int n = jdbc.update("update work_order set status = ?, version = version + 1 where id = ? and status = ?", to, orderId, from);
         if (n != 1) throw new IllegalStateException("工单状态更新失败：" + orderId + " " + from + " -> " + to);
         journal.statusChanged(orderId, from, to, reason, note, operator);
-        metrics.transitionAfterCommit(to);
         Long v = jdbc.queryForObject("select version from work_order where id = ?", Long.class, orderId);
         return v == null ? 0 : v;
     }
@@ -352,8 +352,7 @@ public class OperationReportingService {
         if (reversedReportId == null) {
             payload.put("reportId", reportId);
         } else {
-            // 统一命名：reversedReportId = 被冲销的原报工；reversalId = 本次冲销记录；reportId 同原报工，便于质检按报工关联
-            payload.put("reportId", reversedReportId);
+            // DefectReversed 不带 reportId：reversedReportId = 被冲销的原报工，reversalId = 本次冲销记录
             payload.put("reversedReportId", reversedReportId);
             payload.put("reversalId", reportId);
         }

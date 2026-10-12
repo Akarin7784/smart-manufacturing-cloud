@@ -38,6 +38,11 @@ manufacturing:
       workorder-completed: WorkOrderCompleted
       # 冲销使已完工工单（COMPLETED）退回 IN_PROGRESS 时发布。
       workorder-reopened: WorkOrderReopened
+      # 工单生命周期事件（下达、冻结、恢复、解除单个冻结原因），同在 workorder-event Topic，由 outbox 中继投递。
+      workorder-released: WorkOrderReleased
+      workorder-held: WorkOrderHeld
+      workorder-resumed: WorkOrderResumed
+      workorder-hold-reason-cleared: WorkOrderHoldReasonCleared
       # 报工不良数 > 0 时发布；冲销带不良数的报工时发布。
       defect-reported: DefectReported
       defect-reversed: DefectReversed

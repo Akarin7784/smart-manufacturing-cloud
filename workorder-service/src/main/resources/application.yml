@@ -60,3 +60,11 @@ spring.flyway:
   locations: classpath:db/migration
   baseline-on-migrate: ${FLYWAY_BASELINE_ON_MIGRATE:false}
   baseline-version: "1"
+
+# outbox 中继（WorkOrderOutboxRelay）：每秒一批、每批最多 50 条；发送超时 3 秒且客户端不重试，避免领取事务长时间持锁。
+# NameServer 取 Nacos common.yml 的 rocketmq.name-server。
+workorder.outbox:
+  interval: PT1S
+  batch-size: 50
+  producer-group: PG_WORKORDER_EVENT
+  send-timeout-ms: 3000

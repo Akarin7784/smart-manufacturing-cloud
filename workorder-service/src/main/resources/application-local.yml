@@ -28,5 +28,9 @@ manufacturing:
       workorder-started: WorkOrderStarted
       workorder-completed: WorkOrderCompleted
       workorder-reopened: WorkOrderReopened
+      workorder-released: WorkOrderReleased
+      workorder-held: WorkOrderHeld
+      workorder-resumed: WorkOrderResumed
+      workorder-hold-reason-cleared: WorkOrderHoldReasonCleared
       defect-reported: DefectReported
       defect-reversed: DefectReversed

@@ -22,9 +22,10 @@ class ReportingMetrics {
         this.lockWait = Timer.builder("mes.workorder.report.lock.wait").description("等待工单行锁的时间").register(registry);
         // mes_workorder_reversal_total：成功冲销次数
         this.reversals = Counter.builder("mes.workorder.reversal").description("报工冲销次数").register(registry);
-        // mes_workorder_outbox_pending：发件箱中尚未投递（published_at 为空）的事件数，每次抓取时查询
+        // mes_workorder_outbox_pending：发件箱中 status = NEW 的事件数，每次抓取时查询
         Gauge.builder("mes.workorder.outbox.pending", () -> {
-                Long n = jdbc.queryForObject("select count(*) from outbox_event where published_at is null", Long.class);
+                // 只统计待投递（NEW）；DISCARDED 永不投递，不计入
+            Long n = jdbc.queryForObject("select count(*) from outbox_event where status = 'NEW'", Long.class);
                 return n == null ? 0 : n;
             }).description("发件箱待投递事件数").register(registry);
         result("ok"); result("replay"); result("error");
@@ -61,9 +62,9 @@ class ReportingMetrics {
         return Counter.builder("mes.workorder.reversal.qty").tag("kind", kind).tag("uom", uom).description("冲销数量").register(registry);
     }
 
-    /** mes_workorder_status_transition_total{to=<状态>}：状态转换计数，在当前事务提交后累加。 */
-    void transitionAfterCommit(String to) {
-        Runnable inc = () -> Counter.builder("mes.workorder.status.transition").tag("to", to).description("工单状态转换次数").register(registry).increment();
+    /** mes_workorder_status_transition_total{from,to}：状态迁移计数（下达、冻结、恢复、开工、完工、重开），在当前事务提交后累加。 */
+    void transitionAfterCommit(String from, String to) {
+        Runnable inc = () -> Counter.builder("mes.workorder.status.transition").tag("from", from).tag("to", to).description("工单状态转换次数").register(registry).increment();
         if (TransactionSynchronizationManager.isSynchronizationActive())
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override public void afterCommit() { inc.run(); }

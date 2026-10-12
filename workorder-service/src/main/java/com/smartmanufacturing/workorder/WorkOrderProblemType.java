@@ -25,6 +25,8 @@ public enum WorkOrderProblemType {
     /** 报工 / 冲销对象不存在（工序号不在下达时的工艺快照中，或报工记录不存在）。 */
     OPERATION_NOT_FOUND("operation-not-found", "OPERATION_NOT_FOUND", HttpStatus.NOT_FOUND),
     REPORT_NOT_FOUND("report-not-found", "REPORT_NOT_FOUND", HttpStatus.NOT_FOUND),
+    /** 报工计量单位与本工单已有报工的单位不一致（同一工单所有工序必须使用同一单位）。 */
+    UOM_MISMATCH("uom-mismatch", "UOM_MISMATCH", HttpStatus.UNPROCESSABLE_ENTITY),
 
     // ---- 既有业务码
     VALIDATION_ERROR("validation-error", "INVALID_ARGUMENT", HttpStatus.BAD_REQUEST),
