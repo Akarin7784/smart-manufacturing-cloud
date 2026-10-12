@@ -119,8 +119,11 @@ class AuthIntegrationTest {
     @Test void viewerCannotManageUsers() throws Exception {
         users.create(new CreateUserRequest("viewer", USER_PASSWORD, Role.VIEWER));
         String access = login("viewer", USER_PASSWORD);
-        mvc.perform(get("/auth/users").header("Authorization", "Bearer " + access))
-            .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+        mvc.perform(get("/auth/users?page=1").header("Authorization", "Bearer " + access))
+            .andExpect(problem(403, "access-denied", "/auth/users"));
+        // 未带令牌：401 problem+json，并附 Bearer 质询。
+        mvc.perform(get("/auth/me")).andExpect(problem(401, "authentication-required", "/auth/me"))
+            .andExpect(header().string("WWW-Authenticate", "Bearer"));
         mvc.perform(post("/auth/users").header("Authorization", "Bearer " + access).contentType(MediaType.APPLICATION_JSON)
             .content(mapper.writeValueAsString(new CreateUserRequest("intruder", USER_PASSWORD, Role.ADMIN))))
             .andExpect(status().isForbidden());
@@ -161,5 +164,18 @@ class AuthIntegrationTest {
         RSAKey first = configuration.signingKey(directory.resolve("reload-key.json").toString());
         RSAKey second = configuration.signingKey(directory.resolve("reload-key.json").toString());
         assertEquals(first.toPublicJWK().toJSONString(), second.toPublicJWK().toJSONString());
+    }
+
+    /** 断言 RFC 9457 problem+json：Content-Type、五个固定字段齐全，且不再输出旧的 code 字段。 */
+    private static org.springframework.test.web.servlet.ResultMatcher problem(int status, String type, String instance) {
+        return org.springframework.test.web.servlet.ResultMatcher.matchAll(
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().is(status),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().contentTypeCompatibleWith("application/problem+json"),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.type").value(type),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.title").isNotEmpty(),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.status").value(status),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.detail").isNotEmpty(),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.instance").value(instance),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").doesNotExist());
     }
 }

@@ -53,9 +53,15 @@ class ApiExceptionHandlerTest {
     /** 方法级权限拒绝必须是 403，不能落入通用 500 分支。 */
     @Test @DisplayName("权限拒绝返回 403")
     void accessDeniedReturns403() {
-        ResponseEntity<ApiResponse<Void>> r = handler.forbidden(new AccessDeniedException("denied"));
+        var request = new MockHttpServletRequest("GET", "/devices/config");
+        request.setQueryString("token=secret");
+        var r = handler.forbidden(new AccessDeniedException("denied"), request);
         assertThat(r.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-        assertThat(r.getBody().code()).isEqualTo("ACCESS_DENIED");
+        // problem+json：五个固定字段，instance 不含查询串，且无旧 code 字段。
+        assertThat(r.getHeaders().getContentType().isCompatibleWith(org.springframework.http.MediaType.APPLICATION_PROBLEM_JSON)).isTrue();
+        assertThat(r.getBody()).containsExactly(
+            java.util.Map.entry("type", "access-denied"), java.util.Map.entry("title", "没有访问权限"), java.util.Map.entry("status", 403),
+            java.util.Map.entry("detail", "当前身份缺少访问该接口所需的权限"), java.util.Map.entry("instance", "/devices/config"));
     }
 
     /** 未知异常只返回统一提示，内部异常信息不能出现在响应体中。 */
