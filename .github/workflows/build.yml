@@ -100,7 +100,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # 端到端演示环境：执行 make demo（构建镜像、自动导入 Nacos 配置、等待全部 healthy、冒烟测试），对应部署方案 P1 的验收标准。
+  # 端到端演示环境：执行 make demo（构建镜像、自动导入 Nacos 配置、RocketMQ 建 Topic、等待全部 healthy、冒烟测试含 RocketMQ 收发回环），对应部署方案 P1 的验收标准。
   demo-smoke:
     name: demo smoke (make demo)
     runs-on: ubuntu-latest
@@ -116,6 +116,10 @@ jobs:
         run: |
           docker compose --profile app ps -a
           docker compose --profile app logs --no-color --tail=200
+      # 记录 RocketMQ 容器内存占用，确认 Broker 堆上限生效。
+      - name: Report RocketMQ memory
+        if: success()
+        run: docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' | grep -E 'namesrv|broker'
       - name: Tear down
         if: always()
-        run: docker compose --profile app down -v
+        run: docker compose --profile app down -v --rmi local

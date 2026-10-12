@@ -35,6 +35,8 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 
 ## RocketMQ 扩展
 
+演示环境已接入 RocketMQ 5.5.0（namesrv + broker，随 `make demo` 启动），Topic、Tag 与地址见 [messaging.md](messaging.md)。
+
 建议工单模块采用本地事务写入工单与 outbox 事件，再异步发布 WorkOrderCreated。消息包含 eventId / orderId；消费者按 eventId 幂等，重试与死信队列可观测。不要简单地“写库后发消息”并把两个动作宣称为原子操作。
 
 按官方兼容表，本版本对应 RocketMQ 5.3.1。接入时核对 Spring Cloud Stream RocketMQ 或 RocketMQ Spring 的兼容版本，部署 NameServer / Broker，明确 ACL、Topic、Consumer Group、超时和失败策略。当前工程未引入消息客户端、Broker 或事件发布，避免把未使用的组件作为启动依赖。
