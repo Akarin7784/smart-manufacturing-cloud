@@ -8,6 +8,12 @@
 - **DefectReversed**：只认 `reversedReportId`（被冲销的原报工）和 `reversalId`（冲销记录本身）；#20 将去掉 `reportId`。按 `reversedReportId` 找 NCR。
 - **字段口径**：`materialCode` 是工单产品码。不良事件不带 `aggregateVersion`，NCR 与报工一一对应，靠下面的规则处理乱序。
 - **幂等**：`consumed_event(event_id PK)` 与业务写入同一事务，主键冲突直接 ACK；`ncr.source_report_id` 唯一作第二道保险。
+- **坏消息（#30）**：JSON 解析失败、缺 `eventId`、缺必填字段、数量格式错误等不可恢复的消息，不再交给 RocketMQ 重投（原先按退避重投 16 次后才进 `%DLQ%CG_QUALITY_DEFECT`）。
+  - 写入 `invalid_event`（原始 msgId、tag、错误原因、载荷 SHA-256、字节数、前 512 个字符摘录）后直接 ACK，计数 `mes_quality_event_consumed_total{result="invalid"}`（启动预注册为 0），告警 `QualityInvalidEvent` 由运维添加。
+  - 留档写入失败、数据库或网络等可恢复错误仍回滚并重投（`result="error"`）。
+- **去重表保留期（#31）**：`consumed_event` 与 `defect_report_lock` 只保留 `quality.dedup.retention`（默认 `P30D`），每天 03:47 按创建时间分批清理（每批 1000 行一个事务，`FOR UPDATE SKIP LOCKED`，受 `quality.jobs.enabled` 控制），计数 `mes_quality_cleanup_deleted_total{table}`。
+  - `mes.quality.broker-retention`（默认 `PT72H`）必须等于 Broker 的 `fileReservedTime`；启动时校验保留期 > `broker-retention` + `quality.pending-reversal.ttl`，不满足则启动失败。
+  - 清理后迟到的重复报工由 `ncr.source_report_id` 唯一约束兜底，不会生成第二张 NCR。
 - **乱序：冲销先于报告到达，暂存待对冲**：
   - 找不到 NCR 时写 `pending_reversal(reversed_report_id PK, reversal_id, event_id, received_at, status=WAITING)`，然后 ACK，不阻塞消费位点。
   - 原报工在过期前到达：同一事务内命中暂存，直接建 `VOIDED` 的 NCR（`void_reason=REVERSED_BEFORE_REPORTED`），暂存标 `MATCHED`。只发 `NcrVoided`，不发 `NcrOpened`。
@@ -61,11 +67,13 @@
   - `mes_quality_api_total{result}`，result 取 `ok`、`replay`、7 种 type 的下划线写法（含 `ncr_not_found`）、`error`
   - `mes_quality_ncr_transition_total{from,to}`，提交后计数，新建 NCR 的 `from` 为 `NONE`
   - `mes_quality_disposition_qty_total{type,uom}`
-  - `mes_quality_event_consumed_total{tag,result}`
+  - `mes_quality_event_consumed_total{tag,result}`（result 含 `invalid`）
   - `mes_quality_pending_reversal_expired_total`
+  - `mes_quality_cleanup_deleted_total{table}`
   - `mes_quality_outbox_pending`
   - `mes_quality_ncr_open`
 - **Flyway V1**：表 `ncr`、`ncr_disposition`、`consumed_event`、`pending_reversal`、`ncr_conflict`、`outbox_event`、`idempotency_record`。
+- **Flyway V2**：新增 `invalid_event`；`defect_report_lock` 增加 `created_at`；两张去重表加时间索引。
 - **部署**：compose、网关路由和管理端口 18086 归运维，契约 PR 不改。
 
 ## 6. 合入门槛（Testcontainers：真实 RocketMQ + MySQL 8.4，经 broker 投递）

@@ -174,4 +174,32 @@ class DefectConsumptionRocketMqIT {
         assertThat(consumed("DefectReversed", "error")).isEqualTo(errors);
         assertThat(count("select count(*) from ncr_conflict where ncr_no = ?", ncrNo)).isEqualTo(1);
     }
+
+    /** 直接发送原始字节（模拟坏消息），不带 eventId 属性。 */
+    private static String sendRaw(String tag, byte[] body) throws Exception {
+        var r = producer.send(new Message("mes-workorder-quality", tag, "BAD", body));
+        assertThat(r.getSendStatus()).isEqualTo(SendStatus.SEND_OK);
+        return r.getMsgId();
+    }
+
+    /**
+     * #30：经 Broker 投递缺 eventId 与非 JSON 的坏消息——各只被消费一次、留有 invalid_event 记录、invalid 计数 +1，
+     * 直接 ACK 不重投（等待超过首次重投间隔后计数不变，也没有 error）。
+     */
+    @Test void invalidMessagesAreRecordedAndAckedOnce() throws Exception {
+        double invalid = consumed("DefectReported", "invalid"), errors = consumed("DefectReported", "error");
+        double all = consumedAll("DefectReported");
+        ObjectNode noEventId = DefectEvents.reported("x", rid(), "WO-IT-BAD", "1", "件");
+        noEventId.remove("eventId");
+        String a = sendRaw("DefectReported", noEventId.toString().getBytes(StandardCharsets.UTF_8));
+        String b = sendRaw("DefectReported", "{broken".getBytes(StandardCharsets.UTF_8));
+        await().atMost(timeout()).until(() -> consumed("DefectReported", "invalid") >= invalid + 2);
+        Thread.sleep(12_000);
+        assertThat(consumed("DefectReported", "invalid")).isEqualTo(invalid + 2);
+        assertThat(consumed("DefectReported", "error")).isEqualTo(errors);
+        assertThat(consumedAll("DefectReported")).isEqualTo(all + 2);
+        // 记录的 msgId 为消费端看到的 msgId（与发送返回的 msgId 一致）。
+        assertThat(count("select count(*) from invalid_event where msg_id in (?, ?)", a, b)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select reason from invalid_event where msg_id = ?", String.class, a)).contains("eventId");
+    }
 }

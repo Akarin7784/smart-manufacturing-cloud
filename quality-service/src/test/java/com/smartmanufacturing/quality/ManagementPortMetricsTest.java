@@ -51,6 +51,11 @@ class ManagementPortMetricsTest {
     @Test void alertCountersArePreRegisteredAtStartup() throws Exception {
         String body = get(managementPort, "/actuator/prometheus").body();
         assertThat(body).containsPattern("(?m)^mes_quality_event_consumed_total\\{[^}]*result=\"disposed_reversal_conflict\"[^}]*tag=\"DefectReversed\"[^}]*\\} 0\\.0$");
+        // #30：坏消息计数两种 tag 均预注册为 0；#31：两张表的清理计数预注册为 0。
+        for (String tag : new String[] {"DefectReported", "DefectReversed"})
+            assertThat(body).containsPattern("(?m)^mes_quality_event_consumed_total\\{[^}]*result=\"invalid\",tag=\"" + tag + "\"\\} 0\\.0$");
+        for (String table : new String[] {"consumed_event", "defect_report_lock"})
+            assertThat(body).containsPattern("(?m)^mes_quality_cleanup_deleted_total\\{application=\"quality-service\",table=\"" + table + "\"\\} 0\\.0$");
         assertThat(body).containsPattern("(?m)^mes_quality_pending_reversal_expired_total\\{application=\"quality-service\"\\} 0\\.0$");
     }
 
