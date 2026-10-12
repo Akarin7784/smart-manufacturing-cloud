@@ -1,0 +1,5 @@
+# 主数据服务独立配置；Group = MANUFACTURING，由 nacos-config-init 自动导入。
+# explosion-max-depth：BOM 多层展开的最大层级（防脏数据导致无限递归），BomService 启动时读取，修改后需重启生效。
+manufacturing:
+  masterdata:
+    explosion-max-depth: 20

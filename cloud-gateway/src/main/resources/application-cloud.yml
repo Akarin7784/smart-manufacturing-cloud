@@ -40,6 +40,13 @@ spring:
                 - Path=/api/workorders,/api/workorders/**
               filters:
                 - StripPrefix=1
+            # 主数据服务：物料、工作中心、BOM、工艺路线四组资源统一路由。
+            - id: masterdata-service
+              uri: lb://masterdata-service
+              predicates:
+                - Path=/api/materials,/api/materials/**,/api/workcenters,/api/workcenters/**,/api/boms,/api/boms/**,/api/routings,/api/routings/**
+              filters:
+                - StripPrefix=1
     sentinel:
       eager: true
       transport:
