@@ -32,6 +32,9 @@ Set-IfEmpty 'NACOS_AUTH_IDENTITY_KEY' 'serverIdentity'
 Set-IfEmpty 'NACOS_AUTH_IDENTITY_VALUE' (New-RandomHex 16)
 Set-IfEmpty 'NACOS_USERNAME' 'nacos'
 Set-IfEmpty 'NACOS_PASSWORD' (New-RandomHex 16)
+# 可选监控（compose monitoring profile）：Grafana 管理员账号与密码都随机生成，不使用镜像默认的 admin/admin。
+Set-IfEmpty 'GRAFANA_ADMIN_USER' ('grafana-' + (New-RandomHex 4))
+Set-IfEmpty 'GRAFANA_ADMIN_PASSWORD' (New-RandomHex 16)
 Set-IfEmpty 'AUTH_ISSUER' 'http://localhost:8080'
 Set-IfEmpty 'AUTH_AUDIENCE' 'manufacturing-api'
 # 工单服务的 client_credentials 密钥：明文只给 workorder-service，认证服务只拿 BCrypt 散列。

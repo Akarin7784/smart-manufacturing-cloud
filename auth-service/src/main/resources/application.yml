@@ -7,6 +7,10 @@ spring:
   profiles:
     default: local
 management:
+  # 所有指标统一带 application 标签（取服务名），Prometheus/Grafana 按服务区分与聚合。
+  metrics.tags.application: ${spring.application.name}
+  # HTTP 请求耗时输出直方图桶，支撑看板中的 P95/P99 延迟（histogram_quantile）。
+  metrics.distribution.percentiles-histogram.http.server.requests: true
   endpoints.web.exposure.include: health,info,prometheus
   endpoint.health.probes.enabled: true
 logging.pattern.level: "%5p [requestId=%X{requestId:-}]"

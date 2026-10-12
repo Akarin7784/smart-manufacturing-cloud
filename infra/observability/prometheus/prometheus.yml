@@ -1,0 +1,36 @@
+# Prometheus 抓取配置（compose monitoring profile 使用）。
+# 采用静态配置 + compose 内网 DNS，而不是 Nacos 服务发现：
+#   1) Prometheus 没有内置 Nacos SD，接入需额外部署 adapter，演示环境不值得多一个组件；
+#   2) Nacos 注册的是业务端口，指标却在独立管理端口（1808x），仍需重写端口；
+#   3) 服务清单固定为 5 个，静态配置更直观，冒烟脚本也能据此断言 target 数量。
+# 新增服务时：在下面 targets 中补一行，并同步 scripts/monitoring-smoke.sh 的 EXPECTED_TARGETS。
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # 各 Spring Boot 服务的独立管理端口；该端口只在 compose 内网可达，匿名抓取无需 JWT。
+  - job_name: spring-boot
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - gateway:18080
+          - device:18081
+          - workorder:18082
+          - auth:18083
+          - masterdata:18084
+    relabel_configs:
+      # instance 只保留 compose 服务名，看板图例更简洁；application 标签由服务自身（Micrometer 公共标签）提供。
+      - source_labels: [__address__]
+        regex: '([^:]+):\d+'
+        target_label: instance
+        replacement: '$1'
+
+  # Prometheus 自身，便于确认抓取与规则评估正常。
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

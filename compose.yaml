@@ -16,7 +16,8 @@ x-cloud-env: &cloud-env
   AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
   AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
 
-# 业务服务健康检查公共参数：JVM 服务启动较慢，给足 start_period 和重试次数。
+# 业务服务健康检查公共参数：探测独立管理端口（cloud profile 下 actuator 在 1808x，与业务端口分离、不发布到宿主机）。
+# JVM 服务启动较慢，给足 start_period 和重试次数。
 x-probe-timing: &probe-timing
   interval: 10s
   timeout: 8s
@@ -169,7 +170,7 @@ services:
       - auth-keys:/home/app/security
     # 运行镜像无 curl：用构建阶段编译的 JDK HttpClient 探针检查就绪端点。
     healthcheck:
-      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:8083/actuator/health/readiness"]
+      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:18083/actuator/health/readiness"]
       <<: *probe-timing
     depends_on:
       nacos-config-init:
@@ -188,7 +189,7 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     healthcheck:
-      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:8080/actuator/health/readiness"]
+      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:18080/actuator/health/readiness"]
       <<: *probe-timing
     # 网关只在下游全部就绪后启动，避免演示开始时出现 503 或服务发现为空。
     depends_on:
@@ -216,7 +217,7 @@ services:
       MYSQL_HOST: mysql
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
     healthcheck:
-      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:8081/actuator/health/readiness"]
+      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:18081/actuator/health/readiness"]
       <<: *probe-timing
     depends_on:
       nacos-config-init:
@@ -237,7 +238,7 @@ services:
       MYSQL_HOST: mysql
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
     healthcheck:
-      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:8082/actuator/health/readiness"]
+      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:18082/actuator/health/readiness"]
       <<: *probe-timing
     depends_on:
       nacos-config-init:
@@ -261,15 +262,73 @@ services:
       MYSQL_HOST: mysql
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
     healthcheck:
-      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:8084/actuator/health/readiness"]
+      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:18084/actuator/health/readiness"]
       <<: *probe-timing
     depends_on:
       nacos-config-init:
         condition: service_completed_successfully
       db-init:
         condition: service_completed_successfully
+  # ===== 可选监控（monitoring profile）=====
+  # 默认的 app profile 不启动它们：整套 demo 已占约 4.6G 内存。按需启动：
+  #   docker compose --profile app --profile monitoring up -d
+  # 两者只绑定 127.0.0.1，并设置内存上限；Prometheus 通过 compose 内网 DNS 抓取各服务的独立管理端口。
+  prometheus:
+    profiles: ["monitoring"]
+    image: prom/prometheus:${PROMETHEUS_IMAGE_TAG:-v3.5.0}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # 演示环境只保留 2 天或 512MB，限制磁盘和内存占用。
+      - --storage.tsdb.retention.time=2d
+      - --storage.tsdb.retention.size=512MB
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./infra/observability/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    mem_limit: 384m
+    healthcheck:
+      # 镜像基于 busybox，自带 wget；就绪端点在配置与 TSDB 加载完成后返回 200。
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  grafana:
+    profiles: ["monitoring"]
+    image: grafana/grafana:${GRAFANA_IMAGE_TAG:-12.1.1}
+    environment:
+      # 管理员账号密码由 init-env 随机生成并写入 .env，缺失时直接报错，不回退到 admin/admin。
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?请先运行 scripts/init-env.sh 生成 .env}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # 关闭外网访问相关功能：演示环境离线可用，不上报统计、不检查更新。
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      # 数据源与看板全部由 provisioning 自动配置，看板 JSON 随仓库版本管理。
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    depends_on:
+      prometheus:
+        condition: service_healthy
 volumes:
   auth-keys:
   nacos-data:
   nacos-logs:
   mysql-data:
+  # 监控数据卷：down -v 时随其他卷一起清理。
+  prometheus-data:
+  grafana-data:

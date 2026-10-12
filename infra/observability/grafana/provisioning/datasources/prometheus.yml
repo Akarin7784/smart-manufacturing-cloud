@@ -1,0 +1,11 @@
+# Grafana 数据源自动配置：指向 compose 内网的 Prometheus；固定 uid，看板 JSON 按 uid 引用数据源。
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    # 只读：防止在界面上改动后与仓库配置漂移。
+    editable: false
