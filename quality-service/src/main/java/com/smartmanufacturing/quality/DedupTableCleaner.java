@@ -6,12 +6,14 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 import java.sql.Timestamp;
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
  * 去重表与报工锁表清理（#31）：按创建时间删除早于（当前时间 − 保留期）的行。
  * <ul>
- *   <li>每批最多 batch-size（默认 1000）行、一批一个事务：先按时间索引 {@code FOR UPDATE SKIP LOCKED} 选出主键，再按主键删除，
+ *   <li>每批最多 batch-size（默认 1000）行、一批一个事务：先按时间索引 {@code FOR UPDATE SKIP LOCKED} 选出主键，再用一条 {@code DELETE ... WHERE key IN (...)} 批量删除，
  *       不长时间持锁；正被消费事务锁住的报工锁行直接跳过，留到下次。</li>
  *   <li>单次运行最多 max-batches 批，剩余留给下次；删除行数计入 mes_quality_cleanup_deleted_total{table}（提交后计数）。</li>
  *   <li>定时触发在 {@link QualitySchedules}，受 quality.jobs.enabled 控制；时间取注入的 {@link Clock}。</li>
@@ -55,14 +57,18 @@ public class DedupTableCleaner {
     private int purge(Target t, Timestamp cutoff) {
         String select = "select " + t.key() + " from " + t.table() + " where " + t.time() + " < ? order by " + t.time()
             + " limit " + batchSize + " for update skip locked";
-        // 删除时再次带上时间条件，防止主键被选出后又被新数据重新写入（如同一报工锁行被重新插入）。
-        String delete = "delete from " + t.table() + " where " + t.key() + " = ? and " + t.time() + " < ?";
         int total = 0;
         for (int batch = 0; batch < maxBatches; batch++) {
             int[] result = tx.execute(status -> {
                 List<String> keys = jdbc.queryForList(select, String.class, cutoff);
-                int deleted = 0;
-                for (String k : keys) deleted += jdbc.update(delete, k, cutoff);
+                if (keys.isEmpty()) return new int[] {0, 0};
+                // 每批只发一条 DELETE：主键以占位符绑定（最多 batch-size 个），避免逐行往返数据库。
+                // 删除时再次带上时间条件，防止主键被选出后又被新数据重新写入（如同一报工锁行被重新插入）。
+                String placeholders = String.join(",", Collections.nCopies(keys.size(), "?"));
+                String delete = "delete from " + t.table() + " where " + t.key() + " in (" + placeholders + ") and " + t.time() + " < ?";
+                List<Object> args = new ArrayList<>(keys);
+                args.add(cutoff);
+                int deleted = jdbc.update(delete, args.toArray());
                 return new int[] {keys.size(), deleted};
             });
             if (result == null) break;
