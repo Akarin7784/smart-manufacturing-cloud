@@ -36,4 +36,26 @@ class WorkOrderProblemTypeTest {
         assertThat(WorkOrderProblemType.OPERATIONS_UNREPORTED.status().value()).isEqualTo(409);
         assertThat(WorkOrderProblemType.OVER_REPORT.type()).isEqualTo("over-report");
     }
+
+    /** 契约 docs/api/workorder-openapi.yaml 的 ProblemType 枚举必须与代码枚举完全一致。 */
+    @Test void contractProblemTypesMatchEnum() throws Exception {
+        String yaml = Files.readString(Path.of("../docs/api/workorder-openapi.yaml"));
+        int start = yaml.indexOf("    ProblemType:");
+        String block = yaml.substring(start, yaml.indexOf("\n    Problem:\n", start));
+        String enumPart = block.substring(block.indexOf("      enum:"));
+        List<String> contract = new ArrayList<>();
+        var m = Pattern.compile("(?m)^        - ([a-z-]+)$").matcher(enumPart);
+        while (m.find()) contract.add(m.group(1));
+        assertThat(contract).containsExactlyInAnyOrderElementsOf(Arrays.stream(WorkOrderProblemType.values()).map(WorkOrderProblemType::type).toList());
+        for (WorkOrderProblemType p : WorkOrderProblemType.values())
+            assertThat(block).as("契约表格应列出 %s 及其状态码", p.type()).contains("| `" + p.type() + "` | " + p.status().value() + " |");
+    }
+
+    /** docs/observability.md 第 5 节列出的 result 取值必须覆盖每个枚举值（下划线写法）。 */
+    @Test void observabilityDocListsEveryResultValue() throws Exception {
+        String doc = Files.readString(Path.of("../docs/observability.md"));
+        String row = doc.lines().filter(l -> l.startsWith("| `mes_workorder_report_total`")).findFirst().orElseThrow();
+        for (WorkOrderProblemType p : WorkOrderProblemType.values())
+            assertThat(row).as("observability.md 应列出 result=%s", ReportingMetrics.resultOf(p)).contains("`" + ReportingMetrics.resultOf(p) + "`");
+    }
 }

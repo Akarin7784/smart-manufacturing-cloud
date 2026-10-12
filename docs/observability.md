@@ -112,13 +112,13 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 
 | 指标 | 类型 | 标签 | 说明 |
 | --- | --- | --- | --- |
-| `mes_workorder_report_total` | Counter | `result` | 报工请求结果。`result` 取值为 `ok`、`replay`（幂等重放），加上 `WorkOrderProblemType` 枚举每个 type 的下划线写法（如 `over_report`、`downstream_reported`、`workorder_closed`、`operations_unreported`、`validation_error`、`idempotency_key_conflict`、`workorder_state_conflict` 等，以枚举为准），再加兜底 `error` |
+| `mes_workorder_report_total` | Counter | `result` | 报工请求结果。`result` 取值为 `ok`、`replay`（幂等重放），加上 `WorkOrderProblemType` 枚举每个 type 的下划线写法，再加兜底 `error`（未映射异常与 5xx）。当前完整取值：`over_report`、`downstream_reported`、`workorder_closed`、`operations_unreported`、`report_already_reversed`、`operation_not_found`、`report_not_found`、`uom_mismatch`、`validation_error`、`idempotency_key_required`、`idempotency_key_conflict`、`idempotency_in_progress`、`authentication_required`、`access_denied`、`workorder_not_found`、`workorder_not_released`、`workorder_state_conflict`、`concurrent_modification`、`device_not_found`、`device_offline`、`device_service_unavailable`、`masterdata_service_unavailable`、`release_masterdata_invalid`、`material_shortage`、`internal_error`（以枚举为准，枚举新增值时同步） |
 | `mes_workorder_report_qty` | Counter（导出为 `_total`） | `kind`（`good`/`defect`/`scrap`）、`uom` | 报工数量累计，只记正数；冲销另计到 `mes_workorder_reversal_qty` |
 | `mes_workorder_reversal_qty` | Counter（导出为 `_total`） | `kind`、`uom` | 被冲销的数量（正数）。净报工量 = `report_qty − reversal_qty`（按 `kind`、`uom` 分组相减） |
 | `mes_workorder_reversal_total` | Counter | — | 冲销笔数 |
-| `mes_workorder_status_transition_total` | Counter | `to`（目标状态，如 `IN_PROGRESS`、`COMPLETED`） | 报工、冲销、手工完工引起的工单状态迁移次数（事务提交后计数） |
+| `mes_workorder_status_transition_total` | Counter | `from`、`to`（源 / 目标状态，如 `CREATED`→`RELEASED`、`RELEASED`→`ON_HOLD`、`ON_HOLD`→`RELEASED`、`RELEASED`→`IN_PROGRESS`、`IN_PROGRESS`→`COMPLETED`、`COMPLETED`→`IN_PROGRESS`） | 工单状态迁移次数：下达、冻结、恢复、开工、完工、重开均计入，事务提交后计数；状态不变的审计（如追加第二个冻结原因）不计 |
 | `mes_workorder_report_lock_wait` | Timer（导出为 `_seconds`） | — | 报工、冲销、手工完工事务里 `SELECT … FOR UPDATE` 锁工单行的等待时间 |
-| `mes_workorder_outbox_pending` | Gauge | — | 待投递的 outbox 事件数（对应告警 `OutboxBacklog`） |
+| `mes_workorder_outbox_pending` | Gauge | — | 待投递的 outbox 事件数（`status = NEW`；`DISCARDED` 永不投递，不计入），对应告警 `OutboxBacklog` |
 
 计数只在事务提交后、且不是幂等重放时累加（重放计为 `result="replay"`）。
 

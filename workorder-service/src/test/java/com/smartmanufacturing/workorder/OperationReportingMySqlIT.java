@@ -135,13 +135,13 @@ class OperationReportingMySqlIT {
 
         List<JsonNode> ev = stateEvents(id);
         assertThat(ev).extracting(n -> n.get("_type").asText())
-            .containsExactly("WorkOrderStarted", "WorkOrderCompleted", "WorkOrderReopened", "WorkOrderCompleted");
+            .containsExactly("WorkOrderReleased", "WorkOrderStarted", "WorkOrderCompleted", "WorkOrderReopened", "WorkOrderCompleted");
         for (int i = 1; i < ev.size(); i++)
             assertThat(ev.get(i).get("aggregateVersion").asLong()).isGreaterThan(ev.get(i - 1).get("aggregateVersion").asLong());
         assertThat(ev.get(ev.size() - 1).get("aggregateVersion").asLong())
             .isEqualTo(jdbc.queryForObject("select version from work_order where id = ?", Long.class, id));
 
-        JsonNode c1 = ev.get(1), reopened = ev.get(2), c2 = ev.get(3);
+        JsonNode c1 = ev.get(2), reopened = ev.get(3), c2 = ev.get(4);
         assertThat(c1.get("completedQty").asText()).isEqualTo("10.000000");
         assertThat(c1.get("completionMode").asText()).isEqualTo("AUTO");
         assertSumsToPlanned(c1);

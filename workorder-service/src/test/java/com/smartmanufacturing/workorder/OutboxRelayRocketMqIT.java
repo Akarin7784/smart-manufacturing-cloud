@@ -89,11 +89,20 @@ class OutboxRelayRocketMqIT {
     private final BlockingQueue<MessageExt> received = new LinkedBlockingQueue<>();
 
     @BeforeAll static void createTopics() throws Exception {
+        // 宿主端口必须与容器内监听端口一致，否则 Broker 注册的地址宿主机无法访问
+        assertThat(ROCKETMQ.getMappedPort(NAMESRV_PORT)).isEqualTo(NAMESRV_PORT);
+        assertThat(ROCKETMQ.getMappedPort(BROKER_PORT)).isEqualTo(BROKER_PORT);
         // Broker 关闭了自动建 Topic（与 compose 部署一致），先显式创建本测试用到的两个 Topic
+        // Broker 启动日志出现后仍可能尚未注册到 NameServer（mqadmin 此时输出 [error] 但退出码为 0），因此重试直到成功
         for (String topic : List.of("mes-workorder-quality", "mes-workorder-event")) {
-            var r = ROCKETMQ.execInContainer("sh", "mqadmin", "updateTopic", "-n", "127.0.0.1:" + NAMESRV_PORT,
-                "-c", "DefaultCluster", "-t", topic, "-r", "4", "-w", "4");
-            assertThat(r.getExitCode()).as("创建 Topic %s：%s", topic, r.getStdout() + r.getStderr()).isZero();
+            String out = "";
+            for (int i = 0; i < 30 && !out.contains("success"); i++) {
+                var r = ROCKETMQ.execInContainer("sh", "mqadmin", "updateTopic", "-n", "127.0.0.1:" + NAMESRV_PORT,
+                    "-c", "DefaultCluster", "-t", topic, "-r", "4", "-w", "4");
+                out = r.getStdout() + r.getStderr();
+                if (!out.contains("success")) Thread.sleep(1000);
+            }
+            assertThat(out).as("创建 Topic %s", topic).contains("success");
         }
     }
 
