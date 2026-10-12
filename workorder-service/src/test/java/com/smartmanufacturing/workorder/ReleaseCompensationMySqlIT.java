@@ -62,7 +62,9 @@ class ReleaseCompensationMySqlIT {
         assertThatThrownBy(() -> service.release(id, "k1", "u")).isInstanceOf(DuplicateKeyException.class);
         assertNotReleased(id);
         String key = "release:" + id + ":k1";
-        assertThat(stub.calls()).containsExactly("reserve:" + key, "release:" + key);
+        // 补偿释放复用取消释放的幂等键 cancel-{工单号}-{预留单号}
+        assertThat(stub.calls()).hasSize(2).first().isEqualTo("reserve:" + key);
+        assertThat(stub.calls().get(1)).startsWith("release:cancel-" + id + "-");
     }
 
     @Test void releaseFailureDuringCompensationKeepsOriginalError() {

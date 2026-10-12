@@ -333,6 +333,40 @@ class InventoryCancelMySqlIT {
         assertThat(jdbc.queryForObject("select count(*) from wo_material_reservation where status in ('ACTIVE', 'RELEASING')", Integer.class)).isZero();
     }
 
+    /**
+     * 下达/取消竞争且补偿释放失败：不依赖库存 TTL，补偿短事务写入释放任务（Idempotency-Key = cancel-{工单号}-{预留单号}，
+     * 与正常取消释放同键），库存恢复后任务完成，release_pending 回到 0，库存侧无 ACTIVE 预留。
+     */
+    @Test void failedCompensationIsRetriedByReleaseTask() {
+        String id = ReleaseFixtures.createOrder(jdbc, 2);
+        // 预留创建后、下达持久化前取消工单（模拟竞争），并让库存释放返回 5xx
+        INVENTORY.afterCreate = () -> {
+            jdbc.update("update work_order set status = 'CANCELLED' where id = ?", id);
+            INVENTORY.releaseFailure = 503;
+        };
+        assertThatThrownBy(() -> releases.release(id, "rel-comp", "planner")).isInstanceOf(BusinessException.class);
+        INVENTORY.afterCreate = null;
+        String rid = jdbc.queryForObject("select reservation_id from wo_reservation_release_task where order_id = ?", String.class, id);
+        assertThat(INVENTORY.reservations.get(rid).path("status").asText()).isEqualTo("ACTIVE");
+        assertThat(jdbc.queryForObject("select idempotency_key from wo_reservation_release_task where order_id = ?", String.class, id))
+            .isEqualTo(WorkOrderCancellation.releaseKey(id, rid)).isEqualTo("cancel-" + id + "-" + rid);
+        assertThat(pending()).isEqualTo(1.0);
+
+        // 库存仍不可用：任务保持 PENDING
+        due(); worker.runBatch();
+        assertThat(pending()).isEqualTo(1.0);
+
+        // 库存恢复：任务完成，pending 归零，库存侧预留已释放
+        INVENTORY.releaseFailure = null;
+        due(); worker.runBatch();
+        assertThat(jdbc.queryForObject("select status from wo_reservation_release_task where order_id = ?", String.class, id)).isEqualTo("DONE");
+        assertThat(pending()).isZero();
+        assertThat(INVENTORY.reservations.get(rid).path("status").asText()).isEqualTo("RELEASED");
+        assertThat(INVENTORY.reservations.values()).noneMatch(r -> r.path("status").asText().equals("ACTIVE"));
+    }
+
+    private double pending() { return registry.get("mes.workorder.reservation.release.pending").gauge().value(); }
+
     private static String event(String eventId, String type, String rid, long version) {
         return "{\"eventId\":\"" + eventId + "\",\"eventType\":\"" + type + "\",\"reservationId\":\"" + rid + "\",\"workOrderNo\":\"WO\",\"status\":\"ACTIVE\",\"aggregateVersion\":" + version
             + ",\"occurredAt\":\"2026-10-12T00:00:00Z\",\"reason\":\"CALLER_REQUEST\",\"expiresAt\":\"2026-10-12T00:15:00Z\",\"lines\":[]}";

@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import java.math.BigDecimal;
@@ -104,12 +105,12 @@ public class WorkOrderReleaseService {
             Optional<Lifecycle> winner = lifecycle(orderId);
             if (winner.isPresent() && winner.get().releaseKey().equals(key))
                 return new ReleaseResult(view(orderId), true); // 同键：与胜者共用预留，不释放
-            compensate(reservationKey, reservation.reservationId(), race);
+            compensate(orderId, reservation.reservationId(), race);
             // 没有胜者说明是其他唯一约束冲突（非下达竞争），按原始异常抛出，不误报为状态冲突。
             if (winner.isEmpty()) throw race;
             throw new BusinessException("WORK_ORDER_STATE_CONFLICT", "工单已被其他请求下达", HttpStatus.CONFLICT);
         } catch (RuntimeException e) {
-            compensate(reservationKey, reservation.reservationId(), e);
+            compensate(orderId, reservation.reservationId(), e);
             throw e;
         }
     }
@@ -205,11 +206,29 @@ public class WorkOrderReleaseService {
     }
 
     /**
-     * 补偿释放预留。释放失败不抛出、不覆盖原始异常（作为 suppressed 附加并记日志），由库存 TTL（15 分钟）回收。
+     * 补偿释放预留（reason=COMPENSATION）。不覆盖原始异常：失败作为 suppressed 附加并记日志。
+     * <p>不依赖库存 TTL 回收：释放失败时在短事务内写入释放任务，交由 {@link ReservationReleaseWorker} 重试
+     * （release_pending 计数可观测）。补偿调用与任务复用同一 Idempotency-Key（cancel-{工单号}-{预留单号}）
+     * 及同一 reason，库存侧保证至多释放一次：若补偿请求实际已生效但响应丢失，任务重放得到首次结果。
      */
-    private void compensate(String key, String reservationId, RuntimeException cause) {
-        try { materials.release(key, reservationId); }
-        catch (RuntimeException e) { cause.addSuppressed(e); LOG.warn("补偿释放预留失败，将由库存 TTL（15 分钟）回收：{}", reservationId, e); }
+    private void compensate(String orderId, String reservationId, RuntimeException cause) {
+        String key = WorkOrderCancellation.releaseKey(orderId, reservationId);
+        try { materials.release(key, reservationId, MaterialReservationPort.ReleaseReason.COMPENSATION); }
+        catch (RuntimeException e) {
+            cause.addSuppressed(e);
+            LOG.warn("补偿释放预留失败，已写入释放任务重试：{}", reservationId, e);
+            try {
+                tx.executeWithoutResult(s -> jdbc.update(
+                    "insert into wo_reservation_release_task (task_id, order_id, reservation_id, reason, idempotency_key, status, attempts, created_at)"
+                        + " select ?, ?, ?, ?, ?, 'PENDING', 0, ? from dual where not exists (select 1 from wo_reservation_release_task where idempotency_key = ?)",
+                    UUID.randomUUID().toString(), orderId, reservationId, MaterialReservationPort.ReleaseReason.COMPENSATION.name(),
+                    key, Timestamp.from(clock.instant()), key));
+            } catch (RuntimeException dbFailure) {
+                // 任务写入也失败时只能依赖库存 TTL 兜底；记录错误便于告警排查
+                cause.addSuppressed(dbFailure);
+                LOG.error("写入补偿释放任务失败，预留 {} 将依赖库存 TTL 回收", reservationId, dbFailure);
+            }
+        }
     }
 
     // ------------------------------------------------------------------ 冻结 / 恢复
@@ -271,12 +290,12 @@ public class WorkOrderReleaseService {
             if (reasons(orderId).contains(reason.name())) {
                 BusinessException conflict = new BusinessException("CONCURRENT_MODIFICATION", "恢复与其他操作冲突，请重试", HttpStatus.CONFLICT);
                 // 本次新预留未被任何本地记录引用，补偿释放
-                if (reservation != null) compensate(reservationKey, reservation.reservationId(), conflict);
+                if (reservation != null) compensate(orderId, reservation.reservationId(), conflict);
                 throw conflict;
             }
             LOG.debug("并发恢复：原因 {} 已由其他请求解除，工单 {}", reason, orderId);
         } catch (RuntimeException e) {
-            if (reservation != null) compensate(reservationKey, reservation.reservationId(), e);
+            if (reservation != null) compensate(orderId, reservation.reservationId(), e);
             throw e;
         }
         return view(orderId);

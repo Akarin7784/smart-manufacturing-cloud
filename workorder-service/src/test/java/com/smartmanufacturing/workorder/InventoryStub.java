@@ -48,6 +48,8 @@ final class InventoryStub {
     volatile Integer createFailure;
     /** 创建预留前的延迟（毫秒），用于模拟读超时。 */
     volatile long createDelayMs;
+    /** 预留创建成功、响应返回前执行的钩子（用于在下达持久化前制造取消竞争）。 */
+    volatile Runnable afterCreate;
     private final Map<String, Boolean> tokens = new ConcurrentHashMap<>();
 
     InventoryStub() {
@@ -68,7 +70,7 @@ final class InventoryStub {
 
     void stop() { if (server != null) server.stop(0); server = null; }
 
-    void reset() { reservations.clear(); releaseReasons.clear(); idempotency.clear(); calls.clear(); renewForbidden = false; releaseFailure = null; releaseGone = false; createFailure = null; createDelayMs = 0; }
+    void reset() { reservations.clear(); releaseReasons.clear(); idempotency.clear(); calls.clear(); renewForbidden = false; releaseFailure = null; releaseGone = false; createFailure = null; createDelayMs = 0; afterCreate = null; }
 
     private void handle(HttpExchange ex) throws IOException {
         try {
@@ -127,6 +129,8 @@ final class InventoryStub {
             lines.addObject().put("lineId", id + "-L" + (++n)).put("sourceLineId", l.path("sourceLineId").asText()).put("materialCode", l.path("materialCode").asText())
                 .put("uom", l.path("uom").asText()).put("qty", l.path("qty").asText()).put("reservedQty", l.path("qty").asText()).put("consumedQty", "0").put("status", "OPEN");
         reservations.put(id, r);
+        Runnable hook = afterCreate;
+        if (hook != null) hook.run();
         return new Object[]{201, r.toString()};
     }
 
