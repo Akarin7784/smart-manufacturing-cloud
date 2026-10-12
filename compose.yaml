@@ -79,7 +79,7 @@ services:
     build: ./infra/sentinel
     ports:
       - "127.0.0.1:8858:8858"
-  # 一次性容器：幂等创建三个业务库与专用账号，并把账号密码同步为 .env 中的值，支持已有数据卷。
+  # 一次性容器：幂等创建四个业务库（认证、设备、工单、主数据）与专用账号，并把账号密码同步为 .env 中的值，支持已有数据卷。
   db-init:
     image: mysql:8.4
     environment:
@@ -139,6 +139,8 @@ services:
         condition: service_healthy
       workorder:
         condition: service_healthy
+      masterdata:
+        condition: service_healthy
   device:
     profiles: ["app"]
     build:
@@ -171,6 +173,27 @@ services:
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
     healthcheck:
       test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:8082/actuator/health/readiness"]
+      <<: *probe-timing
+    depends_on:
+      nacos-config-init:
+        condition: service_completed_successfully
+      db-init:
+        condition: service_completed_successfully
+  # 主数据服务：物料/BOM/工艺/工厂模型；叠加 demo profile 加载 GR-60 演示主数据（脚本幂等，可重复执行）。
+  masterdata:
+    profiles: ["app"]
+    build:
+      context: .
+      args:
+        MODULE: masterdata-service
+    environment:
+      <<: *cloud-env
+      SPRING_PROFILES_ACTIVE: cloud,demo
+      AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
+      MYSQL_HOST: mysql
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
+    healthcheck:
+      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:8084/actuator/health/readiness"]
       <<: *probe-timing
     depends_on:
       nacos-config-init:

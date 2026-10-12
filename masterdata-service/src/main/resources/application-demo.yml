@@ -1,0 +1,7 @@
+# 演示环境叠加配置（与 local 或 cloud 组合使用，如 SPRING_PROFILES_ACTIVE=cloud,demo）：
+# 在建表后加载 GR-60 齿轮减速机演示主数据。脚本幂等，可重复执行，不覆盖非演示数据。
+# 运维引入 Flyway 后，本文件改为把 classpath:db/demo 追加到 spring.flyway.locations，脚本无需改动。
+spring:
+  sql:
+    init:
+      data-locations: classpath:db/demo/R__demo_data.sql

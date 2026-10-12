@@ -46,7 +46,7 @@ class GatewayRoutingTest {
 
     /** 单独覆盖目标地址，保持路由列表和过滤器配置来自实际配置文件。 */
     @DynamicPropertySource static void routes(DynamicPropertyRegistry registry) {
-        for (String property : List.of("DEVICE_SERVICE_URL", "WORKORDER_SERVICE_URL", "AUTH_SERVICE_URL"))
+        for (String property : List.of("DEVICE_SERVICE_URL", "WORKORDER_SERVICE_URL", "AUTH_SERVICE_URL", "MASTERDATA_SERVICE_URL"))
             registry.add(property, () -> "http://127.0.0.1:" + upstream.getAddress().getPort());
         registry.add("manufacturing.security.jwk-set-uri", () -> "http://127.0.0.1:" + upstream.getAddress().getPort() + "/auth/jwks");
     }
@@ -120,5 +120,24 @@ class GatewayRoutingTest {
     @Test void publicJwksContainsNoPrivateKey() {
         client().get().uri("/api/auth/jwks").exchange().expectStatus().isOk()
             .expectBody().jsonPath("$.keys[0].n").exists().jsonPath("$.keys[0].d").doesNotExist();
+    }
+
+    /** 主数据四组资源均路由到主数据服务并移除 /api 前缀；只读权限即可查询。 */
+    @Test void routesMasterdataReads() {
+        String access = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("masterdata:read"));
+        for (String path : List.of("/materials", "/workcenters/WC-CNC", "/boms/FG-GR60-20/explosion", "/routings/FG-GR60-20/R01"))
+            client().get().uri("/api" + path).headers(h -> h.setBearerAuth(access)).exchange()
+                .expectStatus().isOk().expectBody(String.class).value(body -> Assertions.assertTrue(body.startsWith(path + "|")));
+    }
+
+    /** 主数据写与发布权限分离：只有 masterdata:write 不能发布，只读身份不能写。 */
+    @Test void masterdataReleaseRequiresDedicatedPermission() {
+        String writer = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("masterdata:read", "masterdata:write"));
+        client().post().uri("/api/boms/FG-GR60-20/A02/release").headers(h -> h.setBearerAuth(writer)).exchange().expectStatus().isForbidden();
+        client().post().uri("/api/boms").headers(h -> h.setBearerAuth(writer)).exchange().expectStatus().isOk();
+        String reader = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("masterdata:read"));
+        client().put().uri("/api/materials/PP-KEY-6").headers(h -> h.setBearerAuth(reader)).exchange().expectStatus().isForbidden();
+        String releaser = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("masterdata:release"));
+        client().post().uri("/api/routings/FG-GR60-20/R02/release").headers(h -> h.setBearerAuth(releaser)).exchange().expectStatus().isOk();
     }
 }
