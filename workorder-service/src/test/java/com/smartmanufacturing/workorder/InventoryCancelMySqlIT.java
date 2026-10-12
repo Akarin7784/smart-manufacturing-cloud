@@ -274,7 +274,7 @@ class InventoryCancelMySqlIT {
     }
 
     /** 下达时库存 5xx 或读超时：返回 503 inventory-service-unavailable，工单保持 CREATED，无任何下达数据。 */
-    @Test void releaseWhenInventoryFailsReturns503AndKeepsCreated() {
+    @Test void releaseWhenInventoryFailsReturns503AndKeepsCreated() throws Exception {
         for (Runnable fault : List.<Runnable>of(() -> INVENTORY.createFailure = 503, () -> INVENTORY.createDelayMs = 2000)) {
             INVENTORY.reset();
             fault.run();
@@ -288,6 +288,9 @@ class InventoryCancelMySqlIT {
             assertThat(jdbc.queryForObject("select count(*) from work_order_lifecycle where order_id = ?", Integer.class, id)).isZero();
             assertThat(jdbc.queryForObject("select count(*) from wo_material_reservation where order_id = ?", Integer.class, id)).isZero();
         }
+        // 等待超时请求在桩侧落地后再清理，避免遗留预留污染后续用例
+        Thread.sleep(2500);
+        INVENTORY.reset();
     }
 
     /** 释放返回 410（契约外）：任务进入终态 DONE（GONE），计为 reservation_gone，不计为失败、不重试。 */
@@ -310,6 +313,8 @@ class InventoryCancelMySqlIT {
 
     /** 并发下达与取消同一 CREATED 工单：无论谁先提交，最终工单为 CANCELLED，且库存侧不残留 ACTIVE 预留。 */
     @Test void concurrentReleaseAndCancelLeaveNoActiveReservation() throws Exception {
+        // 只检查本用例新建的预留：之前用例（如超时用例）可能在桩里遗留 ACTIVE 预留
+        var before = new java.util.HashSet<>(INVENTORY.reservations.keySet());
         for (int round = 0; round < 5; round++) {
             String id = ReleaseFixtures.createOrder(jdbc, 2);
             var start = new java.util.concurrent.CountDownLatch(1);
@@ -324,7 +329,7 @@ class InventoryCancelMySqlIT {
             assertThat(status(id)).isEqualTo("CANCELLED");
             worker.runBatch();
         }
-        assertThat(INVENTORY.reservations.values()).allSatisfy(r -> assertThat(r.path("status").asText()).isEqualTo("RELEASED"));
+        assertThat(INVENTORY.reservations.entrySet().stream().filter(e -> !before.contains(e.getKey())).map(java.util.Map.Entry::getValue).toList()).allSatisfy(r -> assertThat(r.path("status").asText()).isEqualTo("RELEASED"));
         assertThat(jdbc.queryForObject("select count(*) from wo_material_reservation where status in ('ACTIVE', 'RELEASING')", Integer.class)).isZero();
     }
 
