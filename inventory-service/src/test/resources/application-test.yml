@@ -16,3 +16,5 @@ spring:
     password: ""
 # 测试中不触发定时清理，清理逻辑由用例直接调用验证。
 inventory.idempotency.cleanup.enabled: false
+# 测试中关闭过期与 outbox 的定时触发，用例直接调用任务方法；EventSender 由测试替身提供，不连接 RocketMQ。
+inventory.jobs.enabled: false

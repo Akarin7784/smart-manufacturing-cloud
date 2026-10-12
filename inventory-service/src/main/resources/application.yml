@@ -35,12 +35,33 @@ manufacturing:
     service-audience: ${INVENTORY_SERVICE_AUDIENCE:inventory-service}
     jwk-set-uri: ${AUTH_JWK_SET_URI:http://localhost:8083/auth/jwks}
 
+# 预留与消息：TTL 15 分钟（契约约定，调用方每 5 分钟续期）；过期任务每 30 秒、outbox 每秒调度一次。
+# topic/tag 以 Nacos common.yml 的 manufacturing.mq.* 为准，此处默认值与 infra/nacos/common.yml 一致，仅供无 Nacos 的本地环境使用。
+manufacturing.mq:
+  topics:
+    inventory-reservation: mes-inventory-reservation
+  tags:
+    reservation-created: ReservationCreated
+    reservation-released: ReservationReleased
+    reservation-consumed: ReservationConsumed
+    reservation-expired: ReservationExpired
+
 # 幂等记录保留 7 天（与 #9 一致），每天 03:27 分批清理（错开工单服务的 03:17）。
 inventory:
   idempotency:
     retention: P7D
     cleanup:
       cron: "0 27 3 * * *"
+  reservation:
+    ttl: PT15M
+    expiry:
+      interval: PT30S
+      batch-size: 100
+  outbox:
+    interval: PT1S
+    batch-size: 50
+    producer-group: PG_INVENTORY_RESERVATION
+    send-timeout-ms: 3000
 
 # 表结构只由 Flyway 管理；默认关闭 baseline-on-migrate，库状态与迁移历史不一致时直接失败（与 #11 口径一致）。
 # 演示数据位置 db/demo 只由 demo profile 追加。
