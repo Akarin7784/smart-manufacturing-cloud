@@ -36,10 +36,9 @@ info:
     - 幂等记录按**调用方服务身份**（令牌中的 client_id）划分作用域，与工单服务 #9 的做法一致：不同调用方使用相同键互不影响；
       同一服务内不同用户触发的重试共用工单服务身份，因此同一下达键不会建出两张预留单。
     - 幂等记录至少保留 7 天（与 #9 一致），远大于调用方重试窗口；过期清理后同一键视为新请求。
-    - 重放语义：相同键、相同请求体的重放始终返回首次处理的状态码与**当前**资源状态，不会重新执行。
-      例如创建超时后用同一键重放 POST，若预留单已 `RELEASED`/`EXPIRED`，返回 201 与该预留单当前状态，不会重新预留；
-      调用方据此取回 reservationId 完成补偿。
-    - 同一作用域内相同键、相同请求体：返回首次处理的结果（状态码与响应体一致），不重复执行。
+    - 同一作用域内相同键、相同请求体（重放）：原样返回首次处理的状态码与响应体（逐字节一致，含当时的 status），不重复执行。
+      例如创建超时后用同一键重放 POST，即使预留单此后已 `RELEASED`/`EXPIRED`，仍返回首次的 201 与首次响应体，不会重新预留；
+      调用方据此取回 reservationId 完成补偿，需要最新状态时调用 GET 查询。
     - 同一作用域内相同键、不同请求体：返回 422，防止同一个键被挪作他用。
     - 工单下达派生的预留请求，幂等键固定为 `release:{工单号}:{下达 Idempotency-Key}`，
       带上工单号可避免不同工单的调用方使用相同下达键时互相冲突。
@@ -56,6 +55,7 @@ info:
     - 顺序：消息键为 `reservationId`，但**不保证**同一预留单事件的到达顺序（普通消息 + outbox 补发可能乱序）。
       终态（RELEASED/EXPIRED/CONSUMED）互斥且每张预留单只会产生一个终态事件，消费端可按 reservationId 对终态只处理一次，
       收到 Created 晚于终态时直接忽略。
+    - 消费组：工单服务使用 `CG_WORKORDER_RESERVATION`（同样从 Nacos `manufacturing.mq.*` 读取）。
     - 事件结构见 `components.schemas` 中的 `Reservation*Event`，投递约定见扩展字段 `x-events`。
 servers:
   - url: http://localhost:8080
@@ -366,7 +366,7 @@ components:
         lines:
           type: array
           minItems: 1
-          description: 需求行，按 BOM 快照行逐行提交（每条快照行一行，同一物料可出现多行，不做汇总）；同一请求内 sourceLineId 不得重复。
+          description: 需求行，按 BOM 快照行逐行提交（每条快照行一行，同一物料可出现多行，不做汇总）；同一请求内 sourceLineId 不得重复，重复返回 400（type=validation-error）。
           items:
             $ref: '#/components/schemas/CreateReservationLine'
 
@@ -414,7 +414,7 @@ components:
     ReservationLine:
       type: object
       description: 预留行。
-      required: [lineId, materialCode, uom, qty, reservedQty, consumedQty, status]
+      required: [lineId, sourceLineId, materialCode, uom, qty, reservedQty, consumedQty, status]
       properties:
         uom:
           type: string
@@ -578,28 +578,40 @@ components:
               const: insufficient-stock
             shortages:
               type: array
-              description: 所有不足的物料（不只是第一条）。
+              description: 所有不足的物料（不只是第一条），按物料编码 + 计量单位汇总。
               items:
                 $ref: '#/components/schemas/Shortage'
 
     Shortage:
       type: object
-      description: 单个物料的缺口。
-      required: [materialCode, uom, requiredQty, availableQty, shortageQty]
+      description: 单个物料的缺口，按物料编码 + 计量单位汇总（同一物料多条需求行合并为一项）。
+      required: [materialCode, uom, requested, available, shortage, sourceLineIds]
       properties:
-        uom:
-          type: string
-          description: 计量单位编码（如 PCS、KG），与物料主数据一致；数量均以该单位计。
-          examples: ['PCS']
         materialCode:
           type: string
           description: 物料编码。
-        requiredQty:
-          $ref: '#/components/schemas/Quantity'
-        availableQty:
-          $ref: '#/components/schemas/Quantity'
-        shortageQty:
-          $ref: '#/components/schemas/Quantity'
+        uom:
+          type: string
+          description: 计量单位编码（如 PCS、KG）；缺口按物料编码 + 计量单位汇总。
+          examples: ['PCS']
+        requested:
+          allOf:
+            - $ref: '#/components/schemas/Quantity'
+          description: 本请求中该物料（同一 uom）所有需求行的数量合计。
+        available:
+          allOf:
+            - $ref: '#/components/schemas/Quantity'
+          description: 当前可用量。
+        shortage:
+          allOf:
+            - $ref: '#/components/schemas/Quantity'
+          description: 缺口数量，等于 requested - available。
+        sourceLineIds:
+          type: array
+          minItems: 1
+          description: 参与汇总的需求行 sourceLineId，便于工单侧定位到 BOM 快照行。
+          items:
+            type: string
 
     ReservationEventBase:
       type: object
@@ -687,6 +699,9 @@ x-events:
   topicConfigKey: manufacturing.mq.*
   messageKey: reservationId
   consumerIdempotency: eventId
+  # 工单服务消费组，与 #13 中 Nacos 共享配置一致。
+  consumerGroups:
+    - CG_WORKORDER_RESERVATION
   events:
     - tag: Created
       schema: '#/components/schemas/ReservationCreatedEvent'
