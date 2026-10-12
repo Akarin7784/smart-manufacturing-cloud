@@ -189,9 +189,9 @@ stateDiagram-v2
 
 | 转换 | 触发者/接口 | 守卫条件 | 副作用 |
 | --- | --- | --- | --- |
-| CREATED→RELEASED | 计划员 `POST /work-orders/{no}/release` | 产品存在生效 BOM、工艺版本；计划数>0；计划日期合法 | 冻结 BOM 展开与工序到快照；生成 OperationTask(全部 PENDING)；分配批次号；发 WorkOrderReleased |
+| CREATED→RELEASED | 计划员 `POST /work-orders/{no}/release` | 产品存在生效 BOM、工艺版本；计划数>0；计划日期合法 | 冻结 BOM 展开与工序到快照；生成 OperationTask（首道 READY，其余 PENDING，与 3.2 一致）；整单预留物料；发 WorkOrderReleased。分配批次号归入 P4（TODO，P2 未实现） |
 | RELEASED→IN_PROGRESS | 首次 `OperationStarted` 内部触发 | 由工序开工守卫保证 | 记录实际开工时间 |
-| RELEASED/IN_PROGRESS→ON_HOLD | 人工 / LotHeld / InspectionConcluded(FAIL，FAI 失败) / EquipmentStatusChanged(FAULT) | 仅允许从 RELEASED、IN_PROGRESS 进入；CREATED 无需冻结（未下达不可执行），COMPLETED 及以后不冻结工单而是冻结批次/SN | 首次进入时记录 `resume_target`（RELEASED 或 IN_PROGRESS）；维护 `hold_reason` 集合（可多原因并存，按来源去重）；所有 RUNNING 任务转 PAUSED 并释放设备预留 |
+| RELEASED/IN_PROGRESS→ON_HOLD | 人工 / LotHeld / InspectionConcluded(FAIL，FAI 失败) / EquipmentStatusChanged(FAULT) | 仅允许从 RELEASED、IN_PROGRESS 进入；CREATED 无需冻结（未下达不可执行），COMPLETED 及以后不冻结工单而是冻结批次/SN | 首次进入时记录 `resume_target`（RELEASED 或 IN_PROGRESS）；维护 `hold_reason` 集合（可多原因并存，按来源去重）；所有 RUNNING 任务转 PAUSED 并释放设备预留（归入 P4，TODO：P2 尚无 RUNNING 任务与设备预留实现）|
 | ON_HOLD→RELEASED / IN_PROGRESS | 人工/事件 | `hold_reason` 集合为空；目标状态 = `resume_target` | 任务不自动恢复，需操作工确认重新开工（重新预留设备） |
 | IN_PROGRESS→COMPLETED | 末道报工自动或计划员手动 | 末道合格数在 [计划×(1-欠交容差), 计划×(1+超交容差)]；超交上限同时在报工接口拦截（首道可加工数上限）；手动短交需填写原因 | 发 WorkOrderCompleted（P4 回传 ERP） |
 | COMPLETED→CLOSED | 计划员 | 无 OPEN 的 NonConformance；投料差异（理论用量 vs 实际）已确认 | 只读归档 |

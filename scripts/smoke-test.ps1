@@ -41,6 +41,14 @@ if ($bom.data.version -ne 'A01' -or $bom.data.status -ne 'RELEASED') { throw 'De
 $explosion = Invoke-RestMethod "$BaseUrl/api/boms/FG-GR60-20/explosion?date=2026-10-12&quantity=10" -Headers $headers
 $steel = ($explosion.data.lines | Where-Object componentCode -eq 'RM-20CRMNTI-D30' | Measure-Object -Property requiredQty -Sum).Sum
 if ([decimal]$steel -ne [decimal]10.5) { throw "Unexpected BOM explosion result: steel=$steel" }
+# 工单下达：GR-60 成品工单下达后冻结 BOM A01 / 工艺 R01，生成 8 道工序并持有 ACTIVE 物料预留；同键重放返回同一预留，换键返回 409。
+$gr = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"FG-GR60-20","quantity":10}'
+$relKey = [guid]::NewGuid().ToString()
+$rel = Invoke-RestMethod "$BaseUrl/api/workorders/$($gr.data.id)/release" -Headers ($headers + @{'Idempotency-Key'=$relKey}) -Method Post -TimeoutSec 15
+if ($rel.data.status -ne 'RELEASED' -or $rel.data.bomVersion -ne 'A01' -or $rel.data.routingVersion -ne 'R01' -or $rel.data.operations.Count -ne 8 -or $rel.data.reservation.status -ne 'ACTIVE') { throw 'Work order release result unexpected.' }
+$relReplay = Invoke-RestMethod "$BaseUrl/api/workorders/$($gr.data.id)/release" -Headers ($headers + @{'Idempotency-Key'=$relKey}) -Method Post -TimeoutSec 15
+if ($relReplay.data.reservation.reservationId -ne $rel.data.reservation.reservationId) { throw 'Release replay returned a different reservation.' }
+Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders/$($gr.data.id)/release" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -TimeoutSec 15 } 409
 # 服务身份（与 smoke-test.sh 对等）：用工单客户端密钥经网关换取服务令牌，解码载荷断言 scope/aud；错误密钥必须 401。
 if (-not $env:WORKORDER_CLIENT_SECRET) {
     # 未导入环境时从 .env 读取明文密钥（与 smoke-test.sh 一致）。
@@ -84,4 +92,4 @@ if ($env:SKIP_MQ_SMOKE -ne '1') {
     if (-not $got) { throw 'RocketMQ round-trip failed: sent message not received.' }
     Write-Host 'PASS: RocketMQ round-trip (topic mes-smoke-test).'
 }
-Write-Host 'PASS: login, JWT verification, routing, Feign bearer relay, persistence and business errors.'
+Write-Host 'PASS: login, JWT verification, routing, Feign bearer relay, persistence, business errors and work order release.'
