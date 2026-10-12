@@ -105,37 +105,31 @@ echo "PASS: 服务身份 client_credentials（scope/aud 校验、错误密钥 40
 # 预留 → 断言可用量减少 → 释放（reason=CALLER_REQUEST）→ 断言可用量回到预留前，冒烟结束后库存状态不变、可重复执行。
 # 幂等键每次运行新生成（含运行 id），预留与释放各用各的，绝不复用。
 # 若脚本中途被杀、释放未执行，预留在 15 分钟后由过期任务（inventory.reservation.ttl=PT15M）自动回收。
-# 物料取 GR-60 BOM 中的 RM-20CRMNTI-D30（20CrMnTi 圆钢，演示期初 16 kg，期初数据随 #18 加入），预留 1 kg，单位用主数据编码 "kg"。
+# 物料取 GR-60 BOM 中的 RM-20CRMNTI-D30（20CrMnTi 圆钢，演示期初 16 kg），预留 1 kg，单位用主数据编码 "kg"。
 inv=${INVENTORY_URL:-http://localhost:8085}
 svc="Authorization: Bearer $(printf '%s' "$tok" | jq -r '.access_token')"
 run_id="$(date +%s)-$$-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
-# TODO(#18 合入后删除)：预留接口与该物料期初库存由 #18 提供；未合入时库存服务没有该物料（可用量查询 404），此处跳过而不是失败。
-probe=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -H "$auth" "$base/api/inventory/stock/availability?materialCode=RM-20CRMNTI-D30")
-if [ "$probe" = 404 ]; then
-  echo "SKIP: 库存预留演示物料尚未提供（#18 未合入）"
-else
-  avail() { curl -fsS -m 5 -H "$auth" "$base/api/inventory/stock/availability?materialCode=RM-20CRMNTI-D30" | jq -r '.available'; }
-  [ "$probe" = 200 ] || fail "查询可用量应返回 200，实际 $probe"
-  before=$(avail) || fail "查询可用量失败"
-  rbody=$(jq -nc --arg wo "SMOKE-$run_id" '{workOrderNo:$wo,lines:[{materialCode:"RM-20CRMNTI-D30",qty:"1",uom:"kg",sourceLineId:"smoke-1"}]}')
-  res=$(curl -sS -m 10 -w '\n%{http_code}' -H "$svc" -H 'Content-Type: application/json; charset=utf-8' \
-    -H "Idempotency-Key: smoke-reserve-$run_id" -d "$rbody" "$inv/inventory/reservations")
-  [ "$(printf '%s' "$res" | tail -n1)" = 201 ] || fail "预留应返回 201：$res"
-  rid=$(printf '%s' "$res" | sed '$d' | jq -r '.reservationId')
-  # 之后任何断言失败都先释放预留再退出，保证可重跑。
-  release_res() { curl -sS -o /dev/null -w '%{http_code}' -m 10 -X POST -H "$svc" -H 'Content-Type: application/json' \
-    -H "Idempotency-Key: smoke-release-$run_id" -d '{"reason":"CALLER_REQUEST"}' "$inv/inventory/reservations/$rid/release"; }
-  trap 'rm -f "$hdr"; [ -n "${rid:-}" ] && release_res >/dev/null 2>&1 || true' EXIT
-  mid=$(avail)
-  [ "$(jq -n --arg b "$before" --arg m "$mid" '($b|tonumber)-($m|tonumber)==1')" = true ] || fail "预留后可用量应减少 1（$before → $mid）"
-  [ "$(release_res)" = 200 ] || fail "释放预留应返回 200"
-  # 通过 GET 再确认预留单已是终态 RELEASED（服务令牌）。
-  curl -fsS -m 10 -H "$svc" "$inv/inventory/reservations/$rid" | jq -e '.status=="RELEASED"' >/dev/null || fail "释放后预留单状态应为 RELEASED"
-  rid=""
-  after=$(avail)
-  [ "$(jq -n --arg b "$before" --arg a "$after" '($b|tonumber)==($a|tonumber)')" = true ] || fail "释放后可用量应恢复（$before → $after）"
-  echo "PASS: 库存预留与释放（服务令牌直连、可用量往返一致）"
-fi
+avail() { curl -fsS -m 5 -H "$auth" "$base/api/inventory/stock/availability?materialCode=RM-20CRMNTI-D30" | jq -r '.available'; }
+before=$(avail) || fail "查询可用量失败"
+rbody=$(jq -nc --arg wo "SMOKE-$run_id" '{workOrderNo:$wo,lines:[{materialCode:"RM-20CRMNTI-D30",qty:"1",uom:"kg",sourceLineId:"smoke-1"}]}')
+res=$(curl -sS -m 10 -w '\n%{http_code}' -H "$svc" -H 'Content-Type: application/json; charset=utf-8' \
+  -H "Idempotency-Key: smoke-reserve-$run_id" -d "$rbody" "$inv/inventory/reservations")
+[ "$(printf '%s' "$res" | tail -n1)" = 201 ] || fail "预留应返回 201：$res"
+rid=$(printf '%s' "$res" | sed '$d' | jq -r '.reservationId')
+# 之后任何断言失败都先释放预留再退出，保证可重跑。
+release_res() { curl -sS -o /dev/null -w '%{http_code}' -m 10 -X POST -H "$svc" -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: smoke-release-$run_id" -d '{"reason":"CALLER_REQUEST"}' "$inv/inventory/reservations/$rid/release"; }
+trap 'rm -f "$hdr"; [ -n "${rid:-}" ] && release_res >/dev/null 2>&1 || true' EXIT
+mid=$(avail)
+[ "$(jq -n --arg b "$before" --arg m "$mid" '($b|tonumber)-($m|tonumber)==1')" = true ] || fail "预留后可用量应减少 1（$before → $mid）"
+[ "$(release_res)" = 200 ] || fail "释放预留应返回 200"
+# 通过 GET 再确认预留单已是终态 RELEASED（服务令牌）。
+curl -fsS -m 10 -H "$svc" "$inv/inventory/reservations/$rid" | jq -e '.status=="RELEASED"' >/dev/null || fail "释放后预留单状态应为 RELEASED"
+rid=""
+after=$(avail)
+[ "$(jq -n --arg b "$before" --arg a "$after" '($b|tonumber)==($a|tonumber)')" = true ] || fail "释放后可用量应恢复（$before → $after）"
+echo "PASS: 库存预留与释放（服务令牌直连、可用量往返一致）"
+
 
 # RocketMQ 收发回环：用 Broker 镜像自带的 mqadmin 发一条带唯一标记的消息，再以新消费组拉回，确认 NameServer→Broker→消费链路可用。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。SKIP_MQ_SMOKE=1 可跳过（如未启动 app profile）。
