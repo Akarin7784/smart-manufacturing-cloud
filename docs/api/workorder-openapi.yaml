@@ -353,8 +353,10 @@ components:
           description: 计量单位，同一工单内必须一致。
         lotNo:
           type: string
+          minLength: 1
           maxLength: 64
-          description: 批次号（可选），随不良品事件发给质检。
+          pattern: '\S'
+          description: 批次号（可选）。传入时不得为空白；不传时缺省为工单号 workOrderNo。生效值写入报工流水，并随 DefectReported / DefectReversed 事件发给质检。
         note:
           type: string
           maxLength: 256
@@ -404,7 +406,7 @@ components:
           description: 计量单位。
         lotNo:
           type: [string, 'null']
-          description: 批次号。
+          description: 批次号（生效值，未传时为工单号）；仅本规则上线前的历史记录可能为 null。
         note:
           type: [string, 'null']
           description: 备注；冲销记录为冲销原因。

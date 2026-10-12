@@ -4,7 +4,7 @@
 参照 Opcenter NCR/MRB、鼎捷不良处置：报工发现不良 → 生成 NCR → 评审 → 处置 → 关闭。
 
 ## 1. 消费 `mes-workorder-quality`（消费组 `CG_QUALITY_DEFECT`）
-- **DefectReported**：`eventId, workOrderNo, operationNo, materialCode, lotNo, uom, defectQty, reportId, occurredAt`。一次报工建一张 NCR，按 `reportId` 唯一。
+- **DefectReported**：`eventId, workOrderNo, operationNo, materialCode, lotNo, uom, defectQty, reportId, occurredAt`（`lotNo` 必有，缺省为 `workOrderNo`）。一次报工建一张 NCR，按 `reportId` 唯一。
 - **DefectReversed**：只认 `reversedReportId`（被冲销的原报工）和 `reversalId`（冲销记录本身）；#20 将去掉 `reportId`。按 `reversedReportId` 找 NCR。
 - **字段口径**：`materialCode` 是工单产品码。不良事件不带 `aggregateVersion`，NCR 与报工一一对应，靠下面的规则处理乱序。
 - **幂等**：`consumed_event(event_id PK)` 与业务写入同一事务，主键冲突直接 ACK；`ncr.source_report_id` 唯一作第二道保险。

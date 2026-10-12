@@ -115,12 +115,14 @@ public class OperationReportingService {
         }
         String reportId = UUID.randomUUID().toString();
         var now = clock.instant();
+        // 批次号缺省为工单号（一个工单对应一个产出批次），落库与事件统一使用该值，保证质检回写库存时始终有批次
+        String lotNo = effectiveLotNo(req.lotNo(), order.id());
         jdbc.update("insert into wo_operation_report (report_id, order_id, op_no, type, good_qty, defect_qty, scrap_qty, uom, lot_no, note, reversed_report_id, operator, request_id, created_at) values (?, ?, ?, 'REPORT', ?, ?, ?, ?, ?, ?, null, ?, ?, ?)",
-            reportId, order.id(), opNo, good, defect, scrap, req.uom(), req.lotNo(), req.note(), operator, MDC.get("requestId"), Timestamp.from(now));
+            reportId, order.id(), opNo, good, defect, scrap, req.uom(), lotNo, req.note(), operator, MDC.get("requestId"), Timestamp.from(now));
         jdbc.update("update wo_operation_progress set good_qty = good_qty + ?, defect_qty = defect_qty + ?, scrap_qty = scrap_qty + ?, uom = ?, effective_reports = effective_reports + 1, updated_at = ? where order_id = ? and op_no = ?",
             good, defect, scrap, req.uom(), Timestamp.from(now), order.id(), opNo);
         if (defect.signum() > 0)
-            defectEvent(order, opNo, req.uom(), req.lotNo(), defect, reportId, null, "DefectReported", defectReportedTag);
+            defectEvent(order, opNo, req.uom(), lotNo, defect, reportId, null, "DefectReported", defectReportedTag);
 
         String status = order.status();
         if ("RELEASED".equals(status)) {
@@ -190,11 +192,11 @@ public class OperationReportingService {
         var now = clock.instant();
         jdbc.update("insert into wo_operation_report (report_id, order_id, op_no, type, good_qty, defect_qty, scrap_qty, uom, lot_no, note, reversed_report_id, operator, request_id, created_at) values (?, ?, ?, 'REVERSAL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             reversalId, order.id(), original.opNo(), original.good().negate(), original.defect().negate(), original.scrap().negate(),
-            original.uom(), original.lotNo(), reason, reportId, operator, MDC.get("requestId"), Timestamp.from(now));
+            original.uom(), effectiveLotNo(original.lotNo(), order.id()), reason, reportId, operator, MDC.get("requestId"), Timestamp.from(now));
         jdbc.update("update wo_operation_progress set good_qty = good_qty - ?, defect_qty = defect_qty - ?, scrap_qty = scrap_qty - ?, effective_reports = effective_reports - 1, updated_at = ? where order_id = ? and op_no = ?",
             original.good(), original.defect(), original.scrap(), Timestamp.from(now), order.id(), original.opNo());
         if (original.defect().signum() > 0)
-            defectEvent(order, original.opNo(), original.uom(), original.lotNo(), original.defect(), reversalId, reportId, "DefectReversed", defectReversedTag);
+            defectEvent(order, original.opNo(), original.uom(), effectiveLotNo(original.lotNo(), order.id()), original.defect(), reversalId, reportId, "DefectReversed", defectReversedTag);
 
         String status = order.status();
         List<Progress> updated = progress(order.id());
@@ -354,6 +356,14 @@ public class OperationReportingService {
         journal.statusChanged(orderId, from, to, reason, note, operator);
         Long v = jdbc.queryForObject("select version from work_order where id = ?", Long.class, orderId);
         return v == null ? 0 : v;
+    }
+
+    /**
+     * 计算生效批次号：请求带了 lotNo 就用请求值，否则缺省为工单号。
+     * 冲销时也经过此方法，兼容本规则上线前 lot_no 为空的历史报工，保证 DefectReversed 与 DefectReported 批次一致。
+     */
+    static String effectiveLotNo(String lotNo, String workOrderNo) {
+        return lotNo != null ? lotNo : workOrderNo;
     }
 
     private void defectEvent(Order order, String opNo, String uom, String lotNo, BigDecimal defect, String reportId,
