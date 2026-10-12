@@ -29,3 +29,19 @@ manufacturing:
     issuer: ${AUTH_ISSUER:http://localhost:8080}
     audience: ${AUTH_AUDIENCE:manufacturing-api}
     jwk-set-uri: ${AUTH_JWK_SET_URI:http://localhost:8083/auth/jwks}
+  # 内部路径清单：只接受服务令牌（aud 为具体资源服务）的服务间接口，调用方经 Nacos 直连资源服务的无 /api 前缀路径。
+  # 网关在认证之前对这些路径一律返回 404 problem+json（无令牌、任意令牌结果相同），既不转发，也不暴露接口存在。
+  # 来源：docs/api/*-openapi.yaml 中 security 为 serviceClient 的接口，以及库存服务 InventorySecurityConfiguration 的服务令牌过滤链。
+  # 新增服务间接口时必须同步本清单与 GatewayRoutingTest 的逐路径断言；清单为空时网关拒绝启动。
+  gateway:
+    internal-paths:
+      # 物料预留（工单服务，scope inventory:reserve）：创建预留、查询、续期、释放、按行消耗，全部在此前缀下。
+      - pattern: /api/inventory/reservations
+        reason: 物料预留创建（POST），仅工单服务直连
+      - pattern: /api/inventory/reservations/**
+        reason: 物料预留查询、续期、释放、消耗，仅工单服务直连
+      # 质检隔离库位 QC-HOLD（质检服务，scope inventory:qc-hold）：入库、放行、报废，见 docs/quality-inventory-writeback-design.md。
+      - pattern: /api/inventory/qc-hold
+        reason: QC-HOLD 前缀本身，避免探测
+      - pattern: /api/inventory/qc-hold/**
+        reason: QC-HOLD 入库、放行、报废，仅质检服务直连
