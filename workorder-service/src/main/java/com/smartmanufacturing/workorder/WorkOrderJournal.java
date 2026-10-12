@@ -26,6 +26,26 @@ class WorkOrderJournal {
             UUID.randomUUID().toString(), orderId, from, to, reason, note, operator, MDC.get("requestId"), Timestamp.from(clock.instant()));
     }
 
+    /**
+     * 写入带投递目标的发件箱事件（topic / tag 由调用方从 {@link MqProperties} 读取，不在代码中写死）。
+     * payload 统一补充 eventId、occurredAt；返回事件号。
+     */
+    String routedEvent(String orderId, String eventType, String topic, String tag, Map<String, Object> payload) {
+        String eventId = UUID.randomUUID().toString();
+        java.time.Instant now = clock.instant();
+        var body = new java.util.LinkedHashMap<String, Object>();
+        body.put("eventId", eventId);
+        body.putAll(payload);
+        body.put("occurredAt", now.toString());
+        try {
+            jdbc.update("insert into outbox_event (event_id, aggregate_id, event_type, payload, occurred_at, topic, tag) values (?, ?, ?, ?, ?, ?, ?)",
+                eventId, orderId, eventType, mapper.writeValueAsString(body), Timestamp.from(now), topic, tag);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("事件序列化失败", e);
+        }
+        return eventId;
+    }
+
     /** 写入发件箱事件；payload 统一包含 eventId 与 orderId，消费者按 eventId 幂等。返回事件号。 */
     String event(String orderId, String type, Map<String, Object> payload) {
         String eventId = UUID.randomUUID().toString();

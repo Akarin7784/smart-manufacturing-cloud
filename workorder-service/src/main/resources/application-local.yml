@@ -17,3 +17,15 @@ spring:
     password: ""
 clients.device.url: http://localhost:8081
 clients.masterdata.url: http://localhost:8084
+
+# 与 infra/nacos/common.yml 的 manufacturing.mq 保持一致（本地 / 测试不连 Nacos）。
+manufacturing:
+  mq:
+    topics:
+      workorder-event: mes-workorder-event
+      workorder-quality: mes-workorder-quality
+    tags:
+      work-order-started: WorkOrderStarted
+      work-order-completed: WorkOrderCompleted
+      defect-reported: DefectReported
+      defect-reversed: DefectReversed
