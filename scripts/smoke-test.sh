@@ -101,30 +101,63 @@ printf '%s' "$payload" | base64 -d | jq -e '.sub=="workorder-service" and .clien
   || fail "错误客户端密钥应返回 401"
 echo "PASS: 服务身份 client_credentials（scope/aud 校验、错误密钥 401）"
 
-# 库存预留（服务令牌直连库存服务，模拟工单服务经 Nacos 直连；网关不放行预留接口）：
-# 预留 → 断言可用量减少 → 释放（reason=CALLER_REQUEST）→ 断言可用量回到预留前，冒烟结束后库存状态不变、可重复执行。
+# ---- inv_call：在 compose 内网直连库存服务（库存业务端口不发布到宿主机）----
+# 用法：inv_call METHOD PATH [BODY]
+#   METHOD  HTTP 方法，如 GET / POST
+#   PATH    库存服务内路径，如 /inventory/reservations（不经网关，因此没有 /api 前缀）
+#   BODY    可选，JSON 字符串；有值时以 Content-Type: application/json; charset=utf-8 经 stdin 发送
+# 可选环境变量：
+#   INV_TOKEN     Bearer 令牌（服务令牌，aud=inventory-service），非空时加 Authorization 头
+#   INV_IDEM_KEY  Idempotency-Key 头，非空时添加；调用方负责每次生成新键
+#   INV_BASE      目标地址，默认 http://inventory-service:8085（compose 中为 inventory 服务配置的网络别名）
+#   INV_NETWORK   docker 网络名；默认取 compose 中 inventory 容器实际所在的网络，不依赖项目名拼写
+# 输出：stdout 先是响应体，最后一行是 HTTP 状态码（与 curl -w '\n%{http_code}' 一致）；
+#   取状态码：printf '%s' "$r" | tail -n1；取响应体：printf '%s' "$r" | sed '$d'。
+#   网络或容器错误时返回非 0。
+# 实现：一次性 curl 容器（docker run --rm，不残留容器），镜像按标签+摘要固定，来源 scripts/tool-images.env。
+SMOKE_CURL_IMAGE=${SMOKE_CURL_IMAGE:-$(sed -n 's/^SMOKE_CURL_IMAGE=//p' "$root/scripts/tool-images.env")}
+inv_network() {
+  [ -n "${INV_NETWORK:-}" ] && { printf '%s' "$INV_NETWORK"; return; }
+  _inv_cid=$(docker compose -f "$root/compose.yaml" ps -q inventory) && [ -n "$_inv_cid" ] || { echo "未找到运行中的 inventory 容器" >&2; return 1; }
+  docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' "$_inv_cid" | sed -n 1p
+}
+inv_call() {
+  _inv_m=$1; _inv_p=$2; _inv_b=${3:-}
+  _inv_net=$(inv_network) || return 1
+  set -- -sS -m 10 -X "$_inv_m" -w '\n%{http_code}'
+  [ -n "${INV_TOKEN:-}" ] && set -- "$@" -H "Authorization: Bearer $INV_TOKEN"
+  [ -n "${INV_IDEM_KEY:-}" ] && set -- "$@" -H "Idempotency-Key: $INV_IDEM_KEY"
+  if [ -n "$_inv_b" ]; then
+    printf '%s' "$_inv_b" | docker run --rm -i --network "$_inv_net" "$SMOKE_CURL_IMAGE" "$@" \
+      -H 'Content-Type: application/json; charset=utf-8' --data-binary @- "${INV_BASE:-http://inventory-service:8085}$_inv_p"
+  else
+    docker run --rm --network "$_inv_net" "$SMOKE_CURL_IMAGE" "$@" "${INV_BASE:-http://inventory-service:8085}$_inv_p"
+  fi
+}
+
+# 库存预留（服务令牌经 inv_call 在 compose 内网直连库存服务，模拟工单服务经 Nacos 直连；网关不放行预留接口）：
+# 预留 → 断言可用量减少 → 释放（reason=CALLER_REQUEST）→ GET 确认 RELEASED → 断言可用量回到预留前，冒烟结束后库存状态不变、可重复执行。
 # 幂等键每次运行新生成（含运行 id），预留与释放各用各的，绝不复用。
 # 若脚本中途被杀、释放未执行，预留在 15 分钟后由过期任务（inventory.reservation.ttl=PT15M）自动回收。
 # 物料取 GR-60 BOM 中的 RM-20CRMNTI-D30（20CrMnTi 圆钢，演示期初 16 kg），预留 1 kg，单位用主数据编码 "kg"。
-inv=${INVENTORY_URL:-http://localhost:8085}
-svc="Authorization: Bearer $(printf '%s' "$tok" | jq -r '.access_token')"
+INV_TOKEN=$(printf '%s' "$tok" | jq -r '.access_token')
 run_id="$(date +%s)-$$-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
 avail() { curl -fsS -m 5 -H "$auth" "$base/api/inventory/stock/availability?materialCode=RM-20CRMNTI-D30" | jq -r '.available'; }
 before=$(avail) || fail "查询可用量失败"
 rbody=$(jq -nc --arg wo "SMOKE-$run_id" '{workOrderNo:$wo,lines:[{materialCode:"RM-20CRMNTI-D30",qty:"1",uom:"kg",sourceLineId:"smoke-1"}]}')
-res=$(curl -sS -m 10 -w '\n%{http_code}' -H "$svc" -H 'Content-Type: application/json; charset=utf-8' \
-  -H "Idempotency-Key: smoke-reserve-$run_id" -d "$rbody" "$inv/inventory/reservations")
+res=$(INV_IDEM_KEY="smoke-reserve-$run_id" inv_call POST /inventory/reservations "$rbody") || fail "预留调用失败：$res"
 [ "$(printf '%s' "$res" | tail -n1)" = 201 ] || fail "预留应返回 201：$res"
 rid=$(printf '%s' "$res" | sed '$d' | jq -r '.reservationId')
-# 之后任何断言失败都先释放预留再退出，保证可重跑。
-release_res() { curl -sS -o /dev/null -w '%{http_code}' -m 10 -X POST -H "$svc" -H 'Content-Type: application/json' \
-  -H "Idempotency-Key: smoke-release-$run_id" -d '{"reason":"CALLER_REQUEST"}' "$inv/inventory/reservations/$rid/release"; }
+# 之后任何断言失败都先释放预留再退出，保证可重跑；释放幂等（已释放再调用返回 200 与当前状态）。
+release_res() { INV_IDEM_KEY="smoke-release-$run_id" inv_call POST "/inventory/reservations/$rid/release" '{"reason":"CALLER_REQUEST"}' | tail -n1; }
 trap 'rm -f "$hdr"; [ -n "${rid:-}" ] && release_res >/dev/null 2>&1 || true' EXIT
 mid=$(avail)
 [ "$(jq -n --arg b "$before" --arg m "$mid" '($b|tonumber)-($m|tonumber)==1')" = true ] || fail "预留后可用量应减少 1（$before → $mid）"
 [ "$(release_res)" = 200 ] || fail "释放预留应返回 200"
 # 通过 GET 再确认预留单已是终态 RELEASED（服务令牌）。
-curl -fsS -m 10 -H "$svc" "$inv/inventory/reservations/$rid" | jq -e '.status=="RELEASED"' >/dev/null || fail "释放后预留单状态应为 RELEASED"
+got=$(inv_call GET "/inventory/reservations/$rid") || fail "查询预留单失败"
+[ "$(printf '%s' "$got" | tail -n1)" = 200 ] && printf '%s' "$got" | sed '$d' | jq -e '.status=="RELEASED"' >/dev/null \
+  || fail "释放后预留单状态应为 RELEASED：$got"
 rid=""
 after=$(avail)
 [ "$(jq -n --arg b "$before" --arg a "$after" '($b|tonumber)==($a|tonumber)')" = true ] || fail "释放后可用量应恢复（$before → $after）"

@@ -11,7 +11,7 @@
 | workorder-service | 8082 | 18082 |
 | auth-service | 8083 | 18083 |
 | masterdata-service | 8084 | 18084 |
-| inventory-service | 8085（仅绑定 127.0.0.1，供冒烟直连预留接口） | 18085 |
+| inventory-service | 8085（不发布到宿主机，冒烟经 compose 内网直连） | 18085 |
 
 - 各服务已有 `spring-boot-starter-actuator` 和 `micrometer-registry-prometheus`，暴露 `health,info,prometheus`。
 - **所有指标统一带 `application` 标签**（`management.metrics.tags.application=${spring.application.name}`），并为 `http.server.requests` 开启直方图桶，用于计算 P95/P99。

@@ -285,10 +285,12 @@ services:
       AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
       MYSQL_HOST: mysql
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
-    # 业务端口只绑定 127.0.0.1：预留接口只认服务令牌（aud=inventory-service），网关按 aud=manufacturing-api 校验会拒绝，
-    # 冒烟脚本因此在本机直连 8085，模拟工单服务经 Nacos 直连库存服务的真实链路。管理端口 18085 不发布到宿主机。
-    ports:
-      - "127.0.0.1:8085:8085"
+    # 业务端口 8085 与管理端口 18085 都不发布到宿主机。预留接口只认服务令牌（aud=inventory-service），网关会拒绝；
+    # 冒烟脚本用一次性 curl 容器加入 compose 网络直连（见 scripts/smoke-test.sh 的 inv_call），模拟工单服务经 Nacos 直连。
+    # 网络别名与 Nacos 服务名一致，内网可用 http://inventory-service:8085 访问。
+    networks:
+      default:
+        aliases: [inventory-service]
     healthcheck:
       test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:18085/actuator/health/readiness"]
       <<: *probe-timing

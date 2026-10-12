@@ -52,7 +52,7 @@ flowchart LR
 - device-service：设备查询、持久化、Nacos 动态配置示例。
 - workorder-service：工单校验、Feign 调用、持久化与降级。
 - masterdata-service：物料、工作中心/工位、版本化多层 BOM、工艺路线；demo profile 加载 GR-60 演示主数据（端口 8084）。
-- inventory-service：库位、批次、现存量、出入库与物料预留；demo profile 加载期初库存（端口 8085，compose 中仅绑定 127.0.0.1；管理端口 18085 不对宿主机发布）。预留接口只接受工单服务的服务令牌，冒烟脚本直连 8085 验证预留→释放往返。
+- inventory-service：库位、批次、现存量、出入库与物料预留；demo profile 加载期初库存（端口 8085，管理端口 18085，均不对宿主机发布）。预留接口只接受工单服务的服务令牌，冒烟脚本用一次性 curl 容器（`inv_call`，镜像固定在 `scripts/tool-images.env`）在 compose 内网验证预留→释放往返；离线环境先执行 `make prepull`。
 - infra：Nacos 配置样例、MySQL 初始化、Sentinel 控制台镜像。
 - scripts：Windows 启停、配置导入、冒烟检查。
 - docs：部署与扩展说明。
