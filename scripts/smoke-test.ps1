@@ -104,6 +104,9 @@ if ($probe -eq 401) {
             -Headers ($svcHeaders + @{'Idempotency-Key'="smoke-release-$runId"}) -ContentType 'application/json' -Body '{"reason":"CALLER_REQUEST"}' -TimeoutSec 10
         if ($rel.status -ne 'RELEASED') { throw 'Release failed.' }
         $released = $true
+        # 通过 GET 再确认预留单已是终态 RELEASED（服务令牌）。
+        $got = Invoke-RestMethod "$InventoryUrl/inventory/reservations/$($reservation.reservationId)" -Headers $svcHeaders -TimeoutSec 10
+        if ($got.status -ne 'RELEASED') { throw "Reservation status should be RELEASED, got $($got.status)." }
         $after = [decimal](Invoke-RestMethod $availUrl -Headers $headers -TimeoutSec 5).available
         if ($after -ne $before) { throw "Available qty should be restored ($before -> $after)." }
     } finally {

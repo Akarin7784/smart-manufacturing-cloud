@@ -128,6 +128,8 @@ else
   mid=$(avail)
   [ "$(jq -n --arg b "$before" --arg m "$mid" '($b|tonumber)-($m|tonumber)==1')" = true ] || fail "预留后可用量应减少 1（$before → $mid）"
   [ "$(release_res)" = 200 ] || fail "释放预留应返回 200"
+  # 通过 GET 再确认预留单已是终态 RELEASED（服务令牌）。
+  curl -fsS -m 10 -H "$svc" "$inv/inventory/reservations/$rid" | jq -e '.status=="RELEASED"' >/dev/null || fail "释放后预留单状态应为 RELEASED"
   rid=""
   after=$(avail)
   [ "$(jq -n --arg b "$before" --arg a "$after" '($b|tonumber)==($a|tonumber)')" = true ] || fail "释放后可用量应恢复（$before → $after）"
