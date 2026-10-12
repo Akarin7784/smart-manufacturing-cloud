@@ -81,6 +81,15 @@ panels = [
     ts(34, "BOM / 工艺路线发布速率", [
         ('sum by (uri, status) (rate(http_server_requests_seconds_count{application="masterdata-service",method="POST",uri=~"/(boms|routings)/{product}/{version}/release"}[$__rate_interval]))', "{{uri}} {{status}}")],
        "主数据版本发布操作速率。", 12, 48, unit="reqps"),
+    # 工单预留释放：对应告警 WorkorderReservation*；reservation_gone（410）只在这里观察，不告警。
+    row(40, "工单预留释放", 56),
+    ts(41, "预留释放结果（次 / 15m）", [
+        ('sum by (result) (increase(mes_workorder_reservation_release_total{application="workorder-service"}[15m]))', "{{result}}")],
+        "取消工单后释放预留的每次尝试结果；reservation_consumed / reservation_not_found / error 触发 WorkorderReservationReleaseFailed，reservation_gone 只计数。", 0, 57),
+    ts(42, "待释放任务 / 库存鉴权失败", [
+        ('max(mes_workorder_reservation_release_pending{application="workorder-service"})', "待释放任务"),
+        ('sum by (operation) (increase(mes_workorder_inventory_auth_failure_total{application="workorder-service"}[5m]))', "鉴权失败 {{operation}}")],
+        "待释放任务持续 15 分钟大于 0 触发 WorkorderReservationReleaseBacklog；鉴权失败增量大于 0 触发 WorkorderInventoryAuthFailure。", 12, 57),
 ]
 
 dashboard = {

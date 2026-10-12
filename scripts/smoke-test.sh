@@ -243,6 +243,21 @@ printf '%s\n' "$qm" | grep -Eq '^mes_quality_event_consumed_total\{[^}]*result="
 printf '%s\n' "$qm" | grep -Eq '^mes_quality_pending_reversal_expired_total(\{[^}]*\})? 0(\.0)?$' || fail "缺少 mes_quality_pending_reversal_expired_total 0"
 echo "PASS: 质检告警计数器已以 0 预注册（内网 18086）"
 
+# 工单预留告警序列：经内网读取 workorder:18082，断言释放结果（全部预注册的 result）、待释放任务 Gauge 与库存鉴权失败计数器存在。
+# contract_mismatch 由业务开发后续 PR 新增，合入后再加入下面的列表。
+wm=$(INV_BASE=http://workorder:18082 INV_TOKEN= INV_IDEM_KEY= inv_call GET /actuator/prometheus) || fail "读取工单服务指标失败"
+[ "$(printf '%s' "$wm" | tail -n1)" = 200 ] || fail "工单服务管理端口 /actuator/prometheus 应返回 200"
+for r in released expired reservation_gone reservation_consumed reservation_not_found auth_error unavailable error; do
+  printf '%s\n' "$wm" | grep -Eq "^mes_workorder_reservation_release_total\{[^}]*result=\"$r\"[^}]*\} " \
+    || fail "缺少 mes_workorder_reservation_release_total{result=\"$r\"}"
+done
+printf '%s\n' "$wm" | grep -Eq '^mes_workorder_reservation_release_pending(\{[^}]*\})? ' || fail "缺少 mes_workorder_reservation_release_pending"
+for o in reserve renew release get token; do
+  printf '%s\n' "$wm" | grep -Eq "^mes_workorder_inventory_auth_failure_total\{[^}]*operation=\"$o\"[^}]*\} " \
+    || fail "缺少 mes_workorder_inventory_auth_failure_total{operation=\"$o\"}"
+done
+echo "PASS: 工单预留告警序列已注册（内网 18082）"
+
 # RocketMQ 收发回环：用 Broker 镜像自带的 mqadmin 发一条带唯一标记的消息，再以新消费组拉回，确认 NameServer→Broker→消费链路可用。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。SKIP_MQ_SMOKE=1 可跳过（如未启动 app profile）。
 if [ "${SKIP_MQ_SMOKE:-0}" != 1 ]; then

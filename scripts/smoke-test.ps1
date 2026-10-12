@@ -280,6 +280,19 @@ if ($qm -notmatch '(?m)^mes_quality_event_consumed_total\{[^}]*result="disposed_
 if ($qm -notmatch '(?m)^mes_quality_event_consumed_total\{[^}]*result="invalid"[^}]*\} 0(\.0)?\r?$') { throw 'invalid counter not pre-registered at 0.' }
 if ($qm -notmatch '(?m)^mes_quality_pending_reversal_expired_total(\{[^}]*\})? 0(\.0)?\r?$') { throw 'pending_reversal_expired counter not pre-registered at 0.' }
 Write-Host 'PASS: quality alert counters pre-registered at 0 (internal 18086).'
+# 工单预留告警序列（与 smoke-test.sh 对等）：内网读取 workorder:18082，断言释放结果、待释放任务 Gauge 与库存鉴权失败计数器存在。
+# contract_mismatch 由业务开发后续 PR 新增，合入后再加入列表。
+$env:INV_TOKEN = ''; $env:INV_IDEM_KEY = ''; $env:INV_BASE = 'http://workorder:18082'
+try { $wm = inv_call GET /actuator/prometheus } finally { $env:INV_BASE = '' }
+if ((Get-InvStatus $wm) -ne 200) { throw 'workorder-service /actuator/prometheus on 18082 should be 200.' }
+foreach ($r in @('released', 'expired', 'reservation_gone', 'reservation_consumed', 'reservation_not_found', 'auth_error', 'unavailable', 'error')) {
+    if ($wm -notmatch "(?m)^mes_workorder_reservation_release_total\{[^}]*result=""$r""[^}]*\} ") { throw "mes_workorder_reservation_release_total{result=$r} missing." }
+}
+if ($wm -notmatch '(?m)^mes_workorder_reservation_release_pending(\{[^}]*\})? ') { throw 'mes_workorder_reservation_release_pending missing.' }
+foreach ($o in @('reserve', 'renew', 'release', 'get', 'token')) {
+    if ($wm -notmatch "(?m)^mes_workorder_inventory_auth_failure_total\{[^}]*operation=""$o""[^}]*\} ") { throw "mes_workorder_inventory_auth_failure_total{operation=$o} missing." }
+}
+Write-Host 'PASS: workorder reservation alert series registered (internal 18082).'
 # RocketMQ 收发回环（与 smoke-test.sh 对等）：在 broker 容器内用自带 mqadmin 发一条唯一标记消息，再以新消费组拉回比对。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。设置环境变量 SKIP_MQ_SMOKE=1 可跳过。
 if ($env:SKIP_MQ_SMOKE -ne '1') {
