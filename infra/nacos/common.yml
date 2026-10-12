@@ -51,10 +51,6 @@ manufacturing:
       ncr-disposed: NcrDisposed
       ncr-closed: NcrClosed
       ncr-voided: NcrVoided
-      # 工单状态事件（topic workorder-event）：首次报工 RELEASED→IN_PROGRESS 时发布 WorkOrderStarted；
-      # 末道累计合格数达到计划数或手工完工时发布 WorkOrderCompleted（含 shortfall）。
-      workorder-started: WorkOrderStarted
-      workorder-completed: WorkOrderCompleted
     consumer-groups:
       # 工单服务订阅库存预留事件的消费组。
       workorder-reservation: CG_WORKORDER_RESERVATION
