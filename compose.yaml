@@ -9,6 +9,8 @@ x-cloud-env: &cloud-env
   NACOS_USERNAME: ${NACOS_USERNAME:-nacos}
   NACOS_PASSWORD: ${NACOS_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
   SENTINEL_DASHBOARD: sentinel:8858
+  # 默认 false：旧库（无迁移历史）启动直接失败，需 make demo-reset；仅确认结构与 V1 一致时才在 .env 中开启。
+  FLYWAY_BASELINE_ON_MIGRATE: ${FLYWAY_BASELINE_ON_MIGRATE:-false}
   AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
   AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
 

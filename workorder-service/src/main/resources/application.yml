@@ -38,10 +38,12 @@ manufacturing:
     jwk-set-uri: ${AUTH_JWK_SET_URI:http://localhost:8083/auth/jwks}
 
 # 数据库迁移：表结构只由 Flyway 的 db/migration 管理，不再使用 spring.sql.init（schema.sql 已转为 V1__init.sql）。
-# baseline-on-migrate + baseline-version=0：已有表但无迁移历史的旧开发库会先打 0 号基线，再执行 V1；
-# V1 使用 CREATE TABLE IF NOT EXISTS，因此对旧库是无害的补齐。演示数据位置 db/demo 只由 demo profile 追加。
+# 默认关闭 baseline-on-migrate：已有表但没有迁移历史的旧库（P2 之前由 schema.sql 创建）会让 Flyway 直接报错，
+# 而不是静默打基线后跳过建表（那样 V1 中新增的唯一约束等永远不会生效）。旧开发/演示库请执行 make demo-reset 重建。
+# 仅当确认旧库结构与 V1 完全一致时，才可设置 FLYWAY_BASELINE_ON_MIGRATE=true，把现有库登记为版本 1（不执行 V1）。
+# 演示数据位置 db/demo 只由 demo profile 追加。
 spring.sql.init.mode: never
 spring.flyway:
   locations: classpath:db/migration
-  baseline-on-migrate: true
-  baseline-version: "0"
+  baseline-on-migrate: ${FLYWAY_BASELINE_ON_MIGRATE:false}
+  baseline-version: "1"

@@ -27,11 +27,13 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 
 ### 数据库迁移（Flyway）
 
-- 表结构位于各服务 `src/main/resources/db/migration`（`V<版本>__<说明>.sql`），服务启动时由 Flyway 执行；不再使用 `spring.sql.init`。已发布的 V 脚本不可修改，结构变更一律新增版本。
+- 表结构位于各服务 `src/main/resources/db/migration`（`V<版本>__<说明>.sql`），服务启动时由 Flyway 执行；不再使用 `spring.sql.init`。已发布的 V 脚本不可修改，结构变更一律新增版本。版本号按库（服务）独立编号，每个服务各自从 V1 开始，不做跨服务统一编号。
 - 演示数据位于 `db/demo`（`R__*.sql` 可重复迁移），只在 `demo` profile 中追加到 `spring.flyway.locations`；脚本必须幂等（固定主键 + `ON DUPLICATE KEY UPDATE` 或 `INSERT IGNORE`；主数据用 INSERT IGNORE，避免重放覆盖已发布的只读版本；禁止无条件 DELETE）。CI 的 `migrations twice` job 在同一库上执行两次迁移（第二次强制重放 R__），校验行数一致。
 - test profile 只执行 `db/migration`（设备服务另含测试资源 `db/testdata`），不加载 `db/demo`；Testcontainers MySQL 集成测试使用同一套迁移脚本（归 MES测试与质量维护）。
-- 旧开发库（已有表、无迁移历史）通过 `baseline-on-migrate`、基线版本 0 接入，V1 使用 `IF NOT EXISTS` 补齐。
-- 工单幂等记录保留 7 天，由 `IdempotencyRecordCleaner` 每天定时按 `created_at` 索引分批删除；多实例并发执行结果幂等，暂未引入 ShedLock。
+- **旧库升级**：`baseline-on-migrate` 默认关闭，V1 不使用 `IF NOT EXISTS`。P2 之前由 `schema.sql` 创建的库（已有表、没有迁移历史）启动时会直接失败，不会静默跳过建表；如果跳过，V1 中新增的唯一约束（如主数据 `uk_*_current`）永远不会创建。处理方式：
+  - 演示/开发环境：执行 `make demo-reset`（删除数据卷后重建）；local profile 删除 `./data` 下对应的 H2 文件。
+  - 确认旧库结构与 V1 完全一致时，可设置 `FLYWAY_BASELINE_ON_MIGRATE=true`（compose 从 .env 读取），把现有库登记为版本 1，V1 不再执行。
+- 工单幂等记录保留 7 天，由 `IdempotencyRecordCleaner` 每天定时按 `created_at` 升序选出最旧的一批、按主键删除（避免无序 `DELETE ... LIMIT` 在 statement binlog 下不安全）；多实例并发执行结果幂等，暂未引入 ShedLock。
 
 已实现账号登录、管理员用户管理及三种角色的接口授权。示例不提供完整业务 CRUD、分页、租户数据权限或 MES 生产排程。这些属于后续业务模块，而不是基础服务治理框架已经完成的功能。
 
