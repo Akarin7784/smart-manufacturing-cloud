@@ -21,6 +21,8 @@ public enum GatewayProblem {
     ACCESS_DENIED("gateway-access-denied", HttpStatus.FORBIDDEN, "没有访问权限", "当前身份缺少访问该接口所需的权限"),
     /** 命中 Sentinel 网关限流规则。 */
     RATE_LIMITED("gateway-rate-limited", HttpStatus.TOO_MANY_REQUESTS, "请求过于频繁", "请求过于频繁，请稍后重试"),
+    /** 命中服务间内部路径清单（manufacturing.gateway.internal-paths）：不论身份一律 404，不暴露接口存在。 */
+    NOT_FOUND("gateway-not-found", HttpStatus.NOT_FOUND, "资源不存在", "请求的资源不存在"),
     /** 路由的下游服务没有可用实例或无法连接。 */
     SERVICE_UNAVAILABLE("gateway-service-unavailable", HttpStatus.SERVICE_UNAVAILABLE, "下游服务不可用", "目标服务暂时不可用，请稍后重试");
 

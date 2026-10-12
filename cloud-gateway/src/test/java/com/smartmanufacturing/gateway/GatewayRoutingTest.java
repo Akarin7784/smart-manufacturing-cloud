@@ -214,7 +214,8 @@ class GatewayRoutingTest {
             client().method(HttpMethod.valueOf(method)).uri(uri).exchange().expectStatus().isNotFound()
                 .expectHeader().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
                 .expectHeader().doesNotExist("WWW-Authenticate")
-                .expectBody().jsonPath("$.type").isEqualTo("gateway-not-found").jsonPath("$.status").isEqualTo(404);
+                .expectBody().jsonPath("$.type").isEqualTo("gateway-not-found").jsonPath("$.status").isEqualTo(404)
+                .jsonPath("$.title").exists().jsonPath("$.detail").exists().jsonPath("$.instance").exists().jsonPath("$.code").doesNotExist();
             for (String t : List.of(all, noPerm, "not-a-jwt"))
                 client().method(HttpMethod.valueOf(method)).uri(uri).headers(h -> h.setBearerAuth(t)).exchange()
                     .expectStatus().isNotFound().expectBody().jsonPath("$.type").isEqualTo("gateway-not-found");

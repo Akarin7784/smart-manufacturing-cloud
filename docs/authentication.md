@@ -103,8 +103,9 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 | 状态 | type | 触发条件 |
 | --- | --- | --- |
 | 401 | `gateway-authentication-required` | 无令牌或令牌校验失败 |
-| 403 | `gateway-access-denied` | 缺少接口权限，或接口不对网关开放（如库存预留） |
+| 403 | `gateway-access-denied` | 缺少接口权限 |
 | 429 | `gateway-rate-limited` | 命中 Sentinel 网关限流规则 |
+| 404 | `gateway-not-found` | 命中服务间内部路径清单（预留、QC-HOLD），不论有无令牌 |
 | 503 | `gateway-service-unavailable` | 路由的下游服务没有可用实例或无法连接 |
 
 `type` 与各业务服务一样采用相对引用，`gateway-` 前缀表示由网关拦截；`instance` 为请求路径（不含查询串）。示例：
