@@ -750,6 +750,120 @@
           "legendFormat": "{{uri}} {{status}}"
         }
       ]
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "工单预留释放",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "预留释放结果（次 / 15m）",
+      "description": "取消工单后释放预留的每次尝试结果；reservation_consumed / reservation_not_found / error 触发 WorkorderReservationReleaseFailed，reservation_gone 与 contract_mismatch 只计数（契约告警走 mes_workorder_inventory_contract_mismatch_total）。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 57,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (result) (increase(mes_workorder_reservation_release_total{application=\"workorder-service\"}[15m]))",
+          "legendFormat": "{{result}}"
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "待释放任务 / 库存鉴权失败",
+      "description": "待释放任务持续 15 分钟大于 0 触发 WorkorderReservationReleaseBacklog；鉴权失败增量大于 0 触发 WorkorderInventoryAuthFailure。",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 57,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(mes_workorder_reservation_release_pending{application=\"workorder-service\"})",
+          "legendFormat": "待释放任务"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (operation) (increase(mes_workorder_inventory_auth_failure_total{application=\"workorder-service\"}[5m]))",
+          "legendFormat": "鉴权失败 {{operation}}"
+        }
+      ]
     }
   ]
 }

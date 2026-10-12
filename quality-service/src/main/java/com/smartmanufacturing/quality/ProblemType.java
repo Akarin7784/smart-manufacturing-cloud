@@ -4,7 +4,7 @@ import java.util.Locale;
 
 /**
  * 契约中固定的 7 种业务错误类型（OpenAPI components.schemas.ProblemType），每种绑定唯一 HTTP 状态。
- * 调用方按 type 分支，不解析 detail；新增类型必须先修改契约。401/403 不在此列，统一为 about:blank。
+ * 调用方按 type 分支，不解析 detail；新增类型必须先修改契约。401/403 不在此列，见 SecurityProblemType（authentication-required / access-denied）。
  */
 public enum ProblemType {
     VALIDATION_ERROR("validation-error", HttpStatus.BAD_REQUEST, "请求参数校验失败"),

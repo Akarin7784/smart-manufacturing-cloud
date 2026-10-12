@@ -60,7 +60,7 @@ class WorkOrderCancellation {
             jdbc.update("update wo_material_reservation set status = 'RELEASING' where reservation_id = ?", reservationId);
             jdbc.update("insert into wo_reservation_release_task (task_id, order_id, reservation_id, reason, idempotency_key, status, attempts, created_at) values (?, ?, ?, ?, ?, 'PENDING', 0, ?)",
                 UUID.randomUUID().toString(), orderId, reservationId, MaterialReservationPort.ReleaseReason.WORK_ORDER_CANCELLED.name(),
-                releaseKey(orderId, reservationId), Timestamp.from(now));
+                releaseKey(orderId, reservationId), DbTimes.ts(now));
         }
         journal.statusChanged(orderId, status, "CANCELLED", "CANCEL", note, operator);
         var payload = new LinkedHashMap<String, Object>();

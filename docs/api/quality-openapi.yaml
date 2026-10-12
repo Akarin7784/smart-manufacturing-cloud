@@ -457,17 +457,23 @@ components:
           schema:
             $ref: '#/components/schemas/ValidationProblem'
     Unauthorized:
-      description: 未认证或令牌无效。
+      description: 未认证或令牌无效（type=authentication-required，title 固定为“需要认证”）。
+      headers:
+        WWW-Authenticate:
+          description: 固定为 `Bearer`（RFC 6750）。
+          schema:
+            type: string
+            const: Bearer
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            $ref: '#/components/schemas/AuthenticationRequiredProblem'
     Forbidden:
-      description: 缺少 quality:read 或 quality:write。
+      description: 缺少 quality:read 或 quality:write（type=access-denied，title 固定为“没有访问权限”）。
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/Problem'
+            $ref: '#/components/schemas/AccessDeniedProblem'
     NotFound:
       description: NCR 不存在（type=ncr-not-found）。
       content:
@@ -815,7 +821,7 @@ components:
         | `ncr-voided` | 409 | NCR 已作废，不能再评审、处置或关闭 |
         | `ncr-not-found` | 404 | 路径中的 NCR 编号（或其下的回写任务）不存在 |
         | `writeback-pending` | 409 | 关闭 NCR 时仍有 PENDING 或 FAILED 的库存回写任务 |
-        服务内 401/403 由框架统一处理，type 为 `about:blank`；经网关访问时 401/403/429/503 由网关先行返回，type 为 `gateway-*`（见 docs/authentication.md）。已处置 NCR 被冲销属于事件消费侧冲突，不对应任何 Problem type。
+        服务内 401/403 不在此枚举中，type 分别为 `authentication-required`（title“需要认证”）与 `access-denied`（title“没有访问权限”），见 AuthenticationRequiredProblem / AccessDeniedProblem；经网关访问时 401/403/429/503 由网关先行返回，type 为 `gateway-*`（见 docs/authentication.md）。已处置 NCR 被冲销属于事件消费侧冲突，不对应任何 Problem type。
 
     Problem:
       type: object
@@ -823,7 +829,7 @@ components:
       properties:
         type:
           type: string
-          description: 错误类型；业务错误取值见 ProblemType，服务内 401/403 为 `about:blank`，网关拦截时为 `gateway-*`。
+          description: 错误类型；业务错误取值见 ProblemType，服务内 401 为 `authentication-required`、403 为 `access-denied`，网关拦截时为 `gateway-*`。
         title:
           type: string
           description: 错误简述。
@@ -838,6 +844,32 @@ components:
           format: uri-reference
           description: 出错的请求资源。
 
+    AuthenticationRequiredProblem:
+      description: 服务自身返回的 401：未携带令牌，或令牌签名、签发者、受众、有效期校验失败。字段固定为 type/title/status/detail/instance，不含 code；instance 为请求路径（不含查询串）。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type, title, status, detail]
+          properties:
+            type:
+              const: authentication-required
+            title:
+              const: 需要认证
+            status:
+              const: 401
+    AccessDeniedProblem:
+      description: 服务自身返回的 403：身份有效但缺少接口所需权限或 scope。字段固定为 type/title/status/detail/instance，不含 code；instance 为请求路径（不含查询串）。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type, title, status, detail]
+          properties:
+            type:
+              const: access-denied
+            title:
+              const: 没有访问权限
+            status:
+              const: 403
     ValidationProblem:
       description: 参数校验错误。
       allOf:

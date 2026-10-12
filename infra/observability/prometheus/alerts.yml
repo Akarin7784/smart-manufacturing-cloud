@@ -93,3 +93,50 @@ groups:
         annotations:
           summary: "{{ $labels.application }} 收到无法解析的不良品事件"
           description: "最近 15 分钟有 {{ $value }} 条坏消息被记入 invalid_event 并跳过，请核对生产方（工单服务）的事件格式。"
+
+  - name: workorder-reservation
+    rules:
+      # 预留释放失败：取消工单后释放库存预留时出现需关注的结果（见 docs/observability.md 第 3 节处置说明）。
+      # reservation_consumed / reservation_not_found：任务已停止（STOPPED），不会再重试，需人工核对（wo_inventory_audit 有记录）；
+      # error：未归类异常，任务退避重试，日志 ERROR 中有原因（库存契约外响应改计 contract_mismatch，见下一条）。
+      # auth_error 不在此列：由 WorkorderInventoryAuthFailure 覆盖；unavailable 不在此列：库存短暂不可用时任务会重试，
+      # 持续不可用由 WorkorderReservationReleaseBacklog 覆盖。reservation_gone（410）只计数、上看板，不告警。
+      # 一次即需关注，不设 for；所有 result 序列启动时以 0 预注册，increase() 能计到第一次增量。
+      - alert: WorkorderReservationReleaseFailed
+        expr: sum by (application, result) (increase(mes_workorder_reservation_release_total{result=~"reservation_consumed|reservation_not_found|error"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.application }} 预留释放失败（{{ $labels.result }}）"
+          description: "最近 15 分钟取消工单后释放预留出现 {{ $value }} 次 {{ $labels.result }}，请查 wo_reservation_release_task 与 wo_inventory_audit，处置见 docs/observability.md 第 3 节。"
+      # 释放任务积压：PENDING 的释放任务持续 15 分钟大于 0，说明库存长时间不可用（result=unavailable）或任务一直失败重试。
+      # 任务正常情况下几秒内完成，15m 足以排除库存短暂抖动。
+      - alert: WorkorderReservationReleaseBacklog
+        expr: max by (application) (mes_workorder_reservation_release_pending) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.application }} 预留释放任务积压"
+          description: "待执行的预留释放任务 {{ $value }} 条，已持续 15 分钟大于 0，请检查库存服务可用性与 wo_reservation_release_task.last_error。"
+      # 库存拒绝服务令牌：401/403（operation=reserve/renew/release/get，token 为向认证服务申请令牌被拒）。
+      # 属于服务身份或权限配置问题，重试无法自愈；for 5m 排除令牌轮换、认证服务重启等瞬时拒绝。也覆盖释放任务的 result="auth_error"。
+      - alert: WorkorderInventoryAuthFailure
+        expr: sum by (application, operation) (increase(mes_workorder_inventory_auth_failure_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.application }} 调用库存被拒绝（{{ $labels.operation }}）"
+          description: "最近 5 分钟 {{ $labels.operation }} 被拒绝 {{ $value }} 次，请检查 workorder-service 的客户端密钥、scope（inventory:reserve）与库存服务的令牌校验配置。"
+      # 库存契约不一致：库存返回了契约之外的响应（如 422 uom-mismatch、未约定的状态码或 type），说明双方实现与契约有偏差，需对账契约。
+      # 依赖 mes_workorder_inventory_contract_mismatch_total{operation=reserve|renew|release|get}（业务开发单独 PR 新增并以 0 预注册），
+      # 合入前选择器匹配不到序列、不会触发。release_total{result="contract_mismatch"} 只用于看板统计，不进告警（避免同一事件两条告警）。
+      # 1h 窗口：契约问题不会自愈，保证告警至少可见一小时；一次即告警，不设 for。
+      - alert: WorkorderReservationContractMismatch
+        expr: sum by (application, operation) (increase(mes_workorder_inventory_contract_mismatch_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.application }} 库存响应与契约不一致（{{ $labels.operation }}）"
+          description: "最近 1 小时 {{ $labels.operation }} 收到库存契约外响应 {{ $value }} 次，请按工单服务 ERROR 日志核对 docs/api/inventory-openapi.yaml 与库存实现。"
