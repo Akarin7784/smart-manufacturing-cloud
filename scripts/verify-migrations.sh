@@ -21,11 +21,12 @@ sql() {
     mysql -h "$host" -P "$port" -uroot -N -B -e "$1"
 }
 
-# 执行一次 Flyway 迁移；createSchemas 负责建库，locations 指向仓库内的迁移目录（只读挂载）。
+# 执行一次 Flyway 迁移；库由调用方预先创建（URL 指向不存在的库时驱动会一直重试连接），
+# locations 指向仓库内的迁移目录（只读挂载）；connectRetries 限制较小，避免异常时长时间挂起。
 migrate() {
   docker run --rm --network host -v "$root:/repo:ro" "$flyway_image" \
     -url="jdbc:mysql://$host:$port/$1?allowPublicKeyRetrieval=true&useSSL=false" -user=root -password="$MYSQL_ROOT_PASSWORD" \
-    -schemas="$1" -createSchemas=true -locations="$2" -connectRetries=30 migrate >/dev/null
+    -schemas="$1" -locations="$2" -connectRetries=5 migrate >/dev/null
 }
 
 # 输出某库全部业务表（排除迁移历史表）的“表名 行数”，按表名排序便于逐行比较。
@@ -46,7 +47,7 @@ for svc in auth-service device-service workorder-service masterdata-service; do
     locations="$locations,filesystem:/repo/$res/demo"
     repeatables=$(ls "$root/$res/demo"/R__*.sql 2>/dev/null | wc -l | tr -d ' ')
   fi
-  sql "DROP DATABASE IF EXISTS \`$db\`"
+  sql "DROP DATABASE IF EXISTS \`$db\`; CREATE DATABASE \`$db\` CHARACTER SET utf8mb4"
   migrate "$db" "$locations"
   first=$(counts "$db")
   # 修改已应用 R__ 记录的校验和，使 Flyway 认为脚本已变化而重放（模拟演示脚本更新后的再次执行）。
