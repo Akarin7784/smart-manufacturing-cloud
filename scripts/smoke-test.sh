@@ -94,6 +94,16 @@ grep -qi '^Idempotent-Replayed: true' "$hdr" || fail "同键重放下达缺少 I
 [ "$(curl -s -o /dev/null -w '%{http_code}' -m 15 -X POST -H "$auth" -H "Idempotency-Key: $rel_key-other" "$base/api/workorders/$gr/release")" = 409 ] || fail "换键重复下达应返回 409"
 # 未带令牌访问必须被网关拒绝。
 [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$base/api/devices")" = 401 ] || fail "未认证请求应返回 401"
+# 服务间内部接口（预留、QC-HOLD）只供直连：网关对无令牌与管理员令牌都返回 404 problem+json，不暴露接口存在。
+for _p in /api/inventory/reservations /api/inventory/reservations/R1/release /api/inventory/qc-hold/receipts /api/inventory/qc-hold/releases /api/inventory/qc-hold/scraps; do
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST "$base$_p")" = 404 ] || fail "网关应拒绝 $_p（无令牌 404）"
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST -H "$auth" "$base$_p")" = 404 ] || fail "网关应拒绝 $_p（管理员令牌 404）"
+  curl -s -m 5 -X POST -H "$auth" "$base$_p" | jq -e '.type=="gateway-not-found" and .status==404' >/dev/null || fail "$_p 的 404 应为 gateway-not-found problem+json"
+done
+# 点段绕过：--path-as-is 让 curl 原样发送，网关必须 404，不能让下游规范化成内部路径。
+for _p in /api/inventory/x/../qc-hold/receipts /api/inventory/./qc-hold/receipts /api/inventory/x/%2e%2e/qc-hold/receipts /api/inventory/x/..\;/qc-hold/receipts; do
+  [ "$(curl -s --path-as-is -o /dev/null -w '%{http_code}' -m 5 -X POST -H "$auth" "$base$_p")" = 404 ] || fail "网关应拒绝点段路径 $_p（404）"
+done
 
 # 服务身份（OAuth2 client_credentials）：经网关用工单客户端密钥换取服务令牌，解码 JWT 载荷断言 scope/aud/有效期；
 # 错误密钥必须返回 401 invalid_client。明文密钥取自环境变量或 .env 的 WORKORDER_CLIENT_SECRET。
@@ -242,6 +252,19 @@ printf '%s\n' "$qm" | grep -Eq '^mes_quality_event_consumed_total\{[^}]*result="
   || fail "缺少 mes_quality_event_consumed_total{result=\"invalid\"} 0"
 printf '%s\n' "$qm" | grep -Eq '^mes_quality_pending_reversal_expired_total(\{[^}]*\})? 0(\.0)?$' || fail "缺少 mes_quality_pending_reversal_expired_total 0"
 echo "PASS: 质检告警计数器已以 0 预注册（内网 18086）"
+
+# 服务自身的 403（绕过网关，经 compose 内网直连设备服务）：op01 无 config:read，
+# 必须返回 problem+json（type=access-denied，非网关的 gateway-access-denied），且无旧 code 字段、instance 不含查询串。
+# 复用 inv_call 的一次性 curl 容器与网络探测，但需要响应头里的 Content-Type，因此单独调用 curl。
+_dnet=$(inv_network) || fail "未找到 compose 网络"
+dr=$(docker run --rm --network "$_dnet" "$SMOKE_CURL_IMAGE" -sS -m 10 -H "Authorization: Bearer $op" \
+  -w '\n%{content_type}\n%{http_code}' "http://device:8081/devices/config?probe=1") || fail "直连设备服务失败"
+dcode=$(printf '%s' "$dr" | tail -n1); dct=$(printf '%s' "$dr" | tail -n2 | sed -n 1p); dbody=$(printf '%s' "$dr" | sed '$d' | sed '$d')
+[ "$dcode" = 403 ] || fail "直连设备服务 op01 读配置应返回 403，实际 $dcode"
+case "$dct" in application/problem+json*) ;; *) fail "直连服务 403 的 Content-Type 应为 application/problem+json，实际 $dct" ;; esac
+printf '%s' "$dbody" | jq -e '.type=="access-denied" and .status==403 and (.title|length>0) and (.detail|length>0) and .instance=="/devices/config" and (has("code")|not)' >/dev/null \
+  || fail "直连服务 403 响应体不符合 problem+json 约定：$dbody"
+echo "PASS: 服务自身 403 为 problem+json（直连 device:8081，type=access-denied）"
 
 # RocketMQ 收发回环：用 Broker 镜像自带的 mqadmin 发一条带唯一标记的消息，再以新消费组拉回，确认 NameServer→Broker→消费链路可用。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。SKIP_MQ_SMOKE=1 可跳过（如未启动 app profile）。

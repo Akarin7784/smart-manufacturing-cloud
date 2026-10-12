@@ -93,19 +93,22 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 
 ## 错误及生命周期
 
-- 未登录、篡改、过期、签发者或受众错误：401，`type=gateway-authentication-required`（带 `WWW-Authenticate: Bearer`）。
-- 身份有效但权限不足：403，`type=gateway-access-denied`。
+- 未登录、篡改、过期、签发者或受众错误：401，经网关为 `type=gateway-authentication-required`，直连服务为 `authentication-required`（均带 `WWW-Authenticate: Bearer`）。
+- 身份有效但权限不足：403，经网关为 `type=gateway-access-denied`，直连服务为 `access-denied`。
 
 ### 网关错误格式（RFC 9457）
 
 网关自身产生的错误一律返回 `Content-Type: application/problem+json`，字段固定为 `type`、`title`、`status`、`detail`、`instance`，不再有旧的 `{code,message}` 结构：
 
-| 状态 | type | 触发条件 |
-| --- | --- | --- |
-| 401 | `gateway-authentication-required` | 无令牌或令牌校验失败 |
-| 403 | `gateway-access-denied` | 缺少接口权限，或接口不对网关开放（如库存预留） |
-| 429 | `gateway-rate-limited` | 命中 Sentinel 网关限流规则 |
-| 503 | `gateway-service-unavailable` | 路由的下游服务没有可用实例或无法连接 |
+| 状态 | type | title（固定中文） | 触发条件 |
+| --- | --- | --- | --- |
+| 401 | `gateway-authentication-required` | 需要认证 | 无令牌或令牌校验失败 |
+| 403 | `gateway-access-denied` | 没有访问权限 | 缺少接口权限 |
+| 404 | `gateway-not-found` | 资源不存在 | 命中服务间内部路径清单（预留、QC-HOLD），或路径含点段、反斜杠、双重编码；不论有无令牌 |
+| 429 | `gateway-rate-limited` | 请求过于频繁 | 命中 Sentinel 网关限流规则 |
+| 503 | `gateway-service-unavailable` | 下游服务不可用 | 路由的下游服务没有可用实例或无法连接 |
+
+每个 `type` 对应唯一固定的中文 `title`，调用方可直接展示；`GatewayProblemJsonTest` 按本表断言，修改时两处同步。
 
 `type` 与各业务服务一样采用相对引用，`gateway-` 前缀表示由网关拦截；`instance` 为请求路径（不含查询串）。示例：
 
@@ -114,6 +117,20 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 ```
 
 请求通过网关后，由业务服务返回的错误保持各服务契约（见 `docs/api/*-openapi.yaml`）。
+
+### 服务自身的 401/403（RFC 9457）
+
+绕过网关直连服务（服务间调用、内网排障）时，401/403 由服务自己返回，同样是 `application/problem+json`，五个字段 `type`、`title`、`status`、`detail`、`instance`，无 `code` 字段：
+
+| 来源 | 401 type | 403 type |
+| --- | --- | --- |
+| auth-service、cloud-common 共用安全配置（device、workorder、masterdata） | `authentication-required` | `access-denied` |
+| inventory-service、quality-service（各自的安全链，见对应 OpenAPI） | `about:blank` | `about:blank` |
+
+- 401 附带 `WWW-Authenticate: Bearer`；`instance` 为请求路径，不含查询串。
+- 方法级权限拒绝（`@PreAuthorize`）与过滤链拒绝格式相同，由 cloud-common 的 `ApiExceptionHandler` 输出。
+- 示例：`{"type":"access-denied","title":"没有访问权限","status":403,"detail":"当前身份缺少访问该接口所需的权限","instance":"/devices/config"}`
+- 冒烟脚本经 compose 内网直连 `device:8081/devices/config`（op01 无 `config:read`）断言该格式。
 - 账号不存在、密码错误、禁用或锁定：统一 401 / INVALID_CREDENTIALS。
 - 同一账号连续五次错误密码后锁定十五分钟；成功登录或管理员状态更新清除失败计数。
 - 默认访问令牌有效期十五分钟，时间校验允许 Spring Security 默认的六十秒时钟偏差。
@@ -148,7 +165,7 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 
 - 每个客户端一把独立密钥、scope 互不包含：认证服务拒绝跨客户端申请对方 scope（`invalid_scope`）；库存服务按路径校验 scope（`/inventory/qc-hold/**` 的过滤链由库存实现 PR 落地）。
 - 认证服务只保存 BCrypt（cost 10）散列；cloud profile 下任一散列缺失即启动失败，compose 用 `${VAR:?}` 提前报错。明文与散列都不进入仓库或 Nacos。
-- 这两类接口都是内部接口，调用方经 Nacos 服务发现直连库存服务；网关已拒绝 `/api/inventory/reservations/**`，`/api/inventory/qc-hold/**` 的拒绝规则随库存实现 PR 落地。
+- 这两类接口都是内部接口，调用方经 Nacos 服务发现直连库存服务；网关按 `manufacturing.gateway.internal-paths` 清单（`/api/inventory/reservations/**`、`/api/inventory/qc-hold/**`）在认证之前一律返回 404 problem+json（`type=gateway-not-found`，`InternalPathDenyFilter`；无令牌、任意令牌结果相同，不暴露接口存在；路径先解码、去矩阵参数、合并斜杠再匹配）。另外，任何含 `.`/`..` 点段（含 `%2e`、`.%2e`、`..;/` 变体）、反斜杠或双重编码（路径只解码一次，解码后仍含 `%`，如 `%252e`）的请求，在整个网关一律返回 404 `gateway-not-found`，防止下游规范化后绕过清单。
 - 服务令牌不含 `permissions`；`inventory:*` 服务 scope 不属于任何用户角色，不出现在 `Role` 枚举与 `contracts/auth/role-permissions.json` 中（`RolePermissionContractTest` 反向断言）。
 - **已有 `.env` 升级**：重新运行 `scripts/init-env.sh`（或 `init-env.ps1`；`make demo` 会自动执行），只补齐缺失的 `QUALITY_CLIENT_SECRET` 与散列，已有值不变。轮换：删除 `.env` 中对应的两行后重新运行 init-env，并重启 auth 与对应调用方。
 
