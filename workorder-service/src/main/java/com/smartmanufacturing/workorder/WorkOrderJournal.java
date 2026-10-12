@@ -29,7 +29,8 @@ class WorkOrderJournal {
         "WorkOrderReleased", "workorder-released",
         "WorkOrderHeld", "workorder-held",
         "WorkOrderResumed", "workorder-resumed",
-        "WorkOrderHoldReasonCleared", "workorder-hold-reason-cleared");
+        "WorkOrderHoldReasonCleared", "workorder-hold-reason-cleared",
+        "WorkOrderCancelled", "workorder-cancelled");
 
     /** 追加一条状态转换审计；requestId 取自当前请求的关联标识，便于与网关日志对照。 */
     void statusChanged(String orderId, String from, String to, String reason, String note, String operator) {
@@ -60,7 +61,7 @@ class WorkOrderJournal {
     }
 
     /**
-     * 写入生命周期事件（下达 / 冻结 / 恢复 / 解除冻结原因），投递到 workorder-event Topic，Tag 取自 Nacos。
+     * 写入生命周期事件（下达 / 冻结 / 恢复 / 解除冻结原因 / 取消），投递到 workorder-event Topic，Tag 取自 Nacos。
      * payload 统一包含 eventId、orderId（兼容 V2）、workOrderNo、aggregateVersion（工单行当前版本，须在状态更新之后调用）。返回事件号。
      */
     String event(String orderId, String type, Map<String, Object> payload) {

@@ -53,9 +53,10 @@ public class LocalMaterialReservation implements MaterialReservationPort {
         });
     }
     @Override public Instant renew(String key, String reservationId) { calls.add("renew:" + key); return clock.instant().plus(TTL); }
-    @Override public void release(String key, String reservationId) {
+    @Override public String release(String key, String reservationId, ReleaseReason reason) {
         calls.add("release:" + key);
         if (releaseFails) throw new IllegalStateException("模拟：库存释放失败");
+        return "RELEASED";
     }
 
     /** 模拟库存 409：传 null 恢复正常。 */
