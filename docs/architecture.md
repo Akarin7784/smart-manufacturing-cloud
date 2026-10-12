@@ -33,15 +33,13 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 
 配置中心保存规则 JSON，客户端订阅生效。原版控制台推送规则不会自动写入 Nacos，需改造控制台规则仓库或以 Nacos 配置发布作为规则管理入口。先在测试环境验证规则资源名称与 QPS，再启用生产规则。
 
-## RocketMQ 扩展
+## RocketMQ 已实现
 
-建议工单模块采用本地事务写入工单与 outbox 事件，再异步发布 WorkOrderCreated。消息包含 eventId / orderId；消费者按 eventId 幂等，重试与死信队列可观测。不要简单地“写库后发消息”并把两个动作宣称为原子操作。
-
-按官方兼容表，本版本对应 RocketMQ 5.3.1。接入时核对 Spring Cloud Stream RocketMQ 或 RocketMQ Spring 的兼容版本，部署 NameServer / Broker，明确 ACL、Topic、Consumer Group、超时和失败策略。当前工程未引入消息客户端、Broker 或事件发布，避免把未使用的组件作为启动依赖。
+工单与 Outbox 同事务写入，后台按租约发送、退避重试，消费者在独立事件库中将幂等标记和业务投影同事务提交。使用 Alibaba BOM 管理的官方 RocketMQ 5.3.1 客户端；详细配置、死信边界及开发部署见 rocketmq.md。
 
 ## Seata 扩展
 
-当前业务只有工单库写入，本地单语句事务已足够。若后续一个同步流程需要跨服务扣库存、扣账户等，可引入本版本对应的 Seata 2.5.0。
+当前业务只有工单库写入，本地事务已足够（工单和 Outbox 同库）。若后续一个同步流程需要跨服务扣库存、扣账户等，可引入本版本对应的 Seata 2.5.0。
 
 接入必须一起实现：服务端事务存储、注册配置、业务 undo_log、数据源代理、事务组映射以及全局事务入口；否则只加 @GlobalTransactional 并不能保证跨服务原子性。先比较 AT / TCC / Saga 与业务补偿需求，再决定方案。资源占用操作还需幂等键，读设备状态不能替代资源预留。
 

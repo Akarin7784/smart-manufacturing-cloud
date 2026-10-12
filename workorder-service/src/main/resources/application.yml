@@ -36,3 +36,16 @@ manufacturing:
     issuer: ${AUTH_ISSUER:http://localhost:8080}
     audience: ${AUTH_AUDIENCE:manufacturing-api}
     jwk-set-uri: ${AUTH_JWK_SET_URI:http://localhost:8083/auth/jwks}
+
+# 默认不开启连接；本地事务仍保存事件，开启 MQ 后可补发积压。
+messaging.rocketmq:
+  enabled: ${ROCKETMQ_ENABLED:false}
+  name-server: ${ROCKETMQ_NAMESERVER:localhost:9876}
+  topic: ${ROCKETMQ_TOPIC:manufacturing-workorders}
+  producer-group: ${ROCKETMQ_PRODUCER_GROUP:manufacturing-workorder-producer}
+  send-timeout-ms: 3000
+  poll-interval-ms: 2000
+  batch-size: 10
+  max-attempts: 8
+  lease-seconds: 60
+  retry-base-seconds: 2

@@ -1,0 +1,15 @@
+# 本机事件数据保存于独立 H2 文件，不依赖 Nacos 与 MySQL。
+spring:
+  cloud:
+    nacos:
+      discovery.enabled: false
+      config:
+        enabled: false
+        import-check.enabled: false
+    sentinel.enabled: false
+  datasource:
+    url: jdbc:h2:file:./data/event-service;MODE=MySQL;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql.init.mode: always

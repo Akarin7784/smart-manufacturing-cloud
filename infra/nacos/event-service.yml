@@ -1,0 +1,3 @@
+# 事件服务独立消费组；更改消费组可能导致历史消息重新投递。
+messaging.rocketmq:
+  consumer-group: manufacturing-workorder-events

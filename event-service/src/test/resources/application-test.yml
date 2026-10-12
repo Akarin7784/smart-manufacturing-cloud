@@ -1,0 +1,16 @@
+# 消费处理测试使用 H2 和模拟安全身份，不连接 Broker。
+spring:
+  cloud:
+    nacos:
+      discovery.enabled: false
+      config:
+        enabled: false
+        import-check.enabled: false
+    sentinel.enabled: false
+  datasource:
+    url: jdbc:h2:mem:event-tests;MODE=MySQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql.init.mode: always
+messaging.rocketmq.enabled: false

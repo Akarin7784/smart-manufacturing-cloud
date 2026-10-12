@@ -7,7 +7,7 @@ try {
     $runtime = Join-Path $root '.runtime'
     New-Item -ItemType Directory -Force $runtime | Out-Null
     & (Join-Path $PSScriptRoot 'init-auth.ps1')
-    $modules = @('auth-service','device-service','workorder-service','cloud-gateway')
+    $modules = @('auth-service','device-service','workorder-service','event-service','cloud-gateway')
     foreach ($module in $modules) {
         $pidFile = Join-Path $runtime "$module.pid"
         if (Test-Path -LiteralPath $pidFile) {
@@ -25,7 +25,7 @@ try {
         # 运行目录使用 JAR 副本，避免 Windows 占用 target 文件导致后续 Maven 打包失败。
         $runJar = Join-Path $runtime "$module-1.0.0-SNAPSHOT.jar"
         Copy-Item -LiteralPath $jar -Destination $runJar -Force
-        $arguments = "-jar `"$runJar`" --spring.profiles.active=$Profile"
+        $arguments = "-Xms64m -Xmx256m -jar `"$runJar`" --spring.profiles.active=$Profile"
         $process = Start-Process -FilePath 'java' -ArgumentList $arguments -WorkingDirectory $root -WindowStyle Hidden -PassThru -RedirectStandardOutput "$runtime/$module.out.log" -RedirectStandardError "$runtime/$module.err.log"
         Set-Content -LiteralPath "$runtime/$module.pid" -Value $process.Id
     }

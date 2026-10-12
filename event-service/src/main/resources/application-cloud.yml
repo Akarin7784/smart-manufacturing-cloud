@@ -1,0 +1,25 @@
+# Alibaba 环境使用独立事件库；消息开关由环境设置，敏感配置不进入事件负载。
+spring:
+  config:
+    import:
+      - "optional:nacos:common.yml?group=MANUFACTURING&refreshEnabled=true"
+      - "optional:nacos:event-service.yml?group=MANUFACTURING&refreshEnabled=true"
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: MANUFACTURING
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+      config:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: MANUFACTURING
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/manufacturing_event?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: ${MYSQL_USERNAME:event_app}
+    password: ${MYSQL_PASSWORD:local-demo-password}
+  sql.init.mode: always

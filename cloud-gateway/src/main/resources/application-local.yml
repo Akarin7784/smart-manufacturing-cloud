@@ -14,6 +14,12 @@ spring:
       server:
         webflux:
           routes:
+            - id: event-service
+              uri: ${EVENT_SERVICE_URL:http://localhost:8084}
+              predicates:
+                - Path=/api/events/workorders
+              filters:
+                - StripPrefix=1
             - id: auth-service
               uri: ${AUTH_SERVICE_URL:http://localhost:8083}
               predicates:

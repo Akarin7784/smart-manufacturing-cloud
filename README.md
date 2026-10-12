@@ -163,7 +163,7 @@ Sentinel 控制台展示 cloud 服务；先请求接口产生资源。可为网�
 
 ## 5. 测试与后续开发
 
-GitHub Actions 在每次推送、PR 和手动触发时执行 Linux / Windows 的 Java 21 全模块构建与测试，并保留测试报告和四个可执行服务 JAR。配置见 [.github/workflows/build.yml](.github/workflows/build.yml)。
+GitHub Actions 在每次推送、PR 和手动触发时执行 Linux / Windows 的 Java 21 全模块构建与测试，并保留测试报告和五个可执行服务 JAR。配置见 [.github/workflows/build.yml](.github/workflows/build.yml)。
 
 ```powershell
 .\mvnw.cmd -B -ntp verify
@@ -175,7 +175,7 @@ GitHub Actions 在每次推送、PR 和手动触发时执行 Linux / Windows 的
 
 ## 使用边界
 
-Compose 使用仅限本机的端口绑定，Nacos 关闭鉴权、MySQL 使用开发密码，业务 API 已实现账号认证和角色权限控制。上线前补充企业身份接入（按需）、租户/数据权限、TLS、密钥轮换、数据库迁移、监控告警、备份以及 Nacos 高可用。详情见 docs/architecture.md。RocketMQ 与 Seata 在扩展说明中给出设计接入位置，当前没有启用这两个组件。
+Compose 使用仅限本机的端口绑定，Nacos 关闭鉴权、MySQL 使用开发密码，业务 API 已实现账号认证和角色权限控制。上线前补充企业身份接入（按需）、租户/数据权限、TLS、密钥轮换、数据库迁移、监控告警、备份以及 Nacos 高可用。详情见 docs/architecture.md。RocketMQ 已接入工单事件链路，按需启用；Seata 尚未启用。
 
 ## 认证授权
 
@@ -186,3 +186,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\security-smoke-test.ps1
 ```
 
 该脚本验证管理员、操作员和查看者的权限边界，拒绝伪造角色请求头与篡改签名。测试创建的账号会被禁用，示例工单保留。
+
+## RocketMQ
+
+工单与 Outbox 在本地事务中提交，后台可靠发送；event-service 在独立数据库中幂等消费。默认关闭 MQ，启用方式、查询接口和重试操作见 [docs/rocketmq.md](docs/rocketmq.md)。
+
+新增 cloud-messaging 共享组件与 event-service（端口 8084），事件查询路径为 /api/events/workorders。

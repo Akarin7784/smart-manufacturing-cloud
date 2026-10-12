@@ -4,6 +4,8 @@ WORKDIR /build
 COPY pom.xml ./
 COPY cloud-api cloud-api
 COPY cloud-security cloud-security
+COPY cloud-messaging cloud-messaging
+COPY event-service event-service
 COPY auth-service auth-service
 COPY cloud-common cloud-common
 COPY cloud-gateway cloud-gateway
