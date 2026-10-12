@@ -2,6 +2,8 @@
 FROM maven:3.9.9-eclipse-temurin-21 AS build
 WORKDIR /build
 COPY pom.xml ./
+# 根 pom 声明了 coverage-report 汇总模块，仅需其 pom 让 reactor 能解析；-pl 构建时不会编译它。
+COPY coverage-report/pom.xml coverage-report/pom.xml
 COPY cloud-api cloud-api
 COPY cloud-security cloud-security
 COPY auth-service auth-service

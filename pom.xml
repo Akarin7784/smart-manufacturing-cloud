@@ -4,8 +4,14 @@
   <parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.5.0</version><relativePath/></parent>
   <groupId>com.smartmanufacturing</groupId><artifactId>manufacturing-cloud</artifactId><version>1.0.0-SNAPSHOT</version><packaging>pom</packaging>
   <name>Smart Manufacturing Cloud</name>
-  <modules><module>cloud-common</module><module>cloud-api</module><module>cloud-security</module><module>auth-service</module><module>cloud-gateway</module><module>device-service</module><module>workorder-service</module><module>masterdata-service</module></modules>
-  <properties><java.version>21</java.version><spring-cloud.version>2025.0.0</spring-cloud.version><spring-cloud-alibaba.version>2025.0.0.0</spring-cloud-alibaba.version></properties>
+  <modules><module>cloud-common</module><module>cloud-api</module><module>cloud-security</module><module>auth-service</module><module>cloud-gateway</module><module>device-service</module><module>workorder-service</module><module>masterdata-service</module><module>coverage-report</module></modules>
+  <properties><java.version>21</java.version><spring-cloud.version>2025.0.0</spring-cloud.version><spring-cloud-alibaba.version>2025.0.0.0</spring-cloud-alibaba.version>
+    <!-- JaCoCo 版本及覆盖率门禁阈值；当前阶段只报告不阻断构建（haltOnFailure=false），待各模块补齐测试后改为阻断。 -->
+    <jacoco.version>0.8.12</jacoco.version>
+    <jacoco.line.minimum>0.70</jacoco.line.minimum>
+    <jacoco.branch.minimum>0.60</jacoco.branch.minimum>
+    <jacoco.haltOnFailure>false</jacoco.haltOnFailure>
+  </properties>
   <dependencyManagement><dependencies>
     <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-dependencies</artifactId><version>${spring-cloud.version}</version><type>pom</type><scope>import</scope></dependency>
     <dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-alibaba-dependencies</artifactId><version>${spring-cloud-alibaba.version}</version><type>pom</type><scope>import</scope></dependency>
@@ -13,4 +19,40 @@
     <dependency><groupId>com.smartmanufacturing</groupId><artifactId>cloud-api</artifactId><version>${project.version}</version></dependency>
     <dependency><groupId>com.smartmanufacturing</groupId><artifactId>cloud-security</artifactId><version>${project.version}</version></dependency>
   </dependencies></dependencyManagement>
+  <!-- 测试分层：surefire 只跑 *Test（单测/切片/H2 测试），failsafe 只跑 *IT（Testcontainers 真实中间件）；
+       Windows CI 通过 -DskipITs 跳过依赖 Linux 容器的集成测试。 -->
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId>
+        <configuration><includes><include>**/*Test.java</include></includes><excludes><exclude>**/*IT.java</exclude></excludes></configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-failsafe-plugin</artifactId>
+        <configuration><includes><include>**/*IT.java</include></includes></configuration>
+        <executions><execution><goals><goal>integration-test</goal><goal>verify</goal></goals></execution></executions>
+      </plugin>
+      <!-- JaCoCo：prepare-agent 写入 argLine，单测与集成测试共用同一个 jacoco.exec（追加模式）；
+           report 与 check 绑定在 verify 阶段，确保统计包含 failsafe 的 *IT。 -->
+      <plugin>
+        <groupId>org.jacoco</groupId><artifactId>jacoco-maven-plugin</artifactId><version>${jacoco.version}</version>
+        <executions>
+          <execution><id>prepare-agent</id><goals><goal>prepare-agent</goal></goals></execution>
+          <execution><id>report</id><phase>verify</phase><goals><goal>report</goal></goals></execution>
+          <execution>
+            <id>check</id><phase>verify</phase><goals><goal>check</goal></goals>
+            <configuration>
+              <haltOnFailure>${jacoco.haltOnFailure}</haltOnFailure>
+              <!-- 启动类只有 main 方法，不计入门禁统计。 -->
+              <excludes><exclude>**/*Application.class</exclude></excludes>
+              <rules><rule><element>BUNDLE</element><limits>
+                <limit><counter>LINE</counter><value>COVEREDRATIO</value><minimum>${jacoco.line.minimum}</minimum></limit>
+                <limit><counter>BRANCH</counter><value>COVEREDRATIO</value><minimum>${jacoco.branch.minimum}</minimum></limit>
+              </limits></rule></rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
 </project>
