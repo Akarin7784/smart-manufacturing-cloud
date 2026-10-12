@@ -203,6 +203,8 @@ services:
         condition: service_healthy
       masterdata:
         condition: service_healthy
+      inventory:
+        condition: service_healthy
   device:
     profiles: ["app"]
     build:
@@ -268,6 +270,35 @@ services:
       nacos-config-init:
         condition: service_completed_successfully
       db-init:
+        condition: service_completed_successfully
+  # 库存服务：库位/批次/现存量/出入库与物料预留；叠加 demo profile 加载期初库存（脚本幂等）。
+  # 堆上限 -Xmx256m 由模块的 jvm.options 注入（见 Dockerfile），共享机器内存只有 15G。
+  inventory:
+    profiles: ["app"]
+    build:
+      context: .
+      args:
+        MODULE: inventory-service
+    environment:
+      <<: *cloud-env
+      SPRING_PROFILES_ACTIVE: cloud,demo
+      AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
+      MYSQL_HOST: mysql
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
+    # 业务端口只绑定 127.0.0.1：预留接口只认服务令牌（aud=inventory-service），网关按 aud=manufacturing-api 校验会拒绝，
+    # 冒烟脚本因此在本机直连 8085，模拟工单服务经 Nacos 直连库存服务的真实链路。管理端口 18085 不发布到宿主机。
+    ports:
+      - "127.0.0.1:8085:8085"
+    healthcheck:
+      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:18085/actuator/health/readiness"]
+      <<: *probe-timing
+    depends_on:
+      nacos-config-init:
+        condition: service_completed_successfully
+      db-init:
+        condition: service_completed_successfully
+      # 库存服务经 outbox 投递 Reservation* 事件，需等 Topic 创建完成。
+      rocketmq-init:
         condition: service_completed_successfully
   # ===== 可选监控（monitoring profile）=====
   # 默认的 app profile 不启动它们：整套 demo 已占约 4.6G 内存。按需启动：

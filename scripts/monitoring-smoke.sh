@@ -13,7 +13,7 @@ prom=${PROMETHEUS_URL:-http://localhost:9090}
 grafana=${GRAFANA_URL:-http://localhost:3000}
 gateway=${BASE_URL:-http://localhost:8080}
 # 与 infra/observability/prometheus/prometheus.yml 中的静态目标保持一致。
-expected=${EXPECTED_TARGETS:-5}
+expected=${EXPECTED_TARGETS:-6}
 timeout=${MONITORING_WAIT_SECONDS:-120}
 
 fail() { echo "FAIL: $*" >&2; exit 1; }

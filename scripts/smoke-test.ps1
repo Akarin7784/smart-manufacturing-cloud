@@ -74,6 +74,48 @@ $wrong = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('wo
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/auth/oauth2/token" -Method Post -Headers @{ Authorization = $wrong } `
     -ContentType 'application/x-www-form-urlencoded' -Body 'grant_type=client_credentials' -TimeoutSec 10 } 401
 Write-Host 'PASS: service identity (client_credentials scope/aud, wrong secret 401).'
+# 库存预留（服务令牌直连库存服务，模拟工单服务经 Nacos 直连；网关不放行预留接口）：
+# 预留 → 断言可用量减少 → 释放（reason=CALLER_REQUEST）→ 断言可用量回到预留前；释放放在 finally 中，后续断言失败也会执行，冒烟可重复运行。
+# 幂等键每次运行新生成（含运行 id），预留与释放各用各的，绝不复用。
+# 若 finally 未能执行（进程被强杀等），预留在 15 分钟后由过期任务（inventory.reservation.ttl=PT15M）自动回收。
+# 物料取 GR-60 BOM 中的 RM-20CRMNTI-D30（20CrMnTi 圆钢，演示期初 16 kg，期初数据随 #18 加入），预留 1 kg，单位用主数据编码 "kg"。
+$InventoryUrl = if ($env:INVENTORY_URL) { $env:INVENTORY_URL } else { 'http://localhost:8085' }
+$svcHeaders = @{ Authorization = "Bearer $($cc.access_token)" }
+$runId = [guid]::NewGuid().ToString('N')
+# TODO(#18 合入后删除)：预留接口与该物料期初库存由 #18 提供；未合入时库存服务按用户令牌链拒绝服务令牌（401），此处跳过而不是失败。
+$probe = 0
+try { Invoke-RestMethod "$InventoryUrl/inventory/reservations/smoke-probe-$runId" -Headers $svcHeaders -TimeoutSec 10 | Out-Null }
+catch { if (-not $_.Exception.Response) { throw }; $probe = [int]$_.Exception.Response.StatusCode }
+if ($probe -eq 401) {
+    Write-Host 'SKIP: inventory reservation API not available yet (#18 not merged).'
+} else {
+    $availUrl = "$BaseUrl/api/inventory/stock/availability?materialCode=RM-20CRMNTI-D30"
+    $before = [decimal](Invoke-RestMethod $availUrl -Headers $headers -TimeoutSec 5).available
+    $reserveBody = @{ workOrderNo = "SMOKE-$runId"; lines = @(@{ materialCode = 'RM-20CRMNTI-D30'; qty = '1'; uom = 'kg'; sourceLineId = 'smoke-1' }) } | ConvertTo-Json -Depth 4 -Compress
+    # 显式按 UTF-8 编码请求体，避免 Windows PowerShell 5.1 按本地代码页编码非 ASCII 字符。
+    $reservation = Invoke-RestMethod "$InventoryUrl/inventory/reservations" -Method Post -Headers ($svcHeaders + @{'Idempotency-Key'="smoke-reserve-$runId"}) `
+        -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($reserveBody)) -TimeoutSec 10
+    if ($reservation.status -ne 'ACTIVE' -or -not $reservation.reservationId) { throw 'Reserve failed.' }
+    $released = $false
+    try {
+        $mid = [decimal](Invoke-RestMethod $availUrl -Headers $headers -TimeoutSec 5).available
+        if ($before - $mid -ne 1) { throw "Available qty should drop by 1 ($before -> $mid)." }
+        $rel = Invoke-RestMethod "$InventoryUrl/inventory/reservations/$($reservation.reservationId)/release" -Method Post `
+            -Headers ($svcHeaders + @{'Idempotency-Key'="smoke-release-$runId"}) -ContentType 'application/json' -Body '{"reason":"CALLER_REQUEST"}' -TimeoutSec 10
+        if ($rel.status -ne 'RELEASED') { throw 'Release failed.' }
+        $released = $true
+        $after = [decimal](Invoke-RestMethod $availUrl -Headers $headers -TimeoutSec 5).available
+        if ($after -ne $before) { throw "Available qty should be restored ($before -> $after)." }
+    } finally {
+        # 兜底释放：同一幂等键重放是安全的（已释放则原样返回首次响应）。
+        if (-not $released) {
+            try { Invoke-RestMethod "$InventoryUrl/inventory/reservations/$($reservation.reservationId)/release" -Method Post `
+                -Headers ($svcHeaders + @{'Idempotency-Key'="smoke-release-$runId"}) -ContentType 'application/json' -Body '{"reason":"CALLER_REQUEST"}' -TimeoutSec 10 | Out-Null }
+            catch { Write-Warning "Cleanup release failed: $($_.Exception.Message)" }
+        }
+    }
+    Write-Host 'PASS: inventory reserve/release (service token, available qty restored).'
+}
 # RocketMQ 收发回环（与 smoke-test.sh 对等）：在 broker 容器内用自带 mqadmin 发一条唯一标记消息，再以新消费组拉回比对。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。设置环境变量 SKIP_MQ_SMOKE=1 可跳过。
 if ($env:SKIP_MQ_SMOKE -ne '1') {
