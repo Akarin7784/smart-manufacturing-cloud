@@ -148,7 +148,7 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | `mes_quality_cleanup_deleted_total` | Counter | `table`（`consumed_event`/`defect_report_lock`） | 去重表与报工锁表按保留期（`quality.dedup.retention`，默认 30 天）清理的删除行数，两个 `table` 序列启动预注册为 0 |
 | `mes_quality_outbox_pending` | Gauge | — | 待投递的 outbox 事件数（自动匹配告警 `OutboxBacklog`） |
 | `mes_quality_ncr_open` | Gauge | — | 未关闭（OPEN/UNDER_REVIEW/DISPOSED）的 NCR 数 |
-| `mes_quality_writeback_total` | Counter | `result`（`ok`/`replay`/`retry`/`failed`/`cancelled`） | 库存回写任务（QC-HOLD 入隔离、放行、报废、作废扣回）每次执行的结果：`ok` 库存返回 201；`replay` 库存按原幂等键重放首次结果；`retry` 可重试错误（网络、5xx、429、401 刷新令牌后）进入退避；`failed` 不可重试错误或重试耗尽，任务置 `FAILED`；`cancelled` NCR 作废时入隔离任务尚未成功而取消。启动时 5 个 `result` 序列全部预注册为 0（告警由运维按 `failed` 增量添加）。**待实现**，见 docs/quality-inventory-writeback-design.md |
+| `mes_quality_writeback_total` | Counter | `result`（`ok`/`replay`/`retry`/`failed`/`cancelled`/`resolved_manually`） | 库存回写任务（QC-HOLD 入隔离、放行、报废、作废扣回）每次执行的结果：`ok` 库存返回 201；`replay` 库存按原幂等键重放首次结果；`retry` 可重试错误（网络、5xx、429、401 刷新令牌后）进入退避；`failed` 不可重试错误或重试耗尽，任务置 `FAILED`；`cancelled` 任务未执行即取消（NCR 作废时 HOLD 尚未尝试，或 HOLD 被明确拒绝/人工结案后其后的 VOID）；`resolved_manually` FAILED 任务经接口人工结案。启动时 6 个 `result` 序列全部预注册为 0（运维按 `failed` 增量加告警，按 `resolved_manually` 增量加 info 告警 `QualityWritebackResolvedManually` 与看板面板）。**待实现**，见 docs/quality-inventory-writeback-design.md |
 | `mes_quality_writeback_pending` | Gauge | — | `PENDING` 状态的库存回写任务数（含退避中），启动即为 0。**待实现** |
 
 告警已在 `alerts.yml` 落地（见第 3 节）：`QualityDisposedReversalConflict`（`disposed_reversal_conflict` 增量 > 0 即告警）、`QualityReversalOrphan`（`pending_reversal_expired_total` 增量 > 0）、`QualityInvalidEvent`（`result="invalid"` 增量 > 0）。

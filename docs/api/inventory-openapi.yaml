@@ -532,8 +532,11 @@ paths:
         '422':
           $ref: '#/components/responses/MovementUnprocessable'
 
-  /api/inventory/qc-hold/receipts:
+  /inventory/qc-hold/receipts:
     post:
+      servers:
+        - url: http://inventory-service:8085
+          description: 内部直连库存服务（质检服务经 Nacos 服务发现访问），不经网关；网关不转发 /api/inventory/qc-hold/**。
       tags: [qc-hold]
       operationId: qcHoldReceipts
       summary: 不良品入隔离库位 QC-HOLD
@@ -544,7 +547,7 @@ paths:
         - 流水 `txnType=QC_HOLD_IN`，`refType=NCR`，`refNo=ncrNo`，`operator` 为服务 client_id。
         - 必须携带 `Idempotency-Key`（作用域为 client_id），键格式见请求体说明；重放语义同预留接口。
         - 仅接受服务令牌：`aud=inventory-service` 且 scope 含 `inventory:qc-hold`；用户令牌或 scope 不足分别返回 401/403。
-        - 本接口为内部接口，质检服务经服务发现直连库存服务，网关不对外暴露 `/api/inventory/qc-hold/**`。
+        - **内部接口**：路径为库存服务自身的 `/inventory/qc-hold/**`（见本操作的 `servers`），质检服务经 Nacos 服务发现直连，不经网关；网关不转发 `/api/inventory/qc-hold/**`。
       x-planned: true
       security:
         - serviceClient: [inventory:qc-hold]
@@ -572,8 +575,11 @@ paths:
         '422':
           $ref: '#/components/responses/MovementUnprocessable'
 
-  /api/inventory/qc-hold/releases:
+  /inventory/qc-hold/releases:
     post:
+      servers:
+        - url: http://inventory-service:8085
+          description: 内部直连库存服务（质检服务经 Nacos 服务发现访问），不经网关；网关不转发 /api/inventory/qc-hold/**。
       tags: [qc-hold]
       operationId: qcHoldReleases
       summary: 隔离品放行出库（返工/让步接收/NCR 作废）
@@ -585,7 +591,7 @@ paths:
         - 流水 `txnType=QC_HOLD_RELEASE`，`refType=NCR`，`refNo=ncrNo`，`operator` 为服务 client_id。
         - 必须携带 `Idempotency-Key`（作用域为 client_id），键格式见请求体说明；重放语义同预留接口。
         - 仅接受服务令牌：`aud=inventory-service` 且 scope 含 `inventory:qc-hold`；用户令牌或 scope 不足分别返回 401/403。
-        - 本接口为内部接口，质检服务经服务发现直连库存服务，网关不对外暴露 `/api/inventory/qc-hold/**`。
+        - **内部接口**：路径为库存服务自身的 `/inventory/qc-hold/**`（见本操作的 `servers`），质检服务经 Nacos 服务发现直连，不经网关；网关不转发 `/api/inventory/qc-hold/**`。
       x-planned: true
       security:
         - serviceClient: [inventory:qc-hold]
@@ -619,8 +625,11 @@ paths:
         '422':
           $ref: '#/components/responses/MovementUnprocessable'
 
-  /api/inventory/qc-hold/scraps:
+  /inventory/qc-hold/scraps:
     post:
+      servers:
+        - url: http://inventory-service:8085
+          description: 内部直连库存服务（质检服务经 Nacos 服务发现访问），不经网关；网关不转发 /api/inventory/qc-hold/**。
       tags: [qc-hold]
       operationId: qcHoldScraps
       summary: 隔离品报废出库
@@ -630,7 +639,7 @@ paths:
         - 流水 `txnType=SCRAP`，`refType=NCR`，`refNo=ncrNo`，`operator` 为服务 client_id。
         - 必须携带 `Idempotency-Key`（作用域为 client_id），键格式见请求体说明；重放语义同预留接口。
         - 仅接受服务令牌：`aud=inventory-service` 且 scope 含 `inventory:qc-hold`；用户令牌或 scope 不足分别返回 401/403。
-        - 本接口为内部接口，质检服务经服务发现直连库存服务，网关不对外暴露 `/api/inventory/qc-hold/**`。
+        - **内部接口**：路径为库存服务自身的 `/inventory/qc-hold/**`（见本操作的 `servers`），质检服务经 Nacos 服务发现直连，不经网关；网关不转发 `/api/inventory/qc-hold/**`。
       x-planned: true
       security:
         - serviceClient: [inventory:qc-hold]
@@ -804,7 +813,18 @@ components:
             dispositionId:
               type: integer
               format: int64
-              description: 质检处置行 ID。
+              description: 质检处置行 ID。REWORK/CONCESSION 必填；NCR_VOIDED 禁止携带。违反返回 400（type=validation-error）。
+        # 按放行原因约束 dispositionId：处置放行必须关联处置行，作废扣回不得关联。
+        - if:
+            properties:
+              reason:
+                const: NCR_VOIDED
+            required: [reason]
+          then:
+            not:
+              required: [dispositionId]
+          else:
+            required: [dispositionId]
     QcHoldScrapRequest:
       description: 从 QC-HOLD 报废出库。
       unevaluatedProperties: false
@@ -890,7 +910,7 @@ components:
           description: 批次号。
         qty:
           $ref: '#/components/schemas/Quantity'
-        quarantined:
+        inQcHold:
           type: boolean
           description: 是否为隔离库存（库位为 QC-HOLD 时为 true）；隔离行的 qty 即隔离量。实现 PR 中加入 required。
           x-planned: true
