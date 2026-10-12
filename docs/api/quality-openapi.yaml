@@ -5,7 +5,7 @@
 openapi: 3.1.0
 info:
   title: 质检服务不良品处置接口（quality-service）
-  version: 1.0.0
+  version: 1.1.0
   contact:
     name: smart-manufacturing-cloud 维护者
     url: https://github.com/Akarin7784/smart-manufacturing-cloud
@@ -34,8 +34,15 @@ info:
       `DISPOSED_REVERSAL_CONFLICT` 冲突（见 `conflicts`）、计数并告警。该情况不对应任何 Problem type。
 
     ## 处置与库存
-    处置类型为 `REWORK`（返工）、`SCRAP`（报废）、`CONCESSION`（让步接收）。**本期所有处置（含 SCRAP）只登记记录，
-    不调用库存服务、不改动库存**；处置回写库存在下期契约中定义。
+    处置类型为 `REWORK`（返工）、`SCRAP`（报废）、`CONCESSION`（让步接收）。回写库存（设计见 docs/quality-inventory-writeback-design.md）：
+    - NCR 以 `OPEN` 建成时，不良数量记入库存隔离库位 `QC-HOLD`（幂等键 `qc:{ncrNo}:hold`）；报工前已冲销而直接 `VOIDED` 的 NCR 不入库。
+    - `SCRAP` 处置行 → 从 QC-HOLD 报废出库（`qc:{ncrNo}:disp:{dispositionId}:scrap`）；`REWORK` / `CONCESSION` → 放行出库，
+      原因分别为 `REWORK` / `CONCESSION`，不指定目标库位（`qc:{ncrNo}:disp:{dispositionId}:release`）。
+    - 已入 QC-HOLD 的 NCR 因冲销作废 → 以原因 `NCR_VOIDED` 扣回（`qc:{ncrNo}:void`）。
+    - 已入 QC-HOLD 判定：HOLD 尝试次数为 0 且不在执行中才直接取消；否则保留 HOLD 并追加 VOID，同一 NCR 串行执行。
+    - 回写经质检服务的任务表异步执行（与 NCR/处置同一事务写入），失败按退避重试；不可重试错误置 `FAILED`，可经接口人工重试（重试窗口内）或人工结案（`RESOLVED_MANUALLY`）。
+    - 关闭 NCR 时若仍有 `PENDING` 或 `FAILED` 的回写任务，返回 409（type=writeback-pending）；全部为 `DONE`、`CANCELLED`、`RESOLVED_MANUALLY` 才可关闭。
+    - 标记 `x-planned: true` 的接口、字段与错误类型为本契约新增、待实现部分，契约测试在实现 PR 前跳过它们。
 
     ## 认证
     - 用户令牌（受众 manufacturing-api），查询需 `quality:read`，写入需 `quality:write`；本期单人处置，无审批流。
@@ -46,7 +53,7 @@ info:
     - 同一作用域内相同键、相同请求：原样返回首次的状态码与响应体；相同键、不同请求体：422（type=idempotency-key-conflict）。
 
     ## 数量
-    所有数量为 `DECIMAL(18,6)` 的十进制字符串；处置的 `uom` 必须与 NCR 的 `uom` 一致，不做单位换算。
+    所有数量为 `DECIMAL(18,6)` 的十进制字符串，输出时去掉末尾的 0（`stripTrailingZeros().toPlainString()`，如 `"1"`、`"2.5"`）；处置的 `uom` 必须与 NCR 的 `uom` 一致，不做单位换算。
 
     ## 错误
     所有错误响应遵循 RFC 7807，媒体类型为 `application/problem+json`，业务错误的 `type` 取值见 `ProblemType`。
@@ -203,7 +210,7 @@ paths:
       summary: 关闭 NCR
       description: |
         `DISPOSED` → `CLOSED`。对已 `CLOSED` 的 NCR 重复调用返回 200；其他状态返回 409（type=invalid-status-transition），
-        已作废返回 409（type=ncr-voided）。需要 `quality:write`。
+        已作废返回 409（type=ncr-voided）；该 NCR 仍有 `PENDING` 或 `FAILED` 的库存回写任务时返回 409（type=writeback-pending；`DONE`/`CANCELLED`/`RESOLVED_MANUALLY` 不阻止关闭）。需要 `quality:write`。
       parameters:
         - $ref: '#/components/parameters/NcrNo'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -214,6 +221,120 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Ncr'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/StatusConflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+
+  /api/quality/ncrs/{ncrNo}/writebacks:
+    get:
+      tags: [ncr]
+      operationId: listWritebacks
+      summary: 查询 NCR 的库存回写任务
+      description: 按创建顺序返回该 NCR 的全部库存回写任务（入隔离、放行、报废、作废扣回），含状态、尝试次数与最近一次失败原因。需要 `quality:read`。
+      x-planned: true
+      parameters:
+        - $ref: '#/components/parameters/NcrNo'
+      responses:
+        '200':
+          description: 回写任务列表。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WritebackTask'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/quality/ncrs/{ncrNo}/writebacks/{writebackId}/retry:
+    post:
+      tags: [ncr]
+      operationId: retryWriteback
+      summary: 人工重试失败的回写任务
+      description: |
+        仅 `FAILED` 的任务可重试：置回 `PENDING`、尝试次数清零并立即排队，幂等键不变（库存端按原键去重）。
+        其他状态，或任务创建已超过重试窗口 `mes.quality.writeback.retry-window`（默认 P6D，必须小于库存幂等记录保留期 7 天，否则超期重放可能重复记账），返回 409（type=invalid-status-transition，复用既有类型，不新增）。任务不属于该 NCR 或不存在时返回 404（type=ncr-not-found）。
+        对已重置为 `PENDING` 的同一幂等键重放，原样返回首次响应。需要 `quality:write`。
+      x-planned: true
+      parameters:
+        - $ref: '#/components/parameters/NcrNo'
+        - name: writebackId
+          in: path
+          required: true
+          description: 回写任务 ID，取自查询接口的 `id`。
+          schema:
+            type: integer
+            format: int64
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 已重新排队，返回最新任务。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritebackTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/StatusConflict'
+        '422':
+          $ref: '#/components/responses/IdempotencyConflict'
+
+  /api/quality/ncrs/{ncrNo}/writebacks/{writebackId}/resolve:
+    post:
+      tags: [ncr]
+      operationId: resolveWriteback
+      summary: 人工结案失败的回写任务
+      description: |
+        人工核对库存后结案 `FAILED` 任务（例如确认库存未记账、或已线下处理）：置为终态 `RESOLVED_MANUALLY`，写审计记录（操作人取令牌 sub、原因、时间），
+        计入 `mes_quality_writeback_total{result="resolved_manually"}`。HOLD 被结案时，排在其后的 VOID 任务自动置 `CANCELLED`。
+        - 仅 `FAILED` 可结案，其他状态返回 409（type=invalid-status-transition）。
+        - `reason` 必填，为空或全空白返回 400（type=validation-error）。
+        - 必须携带 `Idempotency-Key`，规则同重试接口：相同键相同请求原样返回首次响应，相同键不同请求体返回 422（type=idempotency-key-conflict）。
+        - 任务不属于该 NCR 或不存在返回 404（type=ncr-not-found）。需要 `quality:write`。
+      x-planned: true
+      parameters:
+        - $ref: '#/components/parameters/NcrNo'
+        - name: writebackId
+          in: path
+          required: true
+          description: 回写任务 ID，取自查询接口的 `id`。
+          schema:
+            type: integer
+            format: int64
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveWritebackRequest'
+      responses:
+        '200':
+          description: 已结案，返回最新任务。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WritebackTask'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -354,7 +475,7 @@ components:
           schema:
             $ref: '#/components/schemas/NcrNotFoundProblem'
     StatusConflict:
-      description: 当前状态不允许该操作（type=invalid-status-transition）或 NCR 已作废（type=ncr-voided）。
+      description: 当前状态不允许该操作（type=invalid-status-transition）、NCR 已作废（type=ncr-voided）或仍有未完成的库存回写（type=writeback-pending，仅关闭接口）。
       content:
         application/problem+json:
           schema:
@@ -597,6 +718,79 @@ components:
           format: int64
           description: 总条数。
 
+    ResolveWritebackRequest:
+      type: object
+      description: 人工结案请求。
+      x-planned: true
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 512
+          pattern: '\S'
+          description: 结案原因（必填，不能为空白），写入审计记录。
+
+    WritebackTask:
+      type: object
+      description: 一条库存回写任务（质检 → 库存 QC-HOLD）。
+      x-planned: true
+      required: [id, ncrNo, action, idempotencyKey, qty, uom, status, attempts, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: 任务 ID。
+        ncrNo:
+          type: string
+          description: NCR 编号。
+        action:
+          type: string
+          enum: [HOLD, SCRAP, RELEASE, VOID]
+          description: HOLD 入隔离；SCRAP 报废出库；RELEASE 返工/让步放行出库；VOID 作废扣回。
+        reason:
+          type: [string, 'null']
+          enum: [REWORK, CONCESSION, NCR_VOIDED, null]
+          description: 放行原因；仅 RELEASE（REWORK/CONCESSION）与 VOID（NCR_VOIDED）有值。
+        dispositionId:
+          type: [integer, 'null']
+          format: int64
+          description: 对应处置行 ID；HOLD 与 VOID 为 null。
+        idempotencyKey:
+          type: string
+          description: 调用库存时使用的固定幂等键，如 `qc:NCR-20261012-0001:hold`。
+        qty:
+          $ref: '#/components/schemas/Quantity'
+        uom:
+          type: string
+          description: 计量单位。
+        status:
+          type: string
+          enum: [PENDING, DONE, FAILED, CANCELLED, RESOLVED_MANUALLY]
+          description: PENDING 待执行或退避中；DONE 已成功；FAILED 不可重试错误或重试耗尽；CANCELLED 因 NCR 作废而未执行；RESOLVED_MANUALLY 人工结案。DONE、CANCELLED、RESOLVED_MANUALLY 为终态。
+        attempts:
+          type: integer
+          description: 已尝试次数。
+        nextAttemptAt:
+          type: [string, 'null']
+          format: date-time
+          description: 下次尝试时间；非 PENDING 为 null。
+        lastError:
+          type: [string, 'null']
+          description: 最近一次失败原因（如库存返回的 problem type 与 detail，或网络错误摘要），最长 512 字符。
+        inventoryTxnId:
+          type: [integer, 'null']
+          format: int64
+          description: 成功后库存流水号。
+        createdAt:
+          type: string
+          format: date-time
+          description: 创建时间。
+        updatedAt:
+          type: string
+          format: date-time
+          description: 最近更新时间。
+
     ProblemType:
       type: string
       enum:
@@ -607,8 +801,10 @@ components:
         - invalid-status-transition
         - ncr-voided
         - ncr-not-found
+        - writeback-pending
+      x-planned: [writeback-pending]
       description: |
-        固定的错误类型枚举（共 7 种），调用方按此分支处理，不解析 `detail`。
+        固定的错误类型枚举（共 8 种；`x-planned` 中的类型待实现 PR 落地后纳入契约测试覆盖），调用方按此分支处理，不解析 `detail`。
         | type | HTTP 状态 | 含义 |
         | --- | --- | --- |
         | `validation-error` | 400 | 请求参数校验失败 |
@@ -617,7 +813,8 @@ components:
         | `over-dispose` | 422 | 处置数量超过剩余待处置量 |
         | `invalid-status-transition` | 409 | 当前状态不允许该操作 |
         | `ncr-voided` | 409 | NCR 已作废，不能再评审、处置或关闭 |
-        | `ncr-not-found` | 404 | 路径中的 NCR 编号不存在 |
+        | `ncr-not-found` | 404 | 路径中的 NCR 编号（或其下的回写任务）不存在 |
+        | `writeback-pending` | 409 | 关闭 NCR 时仍有 PENDING 或 FAILED 的库存回写任务 |
         401/403 由框架统一处理，type 为 `about:blank`。已处置 NCR 被冲销属于事件消费侧冲突，不对应任何 Problem type。
 
     Problem:
@@ -676,7 +873,7 @@ components:
           required: [type]
           properties:
             type:
-              enum: [invalid-status-transition, ncr-voided]
+              enum: [invalid-status-transition, ncr-voided, writeback-pending]
     DispositionUnprocessableProblem:
       description: 422 错误：超处置、单位不一致或幂等键冲突。
       allOf:
