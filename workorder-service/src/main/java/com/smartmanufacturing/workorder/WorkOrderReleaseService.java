@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import java.math.BigDecimal;
@@ -75,6 +76,9 @@ public class WorkOrderReleaseService {
      */
     public ReleaseResult release(String orderId, String key, String operator) {
         Order order = order(orderId);
+        // 已取消：同键重放仍返回首次下达结果（幂等契约），其他键返回 409 workorder-cancelled
+        if ("CANCELLED".equals(order.status()) && lifecycle(orderId).map(lc -> !lc.releaseKey().equals(key)).orElse(true))
+            throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单已取消，不能下达");
         Optional<ReleaseResult> replay = replay(orderId, key);
         if (replay.isPresent()) return replay.get();
         if (!"CREATED".equals(order.status()))
@@ -101,12 +105,12 @@ public class WorkOrderReleaseService {
             Optional<Lifecycle> winner = lifecycle(orderId);
             if (winner.isPresent() && winner.get().releaseKey().equals(key))
                 return new ReleaseResult(view(orderId), true); // 同键：与胜者共用预留，不释放
-            compensate(reservationKey, reservation.reservationId(), race);
+            compensate(orderId, reservation.reservationId(), race);
             // 没有胜者说明是其他唯一约束冲突（非下达竞争），按原始异常抛出，不误报为状态冲突。
             if (winner.isEmpty()) throw race;
             throw new BusinessException("WORK_ORDER_STATE_CONFLICT", "工单已被其他请求下达", HttpStatus.CONFLICT);
         } catch (RuntimeException e) {
-            compensate(reservationKey, reservation.reservationId(), e);
+            compensate(orderId, reservation.reservationId(), e);
             throw e;
         }
     }
@@ -146,7 +150,8 @@ public class WorkOrderReleaseService {
     static final int QTY_SCALE = 6;
 
     /**
-     * 叶子件按物料汇总为预留行（虚拟件已由主数据展开为其子件；非叶子的自制件不预留）。
+     * 叶子件按物料汇总为预留行（虚拟件已由主数据展开为其子件；非叶子的自制件不预留）：一物料一行，数量为各展开行之和；
+     * 同一物料单位不一致返回 422 uom-mismatch。
      * 数量统一为 scale 6；超过 6 位小数直接拒绝（RoundingMode.UNNECESSARY），不静默截断。
      */
     static List<ReservationLineView> requirements(List<BomExplosionLine> lines) {
@@ -155,7 +160,9 @@ public class WorkOrderReleaseService {
             if (!l.leaf()) continue;
             sum.merge(l.componentCode(), new ReservationLineView(null, l.componentCode(), scale6(l.requiredQty()), l.uom()), (a, b) -> {
                 if (!a.uom().equals(b.uom()))
-                    throw new BusinessException("RELEASE_MASTERDATA_INVALID", "物料 " + a.materialCode() + " 在 BOM 中单位不一致", HttpStatus.UNPROCESSABLE_ENTITY);
+                    // 同一物料按单位汇总无意义：按 uom-mismatch 拒绝（与库存契约一致，见 inventory-openapi.yaml CreateReservationRequest.lines）
+                    throw WorkOrderProblemType.UOM_MISMATCH.exception("物料 " + a.materialCode() + " 在 BOM 中计量单位不一致：" + a.uom() + " / " + b.uom(),
+                        Map.of("materialCode", a.materialCode(), "expectedUom", a.uom(), "requestedUom", b.uom()));
                 return new ReservationLineView(null, a.materialCode(), a.quantity().add(b.quantity()), a.uom());
             });
         }
@@ -199,11 +206,29 @@ public class WorkOrderReleaseService {
     }
 
     /**
-     * 补偿释放预留。释放失败不抛出、不覆盖原始异常（作为 suppressed 附加并记日志），由库存 TTL（15 分钟）回收。
+     * 补偿释放预留（reason=COMPENSATION）。不覆盖原始异常：失败作为 suppressed 附加并记日志。
+     * <p>不依赖库存 TTL 回收：释放失败时在短事务内写入释放任务，交由 {@link ReservationReleaseWorker} 重试
+     * （release_pending 计数可观测）。补偿调用与任务复用同一 Idempotency-Key（cancel-{工单号}-{预留单号}）
+     * 及同一 reason，库存侧保证至多释放一次：若补偿请求实际已生效但响应丢失，任务重放得到首次结果。
      */
-    private void compensate(String key, String reservationId, RuntimeException cause) {
-        try { materials.release(key, reservationId); }
-        catch (RuntimeException e) { cause.addSuppressed(e); LOG.warn("补偿释放预留失败，将由库存 TTL（15 分钟）回收：{}", reservationId, e); }
+    private void compensate(String orderId, String reservationId, RuntimeException cause) {
+        String key = WorkOrderCancellation.releaseKey(orderId, reservationId);
+        try { materials.release(key, reservationId, MaterialReservationPort.ReleaseReason.COMPENSATION); }
+        catch (RuntimeException e) {
+            cause.addSuppressed(e);
+            LOG.warn("补偿释放预留失败，已写入释放任务重试：{}", reservationId, e);
+            try {
+                tx.executeWithoutResult(s -> jdbc.update(
+                    "insert into wo_reservation_release_task (task_id, order_id, reservation_id, reason, idempotency_key, status, attempts, created_at)"
+                        + " select ?, ?, ?, ?, ?, 'PENDING', 0, ? from dual where not exists (select 1 from wo_reservation_release_task where idempotency_key = ?)",
+                    UUID.randomUUID().toString(), orderId, reservationId, MaterialReservationPort.ReleaseReason.COMPENSATION.name(),
+                    key, Timestamp.from(clock.instant()), key));
+            } catch (RuntimeException dbFailure) {
+                // 任务写入也失败时只能依赖库存 TTL 兜底；记录错误便于告警排查
+                cause.addSuppressed(dbFailure);
+                LOG.error("写入补偿释放任务失败，预留 {} 将依赖库存 TTL 回收", reservationId, dbFailure);
+            }
+        }
     }
 
     // ------------------------------------------------------------------ 冻结 / 恢复
@@ -219,6 +244,7 @@ public class WorkOrderReleaseService {
     /** 在调用方事务内冻结；版本冲突抛 VersionConflict 由外层回滚重试。返回是否产生了变更。 */
     private boolean holdInTx(String orderId, HoldReason reason, String note, String operator) {
         Order order = order(orderId);
+        if ("CANCELLED".equals(order.status())) throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单已取消，不能冻结");
         Lifecycle lc = requireLifecycle(orderId);
         boolean onHold = "ON_HOLD".equals(order.status());
         if (!onHold && !HOLDABLE.contains(order.status()))
@@ -239,6 +265,8 @@ public class WorkOrderReleaseService {
      */
     public WorkOrderReleaseView resume(String orderId, HoldReason reason, String note, String operator) {
         requireLifecycle(orderId);
+        // 取消时保留了冻结原因（见 WorkOrderCancellation），已取消的工单不允许恢复
+        if ("CANCELLED".equals(order(orderId).status())) throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单已取消，不能恢复");
         if (!reasons(orderId).contains(reason.name())) return view(orderId);
         MaterialReservationPort.Reservation renewed = null;
         String reservationKey = null;
@@ -262,12 +290,12 @@ public class WorkOrderReleaseService {
             if (reasons(orderId).contains(reason.name())) {
                 BusinessException conflict = new BusinessException("CONCURRENT_MODIFICATION", "恢复与其他操作冲突，请重试", HttpStatus.CONFLICT);
                 // 本次新预留未被任何本地记录引用，补偿释放
-                if (reservation != null) compensate(reservationKey, reservation.reservationId(), conflict);
+                if (reservation != null) compensate(orderId, reservation.reservationId(), conflict);
                 throw conflict;
             }
             LOG.debug("并发恢复：原因 {} 已由其他请求解除，工单 {}", reason, orderId);
         } catch (RuntimeException e) {
-            if (reservation != null) compensate(reservationKey, reservation.reservationId(), e);
+            if (reservation != null) compensate(orderId, reservation.reservationId(), e);
             throw e;
         }
         return view(orderId);
@@ -276,6 +304,7 @@ public class WorkOrderReleaseService {
     private void resumeInTx(String orderId, HoldReason reason, String note, String operator,
                             MaterialReservationPort.Reservation reservation, int seq) {
         Order order = order(orderId);
+        if ("CANCELLED".equals(order.status())) throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单已取消，不能恢复");
         Lifecycle lc = requireLifecycle(orderId);
         if (jdbc.update("delete from work_order_hold_reason where order_id = ? and reason = ?", orderId, reason.name()) == 0) return;
         boolean last = reasons(orderId).isEmpty();

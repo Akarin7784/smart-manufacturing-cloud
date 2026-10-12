@@ -42,6 +42,11 @@ public class ReservationRenewalJob {
             batches++;
             for (var c : batch) {
                 try { if (service.renew(c, slot)) renewed++; else failed++; }
+                catch (InventoryAuthException e) {
+                    // 401：令牌问题；403：本服务不是该预留的持有方（只有持有方可续约）。都需要人工排查，下一轮仍会重试
+                    failed++;
+                    LOG.error("【告警】预留 {} 续约被库存拒绝（HTTP {}），下一轮重试", c.reservationId(), e.httpStatus(), e);
+                }
                 catch (RuntimeException e) { failed++; LOG.warn("预留 {} 续约失败，下一轮重试", c.reservationId(), e); }
             }
             cursor = batch.get(batch.size() - 1).reservationId();

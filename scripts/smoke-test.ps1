@@ -42,13 +42,29 @@ $explosion = Invoke-RestMethod "$BaseUrl/api/boms/FG-GR60-20/explosion?date=2026
 $steel = ($explosion.data.lines | Where-Object componentCode -eq 'RM-20CRMNTI-D30' | Measure-Object -Property requiredQty -Sum).Sum
 if ([decimal]$steel -ne [decimal]10.5) { throw "Unexpected BOM explosion result: steel=$steel" }
 # 工单下达：GR-60 成品工单下达后冻结 BOM A01 / 工艺 R01，生成 8 道工序并持有 ACTIVE 物料预留；同键重放返回同一预留，换键返回 409。
+# 物料预留由真实库存服务提供（WORKORDER_MATERIAL_RESERVATION=inventory）：下达前后对比 20CrMnTi 圆钢可用量，证明预留落到库存。
+$grAvailUrl = "$BaseUrl/api/inventory/stock/availability?materialCode=RM-20CRMNTI-D30"
+$grBefore = [decimal](Invoke-RestMethod $grAvailUrl -Headers $headers -TimeoutSec 5).available
 $gr = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"FG-GR60-20","quantity":10}'
 $relKey = [guid]::NewGuid().ToString()
 $rel = Invoke-RestMethod "$BaseUrl/api/workorders/$($gr.data.id)/release" -Headers ($headers + @{'Idempotency-Key'=$relKey}) -Method Post -TimeoutSec 15
 if ($rel.data.status -ne 'RELEASED' -or $rel.data.bomVersion -ne 'A01' -or $rel.data.routingVersion -ne 'R01' -or $rel.data.operations.Count -ne 8 -or $rel.data.reservation.status -ne 'ACTIVE') { throw 'Work order release result unexpected.' }
 $relReplay = Invoke-RestMethod "$BaseUrl/api/workorders/$($gr.data.id)/release" -Headers ($headers + @{'Idempotency-Key'=$relKey}) -Method Post -TimeoutSec 15
 if ($relReplay.data.reservation.reservationId -ne $rel.data.reservation.reservationId) { throw 'Release replay returned a different reservation.' }
-Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders/$($gr.data.id)/release" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -TimeoutSec 15 } 409
+# 下达成功后进入 try：之后任何断言失败，finally 都会取消本工单（同一幂等键，可重放），由工单服务释放库存预留，冒烟可重复执行。
+$grId = $gr.data.id
+$grRid = $rel.data.reservation.reservationId
+$grCancelKey = "smoke-cancel-$([guid]::NewGuid().ToString('N'))"
+$grPending = $true
+function Invoke-GrCancel {
+    # 返回 Invoke-WebRequest 的响应（含响应头），用于断言 Idempotent-Replayed。
+    $body = [System.Text.Encoding]::UTF8.GetBytes('{"note":"冒烟测试取消"}')
+    return Invoke-WebRequest "$BaseUrl/api/workorders/$grId/cancel" -Headers ($headers + @{'Idempotency-Key'=$grCancelKey}) -Method Post -ContentType 'application/json; charset=utf-8' -Body $body -TimeoutSec 15 -UseBasicParsing
+}
+try {
+$grMid = [decimal](Invoke-RestMethod $grAvailUrl -Headers $headers -TimeoutSec 5).available
+if ($grBefore - $grMid -ne [decimal]10.5) { throw "Available steel should drop by 10.5 after release ($grBefore -> $grMid)." }
+Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders/$grId/release" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -TimeoutSec 15 } 409
 # 服务身份（与 smoke-test.sh 对等）：用工单客户端密钥经网关换取服务令牌，解码载荷断言 scope/aud；错误密钥必须 401。
 if (-not $env:WORKORDER_CLIENT_SECRET) {
     # 未导入环境时从 .env 读取明文密钥（与 smoke-test.sh 一致）。
@@ -160,6 +176,39 @@ try {
     $env:INV_IDEM_KEY = ''; $env:INV_TOKEN = ''
 }
 Write-Host 'PASS: inventory reserve/release (service token, available qty restored).'
+
+# 工单取消（网关 → 工单服务 → 后台释放任务 → 库存，与 smoke-test.sh 对等）：
+#   1) 取消返回 200、CANCELLED，previousStatus=RELEASED，reservationId 为下达时的预留单；同键重放带 Idempotent-Replayed: true；
+#   2) 换键再次取消返回 409，type=workorder-cancelled（不会再次释放）；工单列表中状态为 CANCELLED；
+#   3) 库存预留单经服务令牌 GET（inv_call）查询为 RELEASED（释放异步，最多等 30 秒）；圆钢可用量恢复到下达前。
+$c = (Invoke-GrCancel).Content | ConvertFrom-Json
+if ($c.code -ne 'OK' -or $c.data.status -ne 'CANCELLED' -or $c.data.previousStatus -ne 'RELEASED' -or $c.data.reservationId -ne $grRid) { throw "Cancel result unexpected: $($c | ConvertTo-Json -Compress -Depth 5)" }
+$grPending = $false
+$cr = Invoke-GrCancel
+if ($cr.Headers['Idempotent-Replayed'] -ne 'true') { throw 'Cancel replay should carry Idempotent-Replayed: true.' }
+Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders/$grId/cancel" -Headers ($headers + @{'Idempotency-Key'="$grCancelKey-other"}) -Method Post -TimeoutSec 15 } 409
+$listed = (Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers).data | Where-Object { "$($_.id)" -eq "$grId" } | Select-Object -First 1
+if ($listed.status -ne 'CANCELLED') { throw "Work order should be CANCELLED, got $($listed.status)." }
+$env:INV_TOKEN = $cc.access_token; $env:INV_IDEM_KEY = ''
+try {
+    $st = ''
+    for ($i = 0; $i -lt 30 -and $st -ne 'RELEASED'; $i++) {
+        $got = inv_call GET "/inventory/reservations/$grRid"
+        if ((Get-InvStatus $got) -ne 200) { throw "Get work order reservation should return 200: $got" }
+        $st = (Get-InvJson $got).status
+        if ($st -ne 'RELEASED') { Start-Sleep -Seconds 1 }
+    }
+    if ($st -ne 'RELEASED') { throw "Work order reservation should be RELEASED after cancel, got $st." }
+} finally { $env:INV_TOKEN = '' }
+$grAfter = [decimal](Invoke-RestMethod $grAvailUrl -Headers $headers -TimeoutSec 5).available
+if ($grAfter -ne $grBefore) { throw "Available steel should be restored after cancel ($grBefore -> $grAfter)." }
+Write-Host 'PASS: work order cancel (CANCELLED, reservation RELEASED, available qty restored).'
+} finally {
+    # 兜底取消：同一幂等键重放安全；已取消时为重放，不会再次释放。
+    if ($grPending) {
+        try { Invoke-GrCancel | Out-Null } catch { Write-Warning "Cleanup cancel failed: $($_.Exception.Message)" }
+    }
+}
 
 # 质检权限（网关 + 真实质检服务，与 smoke-test.sh 对等）：用 init-env 生成的演示账号真实登录，验证角色映射。
 # 服务已部署，不再接受 503：查询必须 200；无写权限的处置必须 403；有写权限的处置打到不存在的 NCR-SMOKE，只接受业务拒绝（400/404/422）。

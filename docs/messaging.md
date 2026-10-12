@@ -41,7 +41,7 @@
 | 项 | 值 |
 | --- | --- |
 | Topic | `mes-workorder-event` |
-| Tag | `WorkOrderStarted`（首笔报工，状态转 `IN_PROGRESS`）、`WorkOrderCompleted`（状态转 `COMPLETED`）、`WorkOrderReopened`（冲销使 `COMPLETED` 退回 `IN_PROGRESS`）；生命周期 `WorkOrderReleased`、`WorkOrderHeld`、`WorkOrderResumed`、`WorkOrderHoldReasonCleared` |
+| Tag | `WorkOrderStarted`（首笔报工，状态转 `IN_PROGRESS`）、`WorkOrderCompleted`（状态转 `COMPLETED`）、`WorkOrderReopened`（冲销使 `COMPLETED` 退回 `IN_PROGRESS`）；生命周期 `WorkOrderReleased`、`WorkOrderHeld`、`WorkOrderResumed`、`WorkOrderHoldReasonCleared`、`WorkOrderCancelled` |
 | 生产者 | workorder-service（业务数据与 outbox 同事务写入，由 outbox 中继投递，见下文“工单服务 outbox 中继”） |
 | 幂等 | 消费端按 `eventId` 去重，重复投递无副作用 |
 
@@ -59,6 +59,7 @@
 | `WorkOrderCompleted` | `eventId`、`workOrderNo`、`uom`、`occurredAt`、`completionMode`（`AUTO` / `MANUAL`）、`plannedQty`、`completedQty`、`shortfallQty`（AUTO 固定为 `"0"`；恒有 `plannedQty = completedQty + shortfallQty`）、`reason`（仅 MANUAL）、`aggregateVersion` |
 | `WorkOrderReopened` | `eventId`、`workOrderNo`、`occurredAt`、`reversedReportId`（被冲销的原报工）、`completedQty`（冲销后）、`uom`、`aggregateVersion` |
 | `WorkOrderReleased` / `WorkOrderHeld` / `WorkOrderResumed` / `WorkOrderHoldReasonCleared` | `eventId`、`orderId`（兼容 V2，同 `workOrderNo`）、`workOrderNo`、业务字段（下达：`productCode`、`quantity`、`bomVersion`、`routingVersion`、`reservationId`；冻结：`reason`、`resumeTarget`；恢复 / 解除原因：`reason`、`status`）、`occurredAt`、`aggregateVersion` |
+| `WorkOrderCancelled` | `eventId`、`orderId`、`workOrderNo`、`previousStatus`（取消前状态）、`reservationId`（取消时需释放的预留单，无则为 null）、`occurredAt`、`aggregateVersion` |
 
 `WorkOrderHoldReasonCleared`（多个冻结原因中解除一个，工单仍为 ON_HOLD）不改变状态，携带的是当前版本，按版本去重的消费者会将其丢弃，这是预期行为。V3 之前写入、经回填补发的生命周期事件不含 `aggregateVersion`，消费端按版本 0 处理。
 
@@ -144,3 +145,15 @@ V2 写入的 outbox 行没有投递目标。V3 迁移按事件类型回填：
 
 - 该值必须等于质检服务的 `mes.quality.broker-retention`（默认 PT72H；compose 中以 `MES_QUALITY_BROKER_RETENTION=PT72H` 显式传入，两处一起改；质检服务启动时校验去重保留期 > broker 保留期 + 冲销 TTL）。
 - 质检 `consumed_event`、`defect_report_lock` 的保留期必须大于 broker 保留期 + 冲销暂存窗口（`quality.pending-reversal.ttl`，默认 24h），即 > 96h；否则 Broker 仍可能重投的消息在去重记录清理后会被重复处理。
+
+## 工单服务消费库存预留事件
+
+- 订阅 `mes-inventory-reservation`，tag `ReservationCreated || ReservationReleased || ReservationConsumed || ReservationExpired`，消费组 `CG_WORKORDER_RESERVATION`（均取自 Nacos `manufacturing.mq.*`），仅在 `WORKORDER_MATERIAL_RESERVATION=inventory` 时启动。
+- 按 `eventId` 幂等（`consumed_event`）；按 `reservationId` 锁定本地预留镜像后比较 `aggregateVersion`：版本**不连续**，只丢弃 `≤` 本地已处理版本的事件，处理后把本地版本推进到事件版本。
+- `ReservationExpired`：镜像置 `EXPIRED`，进行中的工单以 `MATERIAL_RESERVATION_EXPIRED` 冻结；已取消工单（镜像 `RELEASING`）只更新镜像。
+- 续约不发事件，本地 `expires_at` 只由续约响应更新。
+
+## 工单取消与预留释放
+
+- `POST /workorders/{id}/cancel` 在同一事务内把工单置 `CANCELLED`、写 `WorkOrderCancelled` 事件，并为 ACTIVE 预留写入释放任务 `wo_reservation_release_task`（相当于面向库存 HTTP 接口的 outbox）。
+- `ReservationReleaseWorker` 以 `reason=WORK_ORDER_CANCELLED`、`Idempotency-Key: cancel-{工单号}-{预留单号}` 调用库存释放：2xx 且状态 `RELEASED`/`EXPIRED` 为成功；`409 reservation-consumed` 与 `404` 停止任务、写 `wo_inventory_audit` 并告警；5xx/网络错误退避重试；401/403 退避重试并告警。

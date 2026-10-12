@@ -24,10 +24,13 @@ class ReleaseRulesTest {
         assertThat(lines.get(1).quantity()).isEqualByComparingTo("60");
     }
 
-    /** 同一物料单位不一致属于主数据错误。 */
+    /** 同一物料单位不一致返回 422 uom-mismatch。 */
     @Test void rejectsMixedUom() {
         assertThatThrownBy(() -> WorkOrderReleaseService.requirements(List.of(leaf("A", "1", "KG"), leaf("A", "1", "G"))))
-            .isInstanceOfSatisfying(BusinessException.class, e -> assertThat(e.status()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY));
+            .isInstanceOfSatisfying(BusinessException.class, e -> {
+                assertThat(e.status()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+                assertThat(e.code()).isEqualTo(WorkOrderProblemType.UOM_MISMATCH.code());
+            });
     }
 
     /** 全部为非叶子件时没有可预留的物料。 */

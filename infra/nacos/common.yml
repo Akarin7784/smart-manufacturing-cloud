@@ -43,6 +43,8 @@ manufacturing:
       workorder-held: WorkOrderHeld
       workorder-resumed: WorkOrderResumed
       workorder-hold-reason-cleared: WorkOrderHoldReasonCleared
+      # 工单取消（CREATED / RELEASED / ON_HOLD → CANCELLED）时发布；有效预留由工单服务异步释放（reason=WORK_ORDER_CANCELLED）。
+      workorder-cancelled: WorkOrderCancelled
       # 报工不良数 > 0 时发布；冲销带不良数的报工时发布。
       defect-reported: DefectReported
       defect-reversed: DefectReversed

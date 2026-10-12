@@ -65,7 +65,11 @@ curl -fsS -m 5 -H "$auth" "$md/explosion?date=2026-10-12&quantity=10" | jq -e '
 # 已发布版本只读：管理员重复发布 A01 必须返回 409，证明演示数据以 RELEASED 状态加载。
 [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST -H "$auth" "$md/A01/release")" = 409 ] || fail "已发布 BOM 重复发布应返回 409"
 # 工单下达：为 GR-60 成品建单后下达，校验冻结的 BOM A01 / 工艺 R01 快照、8 道工序（首道 READY）与 ACTIVE 物料预留；
-# 同键重放返回同一预留单（Idempotent-Replayed: true），换键再次下达返回 409。物料预留当前由本地替身适配器提供。
+# 同键重放返回同一预留单（Idempotent-Replayed: true），换键再次下达返回 409。
+# 物料预留由真实库存服务提供（WORKORDER_MATERIAL_RESERVATION=inventory，工单服务经 Nacos 直连 inventory-service）：
+# 下达前后对比 20CrMnTi 圆钢可用量，证明预留确实落到库存；本工单在后面的“工单取消”段取消并释放预留。
+gr_avail() { curl -fsS -m 5 -H "$auth" "$base/api/inventory/stock/availability?materialCode=RM-20CRMNTI-D30" | jq -r '.available'; }
+gr_before=$(gr_avail) || fail "查询下达前可用量失败"
 gr_body='{"deviceId":"D001","product":"FG-GR60-20","quantity":10}'
 gr=$(curl -fsS -m 5 -H "$auth" -H 'Content-Type: application/json' -H "Idempotency-Key: smoke-gr-$(od -An -N8 -tx8 /dev/urandom | tr -d " ")" -d "$gr_body" "$base/api/workorders" | jq -r '.data.id')
 [ -n "$gr" ] && [ "$gr" != null ] || fail "创建 GR-60 工单失败"
@@ -77,6 +81,13 @@ echo "$rel" | jq -e '.code=="OK" and .data.status=="RELEASED" and .data.bomVersi
   and ([.data.reservation.lines[]|select(.materialCode=="RM-20CRMNTI-D30")|.quantity][0]*10000|round)==105000' >/dev/null \
   || fail "工单下达结果不符: $rel"
 rel_id=$(echo "$rel" | jq -r '.data.reservation.reservationId')
+# 下达成功后标记待取消：之后任何断言失败退出时，EXIT trap 会取消本工单，由工单服务释放库存预留，保证冒烟可重复执行。
+gr_cancel_key="smoke-cancel-$(od -An -N8 -tx8 /dev/urandom | tr -d " ")"
+gr_pending=1
+cancel_gr() { curl -sS -m 15 -D "$1" -X POST -H "$auth" -H 'Content-Type: application/json' -H "Idempotency-Key: $gr_cancel_key" \
+  -d '{"note":"冒烟测试取消"}' "$base/api/workorders/$gr/cancel"; }
+[ "$(jq -n --arg b "$gr_before" --arg a "$(gr_avail)" '(($b|tonumber)-($a|tonumber))*10000|round')" = 105000 ] \
+  || fail "下达后圆钢可用量应减少 10.5 kg（真实库存预留）"
 replay_rel=$(release "$hdr" "$rel_key")
 grep -qi '^Idempotent-Replayed: true' "$hdr" || fail "同键重放下达缺少 Idempotent-Replayed: true"
 [ "$(echo "$replay_rel" | jq -r '.data.reservation.reservationId')" = "$rel_id" ] || fail "同键重放下达返回了不同的预留单"
@@ -150,7 +161,7 @@ res=$(INV_IDEM_KEY="smoke-reserve-$run_id" inv_call POST /inventory/reservations
 rid=$(printf '%s' "$res" | sed '$d' | jq -r '.reservationId')
 # 之后任何断言失败都先释放预留再退出，保证可重跑；释放幂等（已释放再调用返回 200 与当前状态）。
 release_res() { INV_IDEM_KEY="smoke-release-$run_id" inv_call POST "/inventory/reservations/$rid/release" '{"reason":"CALLER_REQUEST"}' | tail -n1; }
-trap 'rm -f "$hdr"; [ -n "${rid:-}" ] && release_res >/dev/null 2>&1 || true' EXIT
+trap 'rm -f "$hdr"; [ -n "${rid:-}" ] && release_res >/dev/null 2>&1; [ -n "${gr_pending:-}" ] && cancel_gr /dev/null >/dev/null 2>&1; true' EXIT
 mid=$(avail)
 [ "$(jq -n --arg b "$before" --arg m "$mid" '($b|tonumber)-($m|tonumber)==1')" = true ] || fail "预留后可用量应减少 1（$before → $mid）"
 [ "$(release_res)" = 200 ] || fail "释放预留应返回 200"
@@ -162,6 +173,34 @@ rid=""
 after=$(avail)
 [ "$(jq -n --arg b "$before" --arg a "$after" '($b|tonumber)==($a|tonumber)')" = true ] || fail "释放后可用量应恢复（$before → $after）"
 echo "PASS: 库存预留与释放（服务令牌直连、可用量往返一致）"
+
+# 工单取消（网关 → 工单服务 → 后台释放任务 → 库存）：取消上面下达的 GR-60 工单，断言
+#   1) 取消返回 200、CANCELLED，previousStatus=RELEASED，reservationId 为下达时的预留单；同键重放带 Idempotent-Replayed: true；
+#   2) 换键再次取消返回 409，type=workorder-cancelled（不会再次释放）；工单列表中状态为 CANCELLED；
+#   3) 库存预留单经服务令牌 GET 查询为 RELEASED（释放异步，最多等 30 秒）；圆钢可用量恢复到下达前。
+c=$(cancel_gr "$hdr")
+echo "$c" | jq -e --arg r "$rel_id" '.code=="OK" and .data.status=="CANCELLED" and .data.previousStatus=="RELEASED" and .data.reservationId==$r' >/dev/null \
+  || fail "取消工单结果不符：$c"
+gr_pending=""
+c=$(cancel_gr "$hdr")
+grep -qi '^Idempotent-Replayed: true' "$hdr" || fail "同键重放取消缺少 Idempotent-Replayed: true"
+c=$(curl -sS -m 15 -X POST -H "$auth" -H "Idempotency-Key: $gr_cancel_key-other" -w '\n%{http_code}' "$base/api/workorders/$gr/cancel")
+[ "$(printf '%s' "$c" | tail -n1)" = 409 ] && printf '%s' "$c" | sed '$d' | jq -e '.type=="workorder-cancelled"' >/dev/null \
+  || fail "换键重复取消应返回 409 workorder-cancelled：$c"
+curl -fsS -m 5 -H "$auth" "$base/api/workorders" | jq -e --arg id "$gr" '[.data[]|select((.id|tostring)==$id)][0].status=="CANCELLED"' >/dev/null \
+  || fail "工单列表中状态应为 CANCELLED"
+st=""; i=0
+while [ "$i" -lt 30 ]; do
+  i=$((i+1))
+  got=$(INV_IDEM_KEY="" inv_call GET "/inventory/reservations/$rel_id") || fail "查询工单预留单失败"
+  [ "$(printf '%s' "$got" | tail -n1)" = 200 ] || fail "查询工单预留单应返回 200：$got"
+  st=$(printf '%s' "$got" | sed '$d' | jq -r '.status')
+  [ "$st" = RELEASED ] && break
+  sleep 1
+done
+[ "$st" = RELEASED ] || fail "取消后工单预留单应为 RELEASED，实际 $st"
+[ "$(jq -n --arg b "$gr_before" --arg a "$(gr_avail)" '($b|tonumber)==($a|tonumber)')" = true ] || fail "取消后圆钢可用量应恢复到下达前（$gr_before）"
+echo "PASS: 工单取消（CANCELLED、库存预留 RELEASED、可用量恢复）"
 
 
 # 质检权限（网关 + 真实质检服务）：用 init-env 生成的演示账号真实登录，验证角色映射。
