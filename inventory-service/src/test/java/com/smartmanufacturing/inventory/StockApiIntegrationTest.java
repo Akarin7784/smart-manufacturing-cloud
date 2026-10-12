@@ -124,6 +124,21 @@ class StockApiIntegrationTest {
             .isEqualByComparingTo("1");
     }
 
+    /** 出库侧单位口径：从未入库的物料按可用量 0 返回 409（shortages 带该项、uom 取请求单位）；已登记且单位不一致才 422。 */
+    @Test void outboundUnknownMaterialIsShortageAndMismatchOnlyWhenRegistered() throws Exception {
+        location("T-OU-01");
+        send("/inventory/outbound", key(), movement("M-OU-NEW", "件", "T-OU-01", "L1", "3"), keeper())
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.type").value("insufficient-stock"))
+            .andExpect(jsonPath("$.shortages", hasSize(1)))
+            .andExpect(jsonPath("$.shortages[0].materialCode").value("M-OU-NEW"))
+            .andExpect(jsonPath("$.shortages[0].uom").value("件"))
+            .andExpect(jsonPath("$.shortages[0].available").value("0"))
+            .andExpect(jsonPath("$.shortages[0].shortage").value("3"));
+        send("/inventory/inbound", key(), movement("M-OU-REG", "kg", "T-OU-01", "L1", "5"), keeper()).andExpect(status().isCreated());
+        send("/inventory/outbound", key(), movement("M-OU-REG", "件", "T-OU-01", "L1", "1"), keeper())
+            .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.type").value("uom-mismatch"));
+    }
+
     /** 不存在或停用的库位、非法数量、缺字段都是 400 validation-error（validation-error 只对应 400）。 */
     @Test void validationErrors() throws Exception {
         location("T-VAL-01");

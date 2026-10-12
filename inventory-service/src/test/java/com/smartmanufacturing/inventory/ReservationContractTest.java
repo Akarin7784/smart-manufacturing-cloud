@@ -100,6 +100,12 @@ class ReservationContractTest {
         JsonNode shortage = call(postJson(svc(BASE), key(), createBody("WO-CT-0",
             line("CT-B", "8", "个", "S1"), line("CT-B", "5", "个", "S2"), line("CT-NONE", "1", "kg", "S3"))), BASE, "post", 409);
         assertThat(shortage.get("shortages")).hasSize(2);
+        // 从未入库的物料：按可用量 0 计入缺口，uom 取请求单位，不返回 uom-mismatch。
+        JsonNode none = shortage.get("shortages").get(1);
+        assertThat(none.get("materialCode").asText()).isEqualTo("CT-NONE");
+        assertThat(none.get("uom").asText()).isEqualTo("kg");
+        assertThat(none.get("available").asText()).isEqualTo("0");
+        assertThat(none.get("shortage").asText()).isEqualTo("1");
         assertThat(shortage.get("shortages").get(0).get("sourceLineIds")).hasSize(2);
 
         // 成功创建（201），同键重放原样返回首次状态码与响应体。

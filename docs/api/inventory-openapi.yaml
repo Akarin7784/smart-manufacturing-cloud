@@ -104,7 +104,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '409':
-          description: 可用量不足，整单未预留（type=insufficient-stock）；`shortages` 逐行列出缺口。
+          description: 可用量不足，整单未预留（type=insufficient-stock）；`shortages` 逐行列出缺口。物料从未入过库时按可用量 0 计入（`available`=0，`shortage`=请求数量，`uom` 取请求单位），不返回 uom-mismatch。
           content:
             application/problem+json:
               schema:
@@ -483,7 +483,9 @@ paths:
       summary: 出库
       description: |
         减少指定（物料、库位、批次）的现存量并写入流水。出库量不得超过该库位批次余额，且出库后物料现存量合计不得低于 ACTIVE 预留量，
-        否则 409（type=insufficient-stock）。需要 `inventory:write` 与 `Idempotency-Key`。
+        否则 409（type=insufficient-stock）。物料从未入过库时按可用量 0 处理，同样返回 409，`shortages` 带该项
+        （`available`=0，`shortage`=请求数量，`uom` 取请求单位），不返回 uom-mismatch；只有已有现存量登记且单位不一致才返回 422（type=uom-mismatch）。
+        需要 `inventory:write` 与 `Idempotency-Key`。
       security:
         - userBearer: []
       parameters:
@@ -858,7 +860,7 @@ components:
           description: 物料编码。
         uom:
           type: string
-          description: 计量单位编码，取主数据物料的基本单位编码（如 `个`、`件`、`kg`）；与该物料已登记的现存量单位不一致返回 422（type=uom-mismatch）；数量均以该单位计。
+          description: 计量单位编码，取主数据物料的基本单位编码（如 `个`、`件`、`kg`）；与该物料已登记的现存量单位不一致返回 422（type=uom-mismatch）；物料从未入过库时不校验单位，按可用量 0 返回 409（type=insufficient-stock）；数量均以该单位计。
           examples: ['个']
         qty:
           $ref: '#/components/schemas/Quantity'
@@ -968,7 +970,7 @@ components:
         | `reservation-consumed` | 409 | 预留单已整单扣减 |
         | `line-closed` | 409 | 预留行已关闭 |
         | `validation-error` | 400 | 请求参数校验失败（格式、必填、范围等；只对应 400） |
-        | `uom-mismatch` | 422 | 请求计量单位与该物料已登记的现存量单位不一致（入库、出库、预留） |
+        | `uom-mismatch` | 422 | 请求计量单位与该物料已登记的现存量单位不一致（入库、出库、预留）；物料从未入过库时出库、预留不返回本类型，而是 409 insufficient-stock |
         401/403/404 由框架统一处理，不在此枚举中，调用方按 HTTP 状态码处理。
 
     Problem:

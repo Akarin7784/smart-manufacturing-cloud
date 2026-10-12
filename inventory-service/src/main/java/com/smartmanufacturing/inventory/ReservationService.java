@@ -62,18 +62,16 @@ public class ReservationService {
         List<Shortage> shortages = new ArrayList<>();
         for (Map.Entry<String, List<Need>> e : byMaterial.entrySet()) {
             String material = e.getKey();
-            String registered = stock.findUom(material);
-            // 同一物料的所有行单位必须一致，并与库存登记单位一致；未登记的物料没有库存，按可用量 0 计入缺口。
+            // 同一请求内同一物料的所有行单位必须一致（请求自身矛盾，400）。
             Set<String> uoms = new TreeSet<>();
             e.getValue().forEach(n -> uoms.add(n.line().uom()));
             if (uoms.size() > 1) throw ProblemException.validation("物料 " + material + " 的需求行计量单位不一致：" + uoms);
-            String uom = uoms.iterator().next();
-            if (registered != null && !registered.equals(uom))
-                // 与已登记的现存量单位不一致：请求格式合法但无法处理，返回 422 uom-mismatch（与入库口径一致）。
-                throw ProblemException.uomMismatch(material, registered, uom);
+            // 与出库共用单位口径：已有现存量且单位不一致 → 422 uom-mismatch；从未入库 → 不报单位错误，按可用量 0 计入缺口（409）。
+            boolean registered = stock.findUom(material) != null;
+            String uom = stock.requireUom(material, uoms.iterator().next());
             BigDecimal requested = e.getValue().stream().map(Need::qty).reduce(BigDecimal.ZERO, BigDecimal::add);
             BigDecimal available = BigDecimal.ZERO;
-            if (registered != null) {
+            if (registered) {
                 List<StockService.LockedRow> rows = stock.lockMaterialRows(material);
                 available = StockService.sum(rows).subtract(stock.activeReserved(material)).max(BigDecimal.ZERO);
             }

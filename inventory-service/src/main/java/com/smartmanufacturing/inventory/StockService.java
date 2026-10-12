@@ -91,10 +91,17 @@ public class StockService {
         if (!existing.equals(uom)) throw ProblemException.uomMismatch(material, existing, uom);
     }
 
-    /** 出库、预留使用：物料必须已登记，单位必须一致；未登记的物料不可能有库存，视为请求错误。 */
+    /**
+     * 出库、预留共用的单位口径（两处必须一致）：
+     * <ul>
+     *   <li>物料从未入过库（未登记单位）：不报单位错误，返回请求单位，由调用方按可用量 0 处理并返回 409 insufficient-stock；</li>
+     *   <li>已有现存量登记且单位不一致：422 uom-mismatch；</li>
+     *   <li>单位一致：返回登记单位。</li>
+     * </ul>
+     */
     String requireUom(String material, String uom) {
         String existing = findUom(material);
-        if (existing == null) throw ProblemException.validation("物料 " + material + " 没有库存记录");
+        if (existing == null) return uom;
         if (!existing.equals(uom)) throw ProblemException.uomMismatch(material, existing, uom);
         return existing;
     }
