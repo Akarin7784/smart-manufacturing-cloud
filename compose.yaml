@@ -43,6 +43,40 @@ services:
     build: ./infra/sentinel
     ports:
       - "127.0.0.1:8858:8858"
+  # 初始化认证数据库，支持现有数据卷，无需删除设备和工单数据。
+  auth-db-init:
+    profiles: ["app"]
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: local-root-password
+    volumes:
+      - ./infra/mysql/auth-init.sql:/init.sql:ro
+    command: ["sh", "-c", "mysql -h mysql -uroot -p\"$$MYSQL_ROOT_PASSWORD\" < /init.sql"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+  auth:
+    profiles: ["app"]
+    build:
+      context: .
+      args:
+        MODULE: auth-service
+    environment:
+      SPRING_PROFILES_ACTIVE: cloud
+      NACOS_ADDR: nacos:8848
+      SENTINEL_DASHBOARD: sentinel:8858
+      MYSQL_HOST: mysql
+      AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
+      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
+      AUTH_BOOTSTRAP_PASSWORD: ${AUTH_BOOTSTRAP_PASSWORD:-}
+      AUTH_PRIVATE_KEY_PATH: /home/app/security/signing-key.json
+    volumes:
+      - auth-keys:/home/app/security
+    depends_on:
+      nacos:
+        condition: service_healthy
+      auth-db-init:
+        condition: service_completed_successfully
   gateway:
     profiles: ["app"]
     build:
@@ -53,11 +87,16 @@ services:
       SPRING_PROFILES_ACTIVE: cloud
       NACOS_ADDR: nacos:8848
       SENTINEL_DASHBOARD: sentinel:8858
+      AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
+      AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
+      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
       nacos:
         condition: service_healthy
+      auth:
+        condition: service_started
       device:
         condition: service_started
       workorder:
@@ -72,6 +111,9 @@ services:
       SPRING_PROFILES_ACTIVE: cloud
       NACOS_ADDR: nacos:8848
       SENTINEL_DASHBOARD: sentinel:8858
+      AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
+      AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
+      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
       MYSQL_HOST: mysql
     depends_on:
       nacos:
@@ -88,6 +130,9 @@ services:
       SPRING_PROFILES_ACTIVE: cloud
       NACOS_ADDR: nacos:8848
       SENTINEL_DASHBOARD: sentinel:8858
+      AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
+      AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
+      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
       MYSQL_HOST: mysql
     depends_on:
       nacos:
@@ -95,6 +140,7 @@ services:
       mysql:
         condition: service_healthy
 volumes:
+  auth-keys:
   nacos-data:
   nacos-logs:
   mysql-data:

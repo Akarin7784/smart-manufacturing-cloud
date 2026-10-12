@@ -28,6 +28,11 @@ public class ApiExceptionHandler {
     ResponseEntity<ApiResponse<Void>> malformed(HttpMessageNotReadableException e) {
         return ResponseEntity.badRequest().body(ApiResponse.error("INVALID_JSON", "请求体格式错误"));
     }
+    /** 方法权限拒绝必须返回 403，避免被通用异常处理误判为内部错误。 */
+    @ExceptionHandler(org.springframework.security.access.AccessDeniedException.class)
+    ResponseEntity<ApiResponse<Void>> forbidden(org.springframework.security.access.AccessDeniedException e) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error("ACCESS_DENIED", "没有访问权限"));
+    }
     /** 记录内部错误详情，仅向客户端返回统一提示。 */
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiResponse<Void>> unexpected(Exception e) {

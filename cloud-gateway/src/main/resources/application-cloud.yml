@@ -22,6 +22,12 @@ spring:
       server:
         webflux:
           routes:
+            - id: auth-service
+              uri: lb://auth-service
+              predicates:
+                - Path=/api/auth/**
+              filters:
+                - StripPrefix=1
             - id: device-service
               uri: lb://device-service
               predicates:

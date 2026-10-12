@@ -7,14 +7,14 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 | 环境变量 | 默认值 / 说明 |
 | --- | --- |
 | SPRING_PROFILES_ACTIVE | local；部署 Alibaba 环境设置 cloud |
-| SERVER_PORT | 8080 / 8081 / 8082 |
+| SERVER_PORT | 8080 / 8081 / 8082 / 8083 |
 | NACOS_ADDR | localhost:8848，容器内为 nacos:8848 |
 | NACOS_NAMESPACE | 空字符串 = public，填写 namespace ID |
 | NACOS_USERNAME / NACOS_PASSWORD | 默认空，开发 Nacos 关闭鉴权；启用鉴权时设置 |
 | SENTINEL_DASHBOARD | localhost:8858 |
-| SENTINEL_CLIENT_PORT | 网关 9080、设备 9081、工单 9082 |
+| SENTINEL_CLIENT_PORT | 网关 9080、设备 9081、工单 9082、认证 9083 |
 | MYSQL_HOST / MYSQL_PORT | localhost / 3306 |
-| MYSQL_USERNAME | device_app / workorder_app |
+| MYSQL_USERNAME | device_app / workorder_app / auth_app |
 | MYSQL_PASSWORD | local-demo-password |
 | DEVICE_SERVICE_URL / WORKORDER_SERVICE_URL | 仅 local 网关的固定目标 |
 | CLIENTS_DEVICE_URL | 仅明确需要绕过发现时覆盖 Feign 目标 URL |
@@ -25,7 +25,7 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 
 设备与工单使用独立数据库和独立 MySQL 账号，没有跨库外键。示例通过 JdbcTemplate 参数绑定访问数据库。schema.sql 是开发初始化脚本，并非生产数据库迁移工具。上线时改为 Flyway/Liquibase，并关闭 spring.sql.init.mode=always。
 
-示例不提供完整 CRUD、分页、用户登录、权限管理或 MES 生产排程。这些属于后续业务模块，而不是基础服务治理框架已经完成的功能。
+已实现账号登录、管理员用户管理及三种角色的接口授权。示例不提供完整业务 CRUD、分页、租户数据权限或 MES 生产排程。这些属于后续业务模块，而不是基础服务治理框架已经完成的功能。
 
 ## Sentinel 规则持久化
 
@@ -47,7 +47,7 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 
 ## 上线前的具体工作
 
-1. 接入 OAuth2/OIDC JWT Resource Server 与服务间身份校验，业务服务独立鉴权。
+1. 已使用 Spring Security JWT Resource Server 与业务服务独立鉴权；按实际部署需求对接企业 OAuth2/OIDC 单点登录及数据权限。
 2. 将 Nacos 改为鉴权开启的多节点部署；启用配置访问隔离与 namespace 分环境。
 3. 替换 Compose 开发密码，使用环境注入或密钥管理服务；控制台限制内网访问。
 4. 用迁移工具管理表结构，启用连接池与慢 SQL 指标、数据库备份。
@@ -63,3 +63,7 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 - Feign 503：看设备服务状态、数据库连接与请求 ID 日志；降级不会返回伪造成功。
 - Sentinel 控制台无资源：确认 cloud profile、控制台连通、已有接口请求，客户端端口未冲突。
 - local 数据：保存在运行工作目录的 data/；脚本固定工作目录为项目根。
+
+## 认证数据与密钥边界
+
+认证服务维护独立 manufacturing_auth 数据库，只存储 BCrypt 密码散列。RSA 私钥只由认证服务持有，网关和业务服务通过 JWKS 公钥校验令牌。Feign 调用从已验证的安全上下文传播 Bearer 令牌。角色与权限是短期 JWT 的签发快照；账号变更不立即吊销已有令牌。详见 authentication.md。

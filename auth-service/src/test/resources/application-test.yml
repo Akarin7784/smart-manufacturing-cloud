@@ -1,0 +1,16 @@
+# 认证测试使用隔离内存数据库和临时密钥路径，不连接外部基础设施。
+spring:
+  cloud:
+    nacos:
+      discovery.enabled: false
+      config:
+        enabled: false
+        import-check.enabled: false
+    sentinel.enabled: false
+  datasource:
+    url: jdbc:h2:mem:auth-tests;MODE=MySQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql.init.mode: always
+auth.bootstrap.password: test-admin-password-2026

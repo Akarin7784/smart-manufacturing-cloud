@@ -8,6 +8,7 @@ import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.beans.factory.annotation.Value;
 import java.util.*;
 /** 设备查询及动态配置演示；刷新作用域保证 Nacos 更新后重建配置值。 */
+@org.springframework.security.access.prepost.PreAuthorize("hasAuthority('device:read')")
 @RestController
 @RefreshScope
 @RequestMapping("/devices")
@@ -23,6 +24,7 @@ public class DeviceController {
             (rs, row) -> new Device(rs.getString(1), rs.getString(2), rs.getString(3))));
     }
     /** 返回刷新作用域中的配置值，用于验证 Nacos 动态刷新。 */
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('config:read')")
     @GetMapping("/config") public ApiResponse<String> config() { return ApiResponse.ok(welcome); }
     /** 按编号查询设备，不存在时返回 404，供远程调用方识别。 */
     @GetMapping("/{id}") public ApiResponse<Device> get(@PathVariable String id) {

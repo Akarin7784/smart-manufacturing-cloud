@@ -1,6 +1,8 @@
 **
 !pom.xml
 !cloud-api/**
+!cloud-security/**
+!auth-service/**
 !cloud-common/**
 !cloud-gateway/**
 !device-service/**

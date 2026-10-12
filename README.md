@@ -4,7 +4,7 @@
 
 项目长期开发约定见 [AGENTS.md](AGENTS.md)：后续新增或修改的代码必须添加并维护中文注释。
 
-基于 Spring Cloud Alibaba 的 Maven 多模块项目，提供可运行的网关、设备服务、工单服务及基础设施。核心功能已实现；这是业务开发起点，不是完整的 MES 产品。
+基于 Spring Cloud Alibaba 的 Maven 多模块项目，提供可运行的认证服务、网关、设备服务、工单服务及基础设施。核心功能已实现；这是业务开发起点，不是完整的 MES 产品。
 
 ## 技术与模块
 
@@ -20,13 +20,17 @@
 | OpenFeign + LoadBalancer | 工单服务调用设备服务 |
 | JDBC + MySQL | 各服务独立数据库与账号 |
 | H2 | 无中间件本地开发，数据保存于 data/ |
-| Actuator + Prometheus | 健康检查与指标 |
+| Actuator + Prometheus | 健康检查与受保护的指标 |
+| Spring Security + RSA JWT | 独立登录、三种角色、网关与服务分别验签 |
 
 版本依据：[阿里巴巴官方兼容表](https://sca.aliyun.com/docs/2025.x/overview/version-explain/)。版本集中在根 pom.xml；升级时必须一起核对 Boot / Cloud / Alibaba 兼容性。
 
 ```mermaid
 flowchart LR
     Client[客户端] --> Gateway[网关 :8080]
+    Gateway --> Auth[认证服务 :8083]
+    Auth --> AuthDB[(用户数据库)]
+    Auth -.->|公开 JWKS| Gateway
     Gateway --> Device[设备服务 :8081]
     Gateway --> Order[工单服务 :8082]
     Order -->|OpenFeign| Device
@@ -41,8 +45,10 @@ flowchart LR
 ```
 
 - cloud-api：公共响应、DTO 与服务契约，不依赖 Web 框架。
+- cloud-security：跨 Servlet / WebFlux 共享 JWT 声明校验与权限映射。
+- auth-service：账号登录、公钥发布、当前身份、管理员用户管理，独立认证库。
 - cloud-common：Servlet 服务的异常处理、请求 ID、Sentinel HTTP 429 响应。网关不引用此模块。
-- cloud-gateway：显式路由 /api/devices/**、/api/workorders/**，移除 /api 前缀。
+- cloud-gateway：显式路由 /api/auth/**、/api/devices/**、/api/workorders/**，移除 /api 前缀。
 - device-service：设备查询、持久化、Nacos 动态配置示例。
 - workorder-service：工单校验、Feign 调用、持久化与降级。
 - infra：Nacos 配置样例、MySQL 初始化、Sentinel 控制台镜像。
@@ -59,14 +65,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-local.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 ```
 
-默认 local profile 使用 H2 文件数据库、固定服务地址，关闭 Nacos 和 Sentinel。日志位于 .runtime/。脚本启动后台 Java 进程，停止方式：
+默认 local profile 使用 H2 文件数据库、固定服务地址，关闭 Nacos 和 Sentinel。首次启动会生成管理员随机密码到被忽略的 .env，管理员用户名为 admin；不会重置已有用户。日志位于 .runtime/。脚本启动后台 Java 进程，停止方式：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-local.ps1
 ```
 
-也可以分别运行：
+也可以在 PowerShell 先加载引导密码后分别运行四个服务：
 ```powershell
+& .\scripts\init-auth.ps1
+java -jar auth-service/target/auth-service-1.0.0-SNAPSHOT.jar
 java -jar device-service/target/device-service-1.0.0-SNAPSHOT.jar
 java -jar workorder-service/target/workorder-service-1.0.0-SNAPSHOT.jar
 java -jar cloud-gateway/target/cloud-gateway-1.0.0-SNAPSHOT.jar
@@ -77,7 +85,9 @@ java -jar cloud-gateway/target/cloud-gateway-1.0.0-SNAPSHOT.jar
 需要运行中的 Docker Desktop，端口 3306、8848、9848、8849、8858 空闲。先停止 local 服务。
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\init-auth.ps1
 docker compose up -d --build nacos mysql sentinel
+docker compose --profile app run --rm auth-db-init
 docker compose ps
 # 等待 Nacos 和 MySQL 显示 healthy
 powershell -ExecutionPolicy Bypass -File .\scripts\import-nacos.ps1
@@ -89,20 +99,23 @@ powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 
 | 地址 | 说明 |
 | --- | --- |
-| http://localhost:8080/api/devices | 设备列表 |
+| http://localhost:8080/api/auth/login | JSON 账号登录，POST |
+| http://localhost:8080/api/auth/me | 当前身份，需 Bearer 令牌 |
+| http://localhost:8080/api/devices | 设备列表，需查询权限 |
 | http://localhost:8080/api/workorders | 工单列表 / 创建 |
 | http://localhost:8080/actuator/health | 网关健康 |
-| http://localhost:8081/actuator/prometheus | 设备指标 |
+| http://localhost:8081/actuator/prometheus | 设备指标，需管理员令牌（容器模式不暴露业务端口） |
 | http://localhost:8849 | Nacos 3 控制台 |
 | http://localhost:8858 | Sentinel 控制台，sentinel / sentinel |
 
 ### 全部容器化
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\init-auth.ps1
 docker compose --profile app up -d --build
 powershell -ExecutionPolicy Bypass -File .\scripts\import-nacos.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
-docker compose --profile app logs -f gateway device workorder
+docker compose --profile app logs -f auth gateway device workorder
 ```
 
 容器模式只暴露网关与开发基础设施端口；业务服务使用容器内部端口。本机 Java 服务与 app profile 不要同时运行，以免 Nacos 出现两套实例。停止容器但保留数据：
@@ -116,9 +129,13 @@ docker compose --profile app down
 种子设备 D001 在线，D002 离线。
 
 ```powershell
-Invoke-RestMethod http://localhost:8080/api/devices/D001
-Invoke-RestMethod http://localhost:8080/api/workorders -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
-Invoke-RestMethod http://localhost:8080/api/workorders
+& .\scripts\init-auth.ps1
+$login = Invoke-RestMethod http://localhost:8080/api/auth/login -Method Post -ContentType 'application/json' -Body (
+    @{username='admin';password=$env:AUTH_BOOTSTRAP_PASSWORD} | ConvertTo-Json -Compress)
+$headers = @{Authorization="Bearer $($login.data.accessToken)"}
+Invoke-RestMethod http://localhost:8080/api/devices/D001 -Headers $headers
+Invoke-RestMethod http://localhost:8080/api/workorders -Headers $headers -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
+Invoke-RestMethod http://localhost:8080/api/workorders -Headers $headers
 ```
 
 创建成功返回 HTTP 201，响应格式：
@@ -126,7 +143,7 @@ Invoke-RestMethod http://localhost:8080/api/workorders
 {"code":"OK","message":"success","data":{"id":"uuid","deviceId":"D001","product":"bearing","quantity":10,"status":"CREATED"}}
 ```
 
-无效数量返回 400；设备不存在返回 404；设备离线返回 409；设备服务故障返回 503，且不插入工单。网关生成 X-Request-Id，跨 Feign 调用传播，服务日志可按 ID 关联。它是请求关联 ID，尚未接入完整分布式 tracing。
+所有业务 API 先校验 Bearer JWT；未登录或令牌无效返回 401，权限不足返回 403。身份与权限通过后，无效数量返回 400；设备不存在返回 404；设备离线返回 409；设备服务故障返回 503，且不插入工单。网关生成 X-Request-Id，跨 Feign 调用传播，服务日志可按 ID 关联。它是请求关联 ID，尚未接入完整分布式 tracing。
 
 工单只写本服务数据库，因此不使用分布式事务。设备查询与工单插入之间不保证设备状态原子性；未来若要占用设备或扣库存，应采用资源预留、幂等处理及明确的补偿/事务方案。
 
@@ -136,7 +153,7 @@ Nacos namespace 默认 public（namespace ID 留空），配置 Group 为 MANUFA
 
 导入后访问：
 ```powershell
-Invoke-RestMethod http://localhost:8080/api/devices/config
+Invoke-RestMethod http://localhost:8080/api/devices/config -Headers $headers
 ```
 在 Nacos 修改 device-service.yml 的 demo.welcome 后，无需重启服务，接口会读到新值。
 
@@ -146,16 +163,26 @@ Sentinel 控制台展示 cloud 服务；先请求接口产生资源。可为网�
 
 ## 5. 测试与后续开发
 
-GitHub Actions 在每次推送、PR 和手动触发时执行 Linux / Windows 的 Java 21 全模块构建与测试，并保留测试报告和三个可执行服务 JAR。配置见 [.github/workflows/build.yml](.github/workflows/build.yml)。
+GitHub Actions 在每次推送、PR 和手动触发时执行 Linux / Windows 的 Java 21 全模块构建与测试，并保留测试报告和四个可执行服务 JAR。配置见 [.github/workflows/build.yml](.github/workflows/build.yml)。
 
 ```powershell
 .\mvnw.cmd -B -ntp verify
 ```
 
-自动测试覆盖网关转发与前缀移除、请求 ID、设备 404、工单持久化、离线拒绝、参数校验、服务不可用以及降级映射。单元/集成测试不要求运行 Nacos、MySQL；冒烟脚本验证真实进程之间的 HTTP 和 Feign 链路。
+自动测试覆盖真实 RSA 验签、有效期/签发者/受众、权限拒绝、登录锁定、公钥脱敏、密码散列、用户管理、网关路由和工单业务回归。单元/集成测试不要求运行 Nacos、MySQL；冒烟脚本验证真实进程之间的 HTTP 和 Feign 链路。
 
 添加新服务时复制业务服务结构，设置唯一 application.name / 端口 / 数据库，新增网关显式路由与 Nacos Data ID；API 契约放 cloud-api，避免共享各服务数据库。
 
 ## 使用边界
 
-Compose 使用仅限本机的端口绑定，Nacos 关闭鉴权、MySQL 使用开发密码，当前业务 API 未配置登录与权限控制。上线前完成身份认证、租户/数据权限、TLS、密钥配置、数据库迁移、监控告警、备份以及 Nacos 高可用。详情见 docs/architecture.md。RocketMQ 与 Seata 在扩展说明中给出设计接入位置，当前没有启用这两个组件。
+Compose 使用仅限本机的端口绑定，Nacos 关闭鉴权、MySQL 使用开发密码，业务 API 已实现账号认证和角色权限控制。上线前补充企业身份接入（按需）、租户/数据权限、TLS、密钥轮换、数据库迁移、监控告警、备份以及 Nacos 高可用。详情见 docs/architecture.md。RocketMQ 与 Seata 在扩展说明中给出设计接入位置，当前没有启用这两个组件。
+
+## 认证授权
+
+详细接口、权限表、引导密码与令牌生命周期见 [docs/authentication.md](docs/authentication.md)。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\security-smoke-test.ps1
+```
+
+该脚本验证管理员、操作员和查看者的权限边界，拒绝伪造角色请求头与篡改签名。测试创建的账号会被禁用，示例工单保留。
