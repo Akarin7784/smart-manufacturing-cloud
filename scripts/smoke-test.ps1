@@ -74,6 +74,93 @@ $wrong = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('wo
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/auth/oauth2/token" -Method Post -Headers @{ Authorization = $wrong } `
     -ContentType 'application/x-www-form-urlencoded' -Body 'grant_type=client_credentials' -TimeoutSec 10 } 401
 Write-Host 'PASS: service identity (client_credentials scope/aud, wrong secret 401).'
+# ---- inv_call：在 compose 内网直连库存服务（库存业务端口不发布到宿主机），与 smoke-test.sh 的 inv_call 同签名同语义 ----
+# 用法：inv_call METHOD PATH [BODY]
+#   METHOD  HTTP 方法，如 GET / POST
+#   PATH    库存服务内路径，如 /inventory/reservations（不经网关，因此没有 /api 前缀）
+#   BODY    可选，JSON 字符串；有值时以 Content-Type: application/json; charset=utf-8 经 stdin（UTF-8）发送
+# 可选环境变量：
+#   INV_TOKEN     Bearer 令牌（服务令牌，aud=inventory-service），非空时加 Authorization 头
+#   INV_IDEM_KEY  Idempotency-Key 头，非空时添加；调用方负责每次生成新键
+#   INV_BASE      目标地址，默认 http://inventory-service:8085（compose 中为 inventory 服务配置的网络别名）
+#   INV_NETWORK   docker 网络名；默认取 compose 中 inventory 容器实际所在的网络，不依赖项目名拼写
+# 返回：一个字符串，先是响应体，最后一行是 HTTP 状态码（与 sh 版输出完全一致）；
+#   取状态码：[int](($r -split "`n")[-1])；取响应体：(($r -split "`n") | Select-Object -SkipLast 1) -join "`n"。
+#   网络或容器错误时抛出异常。
+# 实现：一次性 curl 容器（docker run --rm，不残留容器），镜像按标签+摘要固定，来源 scripts/tool-images.env。
+$SmokeCurlImage = if ($env:SMOKE_CURL_IMAGE) { $env:SMOKE_CURL_IMAGE } else {
+    ((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'tool-images.env') -Encoding UTF8 | Where-Object { $_ -match '^SMOKE_CURL_IMAGE=' } | Select-Object -First 1) -replace '^SMOKE_CURL_IMAGE=', '')
+}
+function inv_network {
+    if ($env:INV_NETWORK) { return $env:INV_NETWORK }
+    $cid = & docker compose -f (Join-Path (Split-Path -Parent $PSScriptRoot) 'compose.yaml') ps -q inventory
+    if ($LASTEXITCODE -ne 0 -or -not $cid) { throw 'inventory container is not running.' }
+    $nets = & docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' $cid
+    return (@($nets) | Where-Object { $_ } | Select-Object -First 1)
+}
+function inv_call([string]$Method, [string]$Path, [string]$Body = '') {
+    $net = inv_network
+    $base = if ($env:INV_BASE) { $env:INV_BASE } else { 'http://inventory-service:8085' }
+    $curlArgs = @('-sS', '-m', '10', '-X', $Method, '-w', '\n%{http_code}')
+    if ($env:INV_TOKEN) { $curlArgs += @('-H', "Authorization: Bearer $($env:INV_TOKEN)") }
+    if ($env:INV_IDEM_KEY) { $curlArgs += @('-H', "Idempotency-Key: $($env:INV_IDEM_KEY)") }
+    # 管道与输出统一按无 BOM 的 UTF-8 处理，避免 Windows PowerShell 5.1 按本地代码页转码。
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    $prevOut = $OutputEncoding; $prevConsole = [Console]::OutputEncoding
+    $OutputEncoding = $utf8; [Console]::OutputEncoding = $utf8
+    try {
+        if ($Body) {
+            $out = $Body | & docker run --rm -i --network $net $SmokeCurlImage @curlArgs -H 'Content-Type: application/json; charset=utf-8' --data-binary '@-' "$base$Path"
+        } else {
+            $out = & docker run --rm --network $net $SmokeCurlImage @curlArgs "$base$Path"
+        }
+        if ($LASTEXITCODE -ne 0) { throw "inv_call $Method $Path failed (exit $LASTEXITCODE)." }
+    } finally { $OutputEncoding = $prevOut; [Console]::OutputEncoding = $prevConsole }
+    return (@($out) -join "`n")
+}
+function Get-InvStatus([string]$Response) { return [int](($Response -split "`n")[-1]) }
+function Get-InvJson([string]$Response) { return ((($Response -split "`n") | Select-Object -SkipLast 1) -join "`n") | ConvertFrom-Json }
+
+# 库存预留（服务令牌经 inv_call 在 compose 内网直连库存服务，模拟工单服务经 Nacos 直连；网关不放行预留接口）：
+# 预留 → 断言可用量减少 → 释放（reason=CALLER_REQUEST）→ GET 确认 RELEASED → 断言可用量回到预留前；释放放在 finally 中，后续断言失败也会执行，冒烟可重复运行。
+# 幂等键每次运行新生成（含运行 id），预留与释放各用各的，绝不复用。
+# 若 finally 未能执行（进程被强杀等），预留在 15 分钟后由过期任务（inventory.reservation.ttl=PT15M）自动回收。
+# 物料取 GR-60 BOM 中的 RM-20CRMNTI-D30（20CrMnTi 圆钢，演示期初 16 kg），预留 1 kg，单位用主数据编码 "kg"。
+$env:INV_TOKEN = $cc.access_token
+$runId = [guid]::NewGuid().ToString('N')
+$availUrl = "$BaseUrl/api/inventory/stock/availability?materialCode=RM-20CRMNTI-D30"
+$before = [decimal](Invoke-RestMethod $availUrl -Headers $headers -TimeoutSec 5).available
+$reserveBody = @{ workOrderNo = "SMOKE-$runId"; lines = @(@{ materialCode = 'RM-20CRMNTI-D30'; qty = '1'; uom = 'kg'; sourceLineId = 'smoke-1' }) } | ConvertTo-Json -Depth 4 -Compress
+$env:INV_IDEM_KEY = "smoke-reserve-$runId"
+$res = inv_call POST /inventory/reservations $reserveBody
+if ((Get-InvStatus $res) -ne 201) { throw "Reserve should return 201: $res" }
+$reservation = Get-InvJson $res
+if ($reservation.status -ne 'ACTIVE' -or -not $reservation.reservationId) { throw 'Reserve failed.' }
+$releasePath = "/inventory/reservations/$($reservation.reservationId)/release"
+$released = $false
+try {
+    $mid = [decimal](Invoke-RestMethod $availUrl -Headers $headers -TimeoutSec 5).available
+    if ($before - $mid -ne 1) { throw "Available qty should drop by 1 ($before -> $mid)." }
+    $env:INV_IDEM_KEY = "smoke-release-$runId"
+    $rel = inv_call POST $releasePath '{"reason":"CALLER_REQUEST"}'
+    if ((Get-InvStatus $rel) -ne 200 -or (Get-InvJson $rel).status -ne 'RELEASED') { throw "Release failed: $rel" }
+    $released = $true
+    # 通过 GET 再确认预留单已是终态 RELEASED（服务令牌，GET 不带幂等键）。
+    $env:INV_IDEM_KEY = ''
+    $got = inv_call GET "/inventory/reservations/$($reservation.reservationId)"
+    if ((Get-InvStatus $got) -ne 200 -or (Get-InvJson $got).status -ne 'RELEASED') { throw "Reservation status should be RELEASED: $got" }
+    $after = [decimal](Invoke-RestMethod $availUrl -Headers $headers -TimeoutSec 5).available
+    if ($after -ne $before) { throw "Available qty should be restored ($before -> $after)." }
+} finally {
+    # 兜底释放：释放幂等（已释放再调用返回 200 与当前状态），同一幂等键重放也安全。
+    if (-not $released) {
+        try { $env:INV_IDEM_KEY = "smoke-release-$runId"; inv_call POST $releasePath '{"reason":"CALLER_REQUEST"}' | Out-Null }
+        catch { Write-Warning "Cleanup release failed: $($_.Exception.Message)" }
+    }
+    $env:INV_IDEM_KEY = ''; $env:INV_TOKEN = ''
+}
+Write-Host 'PASS: inventory reserve/release (service token, available qty restored).'
+
 # RocketMQ 收发回环（与 smoke-test.sh 对等）：在 broker 容器内用自带 mqadmin 发一条唯一标记消息，再以新消费组拉回比对。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。设置环境变量 SKIP_MQ_SMOKE=1 可跳过。
 if ($env:SKIP_MQ_SMOKE -ne '1') {
