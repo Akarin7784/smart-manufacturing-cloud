@@ -43,7 +43,8 @@ jobs:
         run: bash mvnw -B -ntp verify
       - name: Validate Docker Compose
         if: runner.os == 'Linux'
-        run: docker compose --profile app config --quiet
+        # compose 中密钥均为必填变量，先用 init-env.sh 生成临时 .env 再校验。
+        run: sh scripts/init-env.sh && docker compose --profile app config --quiet
       # 即使测试失败也保留报告，便于查看断言、堆栈和具体失败用例。
       - name: Upload test reports
         if: always()
@@ -66,3 +67,23 @@ jobs:
             workorder-service/target/workorder-service-*.jar
           if-no-files-found: error
           retention-days: 14
+
+  # 端到端演示环境：执行 make demo（构建镜像、自动导入 Nacos 配置、等待全部 healthy、冒烟测试），对应部署方案 P1 的验收标准。
+  demo-smoke:
+    name: demo smoke (make demo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Start demo environment and run smoke test
+        run: make demo
+      # 失败时输出容器状态和日志，便于定位是哪个服务未就绪。
+      - name: Dump compose state on failure
+        if: failure()
+        run: |
+          docker compose --profile app ps -a
+          docker compose --profile app logs --no-color --tail=200
+      - name: Tear down
+        if: always()
+        run: docker compose --profile app down -v

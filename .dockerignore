@@ -8,3 +8,4 @@
 !device-service/**
 !workorder-service/**
 **/target
+!infra/healthcheck/**

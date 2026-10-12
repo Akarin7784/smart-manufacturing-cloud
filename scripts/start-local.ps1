@@ -7,6 +7,8 @@ try {
     $runtime = Join-Path $root '.runtime'
     New-Item -ItemType Directory -Force $runtime | Out-Null
     & (Join-Path $PSScriptRoot 'init-auth.ps1')
+    # cloud profile 需要 .env 中的 Nacos 账号与数据库密码（Nacos 已开启鉴权），统一由 init-env.ps1 加载。
+    if ($Profile -eq 'cloud') { & (Join-Path $PSScriptRoot 'init-env.ps1') }
     $modules = @('auth-service','device-service','workorder-service','cloud-gateway')
     foreach ($module in $modules) {
         $pidFile = Join-Path $runtime "$module.pid"

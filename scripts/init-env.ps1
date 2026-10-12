@@ -1,0 +1,45 @@
+# 生成并加载本地 .env（PowerShell 版，对应 init-env.sh）：不存在时从 .env.example 复制，为留空密钥填充随机值，
+# 然后把全部键值导入当前进程环境变量，供 import-nacos.ps1、start-local.ps1、smoke-test.ps1 使用。
+# 已有非空值保持不变，避免与已初始化的数据卷密码失配。
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+$envPath = Join-Path $root '.env'
+if (-not (Test-Path -LiteralPath $envPath)) {
+    Copy-Item -LiteralPath (Join-Path $root '.env.example') -Destination $envPath
+    Write-Host '已从 .env.example 创建 .env'
+}
+$lines = [Collections.Generic.List[string]]@(Get-Content -LiteralPath $envPath -Encoding UTF8)
+# 使用加密随机数生成 hex 字符串。
+function New-RandomHex([int]$Bytes) {
+    $buffer = New-Object byte[] $Bytes
+    $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $generator.GetBytes($buffer) } finally { $generator.Dispose() }
+    -join ($buffer | ForEach-Object { $_.ToString('x2') })
+}
+# 仅当键不存在或为空时写入，保证可重复执行。
+function Set-IfEmpty([string]$Key, [string]$Value) {
+    if ($lines | Where-Object { $_ -match "^$Key=.+$" }) { return }
+    $script:lines = [Collections.Generic.List[string]]@($lines | Where-Object { $_ -notmatch "^$Key=" })
+    $script:lines.Add("$Key=$Value")
+    Write-Host "已生成 $Key"
+}
+Set-IfEmpty 'AUTH_BOOTSTRAP_PASSWORD' (New-RandomHex 16)
+Set-IfEmpty 'MYSQL_ROOT_PASSWORD' (New-RandomHex 16)
+Set-IfEmpty 'MYSQL_APP_PASSWORD' (New-RandomHex 16)
+# Nacos 令牌密钥要求 Base64 且解码后至少 32 字节。
+Set-IfEmpty 'NACOS_AUTH_TOKEN' ([Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes((New-RandomHex 24))))
+Set-IfEmpty 'NACOS_AUTH_IDENTITY_KEY' 'serverIdentity'
+Set-IfEmpty 'NACOS_AUTH_IDENTITY_VALUE' (New-RandomHex 16)
+Set-IfEmpty 'NACOS_USERNAME' 'nacos'
+Set-IfEmpty 'NACOS_PASSWORD' (New-RandomHex 16)
+Set-IfEmpty 'AUTH_ISSUER' 'http://localhost:8080'
+Set-IfEmpty 'AUTH_AUDIENCE' 'manufacturing-api'
+[IO.File]::WriteAllText($envPath, ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
+# 导入进程环境；已显式设置的环境变量优先，不被 .env 覆盖。
+foreach ($line in $lines) {
+    if ($line -match '^([A-Z_][A-Z0-9_]*)=(.*)$' -and -not [Environment]::GetEnvironmentVariable($Matches[1])) {
+        [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2])
+    }
+}
+# 本机 cloud profile 服务读取 MYSQL_PASSWORD，与容器内业务账号密码保持一致。
+if (-not $env:MYSQL_PASSWORD) { $env:MYSQL_PASSWORD = $env:MYSQL_APP_PASSWORD }
