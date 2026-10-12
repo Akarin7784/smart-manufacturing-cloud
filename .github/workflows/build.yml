@@ -86,7 +86,7 @@ jobs:
             coverage-report/target/site/jacoco-aggregate/**
           if-no-files-found: warn
           retention-days: 14
-      # 两个平台都验证；只上传 Linux 构建出的四个可执行服务包，避免重复产物。
+      # 两个平台都验证；只上传 Linux 构建出的五个可执行服务包，避免重复产物。
       - name: Upload executable services
         if: success() && runner.os == 'Linux'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -97,6 +97,7 @@ jobs:
             cloud-gateway/target/cloud-gateway-*.jar
             device-service/target/device-service-*.jar
             workorder-service/target/workorder-service-*.jar
+            masterdata-service/target/masterdata-service-*.jar
           if-no-files-found: error
           retention-days: 14
 

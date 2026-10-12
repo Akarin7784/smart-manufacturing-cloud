@@ -43,6 +43,12 @@ public class GatewaySecurityConfiguration {
                 .pathMatchers(HttpMethod.GET, "/api/devices", "/api/devices/**").hasAuthority("device:read")
                 .pathMatchers(HttpMethod.GET, "/api/workorders", "/api/workorders/**").hasAuthority("workorder:read")
                 .pathMatchers(HttpMethod.POST, "/api/workorders").hasAuthority("workorder:write")
+                // 主数据：发布单独授权，必须排在通用写规则之前；服务内 @PreAuthorize 再次校验同样的权限。
+                .pathMatchers(HttpMethod.GET, "/api/materials", "/api/materials/**", "/api/workcenters", "/api/workcenters/**",
+                    "/api/boms", "/api/boms/**", "/api/routings", "/api/routings/**").hasAuthority("masterdata:read")
+                .pathMatchers(HttpMethod.POST, "/api/boms/*/*/release", "/api/routings/*/*/release").hasAuthority("masterdata:release")
+                .pathMatchers(HttpMethod.POST, "/api/materials", "/api/workcenters", "/api/workcenters/*/stations", "/api/boms", "/api/routings").hasAuthority("masterdata:write")
+                .pathMatchers(HttpMethod.PUT, "/api/materials/*", "/api/boms/*/*", "/api/routings/*/*").hasAuthority("masterdata:write")
                 .anyExchange().denyAll())
             .exceptionHandling(errors -> errors
                 .authenticationEntryPoint((exchange, e) -> writeError(mapper, exchange, 401))

@@ -35,6 +35,12 @@ Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/devices/missing" -Headers $h
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"missing","product":"bearing","quantity":10}' } 404
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D002","product":"bearing","quantity":10}' } 409
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":0}' } 400
+# 主数据（经网关）：演示 BOM 已发布且 10 台展开结果与演示数据一致（20CrMnTi 圆钢合计 10.5 kg）。
+$bom = Invoke-RestMethod "$BaseUrl/api/boms/FG-GR60-20/effective?date=2026-10-12" -Headers $headers
+if ($bom.data.version -ne 'A01' -or $bom.data.status -ne 'RELEASED') { throw 'Demo BOM FG-GR60-20/A01 not released.' }
+$explosion = Invoke-RestMethod "$BaseUrl/api/boms/FG-GR60-20/explosion?date=2026-10-12&quantity=10" -Headers $headers
+$steel = ($explosion.data.lines | Where-Object componentCode -eq 'RM-20CRMNTI-D30' | Measure-Object -Property requiredQty -Sum).Sum
+if ([decimal]$steel -ne [decimal]10.5) { throw "Unexpected BOM explosion result: steel=$steel" }
 # RocketMQ 收发回环（与 smoke-test.sh 对等）：在 broker 容器内用自带 mqadmin 发一条唯一标记消息，再以新消费组拉回比对。
 # 只用镜像自带工具，不给业务镜像增加依赖；工具 JVM 堆压到 128M。设置环境变量 SKIP_MQ_SMOKE=1 可跳过。
 if ($env:SKIP_MQ_SMOKE -ne '1') {
