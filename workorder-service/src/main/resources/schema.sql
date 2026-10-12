@@ -16,5 +16,11 @@ CREATE TABLE IF NOT EXISTS work_order_request (
   request_hash CHAR(64) NOT NULL,
   order_id VARCHAR(64) NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT pk_work_order_request PRIMARY KEY (principal, idempotency_key)
+  CONSTRAINT pk_work_order_request PRIMARY KEY (principal, idempotency_key),
+  -- 供按保留期批量清理使用（见下方保留策略）。
+  INDEX idx_work_order_request_created_at (created_at)
 );
+-- 保留策略：幂等记录保留 7 天。清理语句（由后续定时任务或运维作业执行，按批次限量删除以避免长事务）：
+--   DELETE FROM work_order_request WHERE created_at < NOW() - INTERVAL 7 DAY LIMIT 1000;
+-- 业务语义：超过保留期后同一个键视为新请求，可再次创建工单；客户端重试窗口必须远小于 7 天。
+-- 只删除幂等记录，不删除工单本身。

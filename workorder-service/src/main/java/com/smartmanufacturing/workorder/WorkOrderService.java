@@ -14,6 +14,8 @@ import java.util.*;
 /**
  * 工单应用服务：幂等创建、设备校验与工单持久化，只写本服务数据库。
  * <p>
+ * 幂等记录保留期为 7 天（清理语句见 schema.sql）；过期后同一键视为新请求。
+ * <p>
  * 事务边界说明：远程设备校验与预留在事务<b>之外</b>执行，避免远程调用期间占用数据库连接与锁；
  * 工单与幂等记录在同一本地事务内写入，二者要么同时存在要么都不存在。不使用分布式事务。
  */
@@ -40,7 +42,9 @@ public class WorkOrderService {
      * @param idempotencyKey 客户端生成的幂等键，同一业务请求的所有重试必须使用同一个键
      * @throws BusinessException 同键不同请求体返回 422；设备离线 409；设备状态无法确认 503
      */
-    public CreateResult create(String principal, String idempotencyKey, CreateWorkOrder request) {
+    public CreateResult create(String principal, String idempotencyKey, CreateWorkOrder raw) {
+        // 先规范化再计算摘要与落库，保证“轴承”与“轴承 ”这类等价输入命中同一幂等记录。
+        CreateWorkOrder request = normalize(raw);
         String hash = hash(request);
         // 快速路径：重试请求直接返回首次结果，不再调用设备服务。
         Optional<CreateResult> replay = findReplay(principal, idempotencyKey, hash);
@@ -64,7 +68,9 @@ public class WorkOrderService {
             return new CreateResult(order, false);
         } catch (DuplicateKeyException race) {
             // 并发竞争失败：另一请求已用同键提交。预留与胜者共用同一预留键，此处不释放，以免撤销胜者的占用。
-            return findReplay(principal, idempotencyKey, hash).orElseThrow(() -> race);
+            // 理论上只有胜者记录恰好被保留期清理时才会读不到，此时提示客户端重试而不是返回 500。
+            return findReplay(principal, idempotencyKey, hash).orElseThrow(() ->
+                new BusinessException("IDEMPOTENCY_CONFLICT", "幂等键正在被并发使用，请稍后重试", HttpStatus.CONFLICT));
         } catch (RuntimeException e) {
             // 本地事务失败：补偿释放预留；补偿本身失败时由预留 TTL 兜底，不掩盖原始异常。
             try { reservations.release(reservationKey, request.deviceId()); } catch (RuntimeException ignored) { e.addSuppressed(ignored); }
@@ -93,7 +99,15 @@ public class WorkOrderService {
             throw new BusinessException("DEVICE_OFFLINE", "设备离线，无法创建工单", HttpStatus.CONFLICT);
     }
 
-    /** 请求摘要：以不可见分隔符拼接字段后做 SHA-256，用于识别“同键不同内容”。 */
+    /**
+     * 请求规范化：product 去除首尾空白并做 Unicode NFC 规范化（全角/组合字符等价形式统一）；
+     * deviceId 只去除首尾空白，<b>区分大小写</b>，与设备服务主键的匹配规则一致。
+     */
+    static CreateWorkOrder normalize(CreateWorkOrder r) {
+        return new CreateWorkOrder(r.deviceId().strip(), java.text.Normalizer.normalize(r.product().strip(), java.text.Normalizer.Form.NFC), r.quantity());
+    }
+
+    /** 请求摘要：对规范化后的字段以不可见分隔符拼接再做 SHA-256，用于识别“同键不同内容”。 */
     static String hash(CreateWorkOrder r) {
         try {
             byte[] d = MessageDigest.getInstance("SHA-256")

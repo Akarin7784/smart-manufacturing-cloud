@@ -75,7 +75,8 @@ class WorkOrderIntegrationTest {
     }
     /** 查看者禁止创建工单，拒绝发生在远程设备调用和数据库写入之前。 */
     @Test void viewerCannotCreateOrders() throws Exception {
-        mvc.perform(post("/workorders")
+        // 携带合法幂等键，证明拒绝来自权限校验而非缺键分支。
+        mvc.perform(post("/workorders").header("Idempotency-Key", "viewer-key")
             .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt()
                 .authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("workorder:read")))
             .contentType(MediaType.APPLICATION_JSON)
@@ -180,5 +181,28 @@ class WorkOrderIntegrationTest {
                 .contentType(MediaType.APPLICATION_JSON).content(BODY))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value(winner));
         assertEquals(1, jdbc.queryForObject("select count(*) from work_order", Integer.class));
+    }
+
+    /** 非法幂等键（超过 128 位、含空格）在远程调用前返回 400。 */
+    @Test void malformedIdempotencyKeyIsRejected() throws Exception {
+        for (String key : new String[] { "a".repeat(129), "has space" })
+            mvc.perform(post("/workorders").with(operator()).header("Idempotency-Key", key)
+                    .contentType(MediaType.APPLICATION_JSON).content(BODY))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value("IDEMPOTENCY_KEY_REQUIRED"));
+        verifyNoInteractions(devices);
+    }
+
+    /** 规范化后等价的请求（产品名首尾空白、NFC 等价形式）视为同一请求重放，而不是 422。 */
+    @Test void equivalentBodiesAreTreatedAsReplay() throws Exception {
+        deviceOnline();
+        mvc.perform(post("/workorders").with(operator()).header("Idempotency-Key", "K-5")
+            .contentType(MediaType.APPLICATION_JSON).content(BODY)).andExpect(status().isCreated());
+        mvc.perform(post("/workorders").with(operator()).header("Idempotency-Key", "K-5")
+                .contentType(MediaType.APPLICATION_JSON).content(BODY.replace("减速机", " 减速机 ")))
+            .andExpect(status().isOk()).andExpect(header().string("Idempotent-Replayed", "true"));
+        // e + 组合重音（NFD）与 é（NFC）规范化后相同。
+        org.junit.jupiter.api.Assertions.assertEquals(
+            WorkOrderService.hash(WorkOrderService.normalize(new CreateWorkOrder("D001", "caf\u00e9", 1))),
+            WorkOrderService.hash(WorkOrderService.normalize(new CreateWorkOrder("D001", "cafe\u0301", 1))));
     }
 }
