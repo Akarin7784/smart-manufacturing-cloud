@@ -28,6 +28,7 @@ manufacturing:
     topics:
       workorder-event: mes-workorder-event
       workorder-quality: mes-workorder-quality
+      inventory-reservation: mes-inventory-reservation
     tags:
       workorder-started: WorkOrderStarted
       workorder-completed: WorkOrderCompleted
@@ -38,3 +39,10 @@ manufacturing:
       workorder-hold-reason-cleared: WorkOrderHoldReasonCleared
       defect-reported: DefectReported
       defect-reversed: DefectReversed
+      workorder-cancelled: WorkOrderCancelled
+      reservation-created: ReservationCreated
+      reservation-released: ReservationReleased
+      reservation-consumed: ReservationConsumed
+      reservation-expired: ReservationExpired
+# 关闭取消释放作业的定时触发，用例直接调用 ReservationReleaseWorker.runBatch。
+manufacturing.workorder.reservation-release.enabled: false

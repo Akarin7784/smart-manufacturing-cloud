@@ -4,13 +4,15 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * 库存物料预留端口（契约由库存服务所有，P3 以 Feign 适配器实现 POST /api/inventory/reservations 等接口）：
+ * 库存物料预留端口（契约由库存服务所有，见 docs/api/inventory-openapi.yaml；生产实现为 {@link InventoryReservationClient}，经 Nacos 服务发现直连库存服务）：
  * <ul>
  *   <li>按工单整单预留，所有行原子成功，响应的每行带 lineId（消耗按行、按批次进行）；任一行短缺返回 409 并列出每行短缺量，
  *       适配器抛 {@link MaterialShortageException}，明细原样返回调用方。</li>
  *   <li>续约、释放均针对整张预留单；所有变更携带 Idempotency-Key，重复调用返回同一结果。</li>
  *   <li>到期由库存服务判定（TTL 15 分钟），经发件箱发往 RocketMQ topic {@code mes-inventory-reservation}（tag 为 Created/Released/Consumed/Expired，
- *       topic 与 tag 从 Nacos common.yml 的 manufacturing.mq.* 读取），本服务只订阅、按预留单号幂等消费，不自行计算过期。订阅（rocketmq-spring 5.x，消费组 CG_WORKORDER_RESERVATION）在 PR #13 合并后的后续 PR 接入。</li>
+ *       topic 与 tag 从 Nacos common.yml 的 manufacturing.mq.* 读取），本服务只订阅（{@link ReservationEventConsumer}，消费组 CG_WORKORDER_RESERVATION），
+ *       按 eventId 幂等、按 aggregateVersion 丢弃过时事件，不自行计算过期。</li>
+ *   <li>续约只允许持有该预留的调用方（创建它的服务身份），否则库存返回 403；续约不发事件，以续约响应的 expiresAt 为准。</li>
  * </ul>
  */
 public interface MaterialReservationPort {
@@ -26,11 +28,38 @@ public interface MaterialReservationPort {
      */
     Instant renew(String idempotencyKey, String reservationId);
 
-    /** 释放整张预留单；必须幂等，对已释放或已过期的预留静默成功。 */
-    void release(String idempotencyKey, String reservationId);
+    /** 释放原因，与库存契约 ReleaseReason 一致。 */
+    enum ReleaseReason { CALLER_REQUEST, WORK_ORDER_CANCELLED, COMPENSATION }
+
+    /**
+     * 释放整张预留单，返回库存答复的预留单状态（RELEASED 或 EXPIRED，二者都视为成功）。必须幂等：同一幂等键重放返回首次结果。
+     * @throws ReservationConsumedException 预留已整单扣减（409 reservation-consumed），不可释放，调用方不应重试
+     * @throws ReservationNotFoundException 库存不存在该预留单（404），调用方不应重试
+     * @throws ReservationGoneException 库存返回 410（契约外，正常应为 200）：占用已归还，调用方按终态处理，不重试
+     * @throws InventoryAuthException 服务令牌被拒（401 / 403），可重试但需告警
+     * @throws InventoryUnavailableException 库存不可用（5xx / 网络），退避重试
+     */
+    String release(String idempotencyKey, String reservationId, ReleaseReason reason);
+
+    /** 下达失败等场景的补偿释放（reason=COMPENSATION）。 */
+    default void release(String idempotencyKey, String reservationId) { release(idempotencyKey, reservationId, ReleaseReason.COMPENSATION); }
+
+    /** 预留单已整单扣减（库存 409 reservation-consumed）：不能再释放。 */
+    class ReservationConsumedException extends RuntimeException {
+        public ReservationConsumedException(String reservationId) { super("预留已整单扣减，不能释放: " + reservationId); }
+    }
+
+    /** 库存不存在该预留单（404）。 */
+    class ReservationNotFoundException extends RuntimeException {
+        public ReservationNotFoundException(String reservationId) { super("库存不存在预留单: " + reservationId); }
+    }
 
     /** 库存侧预留已失效：调用方应按“预留过期”流程处理，而不是重试。 */
     class ReservationGoneException extends RuntimeException {
-        public ReservationGoneException(String reservationId) { super("预留已失效: " + reservationId); }
+        private final String status;
+        public ReservationGoneException(String reservationId) { this(reservationId, null); }
+        /** @param status 库存给出的终态（RELEASED / EXPIRED，取自 410 的 type），未知为 null */
+        public ReservationGoneException(String reservationId, String status) { super("预留已失效: " + reservationId); this.status = status; }
+        public String status() { return status; }
     }
 }

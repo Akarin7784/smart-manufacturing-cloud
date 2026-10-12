@@ -28,6 +28,12 @@ public enum WorkOrderProblemType {
     /** 报工计量单位与本工单已有报工的单位不一致（同一工单所有工序必须使用同一单位）。 */
     UOM_MISMATCH("uom-mismatch", "UOM_MISMATCH", HttpStatus.UNPROCESSABLE_ENTITY),
 
+    // ---- 库存客户端与工单取消（本次新增）
+    /** 工单已取消：重复取消（不同幂等键）以及取消后的其他写操作。 */
+    WORKORDER_CANCELLED("workorder-cancelled", "WORKORDER_CANCELLED", HttpStatus.CONFLICT),
+    /** 库存服务不可用（5xx、网络错误或服务令牌被拒），同步调用（下达、恢复时重新预留）失败。 */
+    INVENTORY_SERVICE_UNAVAILABLE("inventory-service-unavailable", "INVENTORY_SERVICE_UNAVAILABLE", HttpStatus.SERVICE_UNAVAILABLE),
+
     // ---- 既有业务码
     VALIDATION_ERROR("validation-error", "INVALID_ARGUMENT", HttpStatus.BAD_REQUEST),
     IDEMPOTENCY_KEY_REQUIRED("idempotency-key-required", "IDEMPOTENCY_KEY_REQUIRED", HttpStatus.BAD_REQUEST),
