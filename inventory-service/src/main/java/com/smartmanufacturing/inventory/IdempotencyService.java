@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -23,7 +25,7 @@ import java.util.regex.Pattern;
  *   <li>作用域：（调用方身份，幂等键）。调用方为服务令牌的 client_id 或用户令牌的 sub，见 {@link CallerIdentity}。</li>
  *   <li>请求摘要：SHA-256(操作名 + 规范化请求 JSON)。同键不同摘要（含挪用到另一个操作）返回 422 idempotency-key-conflict。</li>
  *   <li>重放：同键同摘要原样返回首次的状态码与响应体原文（逐字节一致），不重复执行业务。</li>
- *   <li>一致性：业务写入与幂等记录在<b>同一本地事务</b>提交；业务失败（4xx/5xx）整笔回滚、不留记录，重试会重新执行。</li>
+ *   <li>一致性：业务写入与幂等记录在<b>同一本地事务</b>（READ COMMITTED，原因见构造器）提交；业务失败（4xx/5xx）整笔回滚、不留记录，重试会重新执行。</li>
  *   <li>并发同键：后提交者插入幂等记录时触发主键冲突，整笔回滚后读取胜者记录重放，不会重复执行业务。</li>
  * </ul>
  */
@@ -40,8 +42,14 @@ public class IdempotencyService {
         .enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY)
         .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS).build();
 
-    public IdempotencyService(JdbcTemplate jdbc, TransactionTemplate tx, ObjectMapper responseMapper) {
-        this.jdbc = jdbc; this.tx = tx; this.responseMapper = responseMapper;
+    public IdempotencyService(JdbcTemplate jdbc, PlatformTransactionManager txManager, ObjectMapper responseMapper) {
+        this.jdbc = jdbc; this.responseMapper = responseMapper;
+        this.tx = new TransactionTemplate(txManager);
+        // 必须使用 READ COMMITTED：可用量 = 现存量（加锁读）− 有效预留量（普通读）。在 MySQL 默认的 REPEATABLE READ 下，
+        // 普通读沿用事务首次读取时的快照，排队等到现存量行锁后仍看不到前一个事务刚提交的预留，会导致超卖
+        // （ReservationMySqlIT 的并发用例可复现）。READ COMMITTED 下每条语句读取最新已提交数据；
+        // 同一物料的预留、出库、扣减都持有该物料现存量行锁，因此读到的有效预留量是准确的。同时减少间隙锁与死锁。
+        this.tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     }
 
     /** 已保存（或首次生成）的响应：状态码、响应体 JSON 原文，以及是否为重放。 */
