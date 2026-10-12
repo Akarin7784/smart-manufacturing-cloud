@@ -39,8 +39,14 @@ jobs:
           cache: maven
           cache-dependency-path: '**/pom.xml'
       # 使用仓库中的 Wrapper，确保本机与 CI 使用相同的 Maven 版本。
-      - name: Verify all modules
+      # Linux 运行器自带 Docker：执行单测（surefire *Test）与 Testcontainers 集成测试（failsafe *IT）。
+      - name: Verify all modules (unit + integration)
+        if: runner.os == 'Linux'
         run: bash mvnw -B -ntp verify
+      # Windows 运行器无法运行 Linux 容器：只跑单测，跳过依赖 Testcontainers 的 *IT。
+      - name: Verify all modules (unit only)
+        if: runner.os != 'Linux'
+        run: bash mvnw -B -ntp verify -DskipITs
       - name: Validate Docker Compose
         if: runner.os == 'Linux'
         # compose 中密钥均为必填变量，先用 init-env.sh 生成临时 .env 再校验。
@@ -51,7 +57,21 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-reports-${{ matrix.os }}
-          path: '**/target/surefire-reports/**'
+          # 同时保留单测与集成测试报告。
+          path: |
+            **/target/surefire-reports/**
+            **/target/failsafe-reports/**
+          if-no-files-found: warn
+          retention-days: 14
+      # JaCoCo 覆盖率：各模块报告与跨模块汇总报告（coverage-report 模块），仅以 Linux（含 *IT）结果为准。
+      - name: Upload coverage reports
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-reports
+          path: |
+            **/target/site/jacoco/**
+            coverage-report/target/site/jacoco-aggregate/**
           if-no-files-found: warn
           retention-days: 14
       # 两个平台都验证；只上传 Linux 构建出的四个可执行服务包，避免重复产物。
