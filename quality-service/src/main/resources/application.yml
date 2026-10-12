@@ -37,6 +37,14 @@ manufacturing:
     audience: ${AUTH_AUDIENCE:manufacturing-api}
     jwk-set-uri: ${AUTH_JWK_SET_URI:http://localhost:8083/auth/jwks}
 
+# 回写库存 QC-HOLD 的服务身份（OAuth2 client_credentials，见 docs/quality-inventory-writeback-design.md §2）。
+# client-id/scope 等非敏感值也在 Nacos quality-service.yml 中声明；明文密钥只经环境变量 QUALITY_CLIENT_SECRET 注入
+# （init-env 生成，compose 以 ${QUALITY_CLIENT_SECRET:?} 强制要求），不写入仓库或 Nacos。local/test 未配置时为空，回写任务由实现 PR 决定如何降级。
+mes.quality.writeback.client:
+  client-id: quality-service
+  client-secret: ${QUALITY_CLIENT_SECRET:}
+  scope: inventory:qc-hold
+
 # topic/tag/消费组以 Nacos common.yml 的 manufacturing.mq.* 为准；消费侧默认值与 infra/nacos/common.yml 一致。
 # quality-event 及 Ncr* tag 尚未登记到 common.yml（归运维），此处默认值与契约 x-events 一致，Nacos 登记后以 Nacos 为准。
 manufacturing.mq:

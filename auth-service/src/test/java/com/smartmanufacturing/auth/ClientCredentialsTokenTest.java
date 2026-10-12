@@ -35,6 +35,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("test")
 class ClientCredentialsTokenTest {
     static final String SECRET = "test-workorder-client-secret-2026";
+    /** 质检服务客户端（scope inventory:qc-hold）的测试密钥，与工单客户端不同，验证两把密钥互不通用。 */
+    static final String QUALITY_SECRET = "test-quality-client-secret-2026";
     static final Path directory;
     static {
         try { directory = Files.createTempDirectory("manufacturing-auth-cc-test-"); }
@@ -47,10 +49,13 @@ class ClientCredentialsTokenTest {
         String hash = new BCryptPasswordEncoder(ServiceClientRegistry.EXPECTED_COST).encode(SECRET);
         // 通过占位符变量注入，保持客户端列表其余配置来自实际 application.yml（覆盖列表下标会替换整个列表）。
         registry.add("WORKORDER_CLIENT_SECRET_HASH", () -> hash);
+        String qualityHash = new BCryptPasswordEncoder(ServiceClientRegistry.EXPECTED_COST).encode(QUALITY_SECRET);
+        registry.add("QUALITY_CLIENT_SECRET_HASH", () -> qualityHash);
     }
 
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper mapper;
+    @Autowired ServiceClientProperties clientProperties;
 
     private static String basic(String id, String secret) {
         return "Basic " + Base64.getEncoder().encodeToString((id + ":" + secret).getBytes(StandardCharsets.UTF_8));
@@ -155,5 +160,40 @@ class ClientCredentialsTokenTest {
     @Test void duplicateGrantTypeIsInvalidRequest() throws Exception {
         request(basic("workorder-service", SECRET), "grant_type=client_credentials&grant_type=client_credentials")
             .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_request"));
+    }
+
+    /** 质检服务客户端：签发 aud=inventory-service、scope=inventory:qc-hold 的服务令牌，client_id 为 quality-service。 */
+    @Test void qualityClientIssuesQcHoldToken() throws Exception {
+        String body = request(basic("quality-service", QUALITY_SECRET), "grant_type=client_credentials")
+            .andExpect(status().isOk()).andExpect(jsonPath("$.scope").value("inventory:qc-hold"))
+            .andReturn().getResponse().getContentAsString();
+        Jwt jwt = verifyWithJwks(mapper.readTree(body).path("access_token").asText());
+        assertEquals("quality-service", jwt.getClaimAsString("client_id"));
+        assertEquals("inventory:qc-hold", jwt.getClaimAsString("scope"));
+        assertEquals(List.of("inventory-service"), jwt.getAudience());
+        assertEquals("service", jwt.getClaimAsString("token_type"));
+        assertNull(jwt.getClaim("permissions"));
+    }
+
+    /** 两个服务客户端的 scope 互不包含：质检不能申请 inventory:reserve，工单不能申请 inventory:qc-hold；密钥也不能互换。 */
+    @Test void qcHoldAndReserveScopesAreSeparated() throws Exception {
+        request(basic("quality-service", QUALITY_SECRET), "grant_type=client_credentials&scope=inventory%3Areserve")
+            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_scope"));
+        request(basic("workorder-service", SECRET), "grant_type=client_credentials&scope=inventory%3Aqc-hold")
+            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_scope"));
+        request(basic("quality-service", SECRET), "grant_type=client_credentials")
+            .andExpect(status().isUnauthorized()).andExpect(jsonPath("$.error").value("invalid_client"));
+    }
+
+    /** 实际 application.yml 中的客户端注册：quality-service 的 scopes 恰好只有 inventory:qc-hold，受众为 inventory-service。 */
+    @Test void qualityClientRegistrationHasExactlyQcHoldScope() {
+        ServiceClientProperties.Client quality = clientProperties.getClients().stream()
+            .filter(c -> "quality-service".equals(c.getClientId())).findFirst().orElseThrow();
+        assertEquals(List.of("inventory:qc-hold"), quality.getScopes());
+        assertEquals("inventory-service", quality.getAudience());
+        // 工单客户端不得因本次新增而获得隔离 scope。
+        ServiceClientProperties.Client workorder = clientProperties.getClients().stream()
+            .filter(c -> "workorder-service".equals(c.getClientId())).findFirst().orElseThrow();
+        assertEquals(List.of("inventory:reserve"), workorder.getScopes());
     }
 }

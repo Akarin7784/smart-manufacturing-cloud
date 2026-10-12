@@ -2,4 +2,4 @@
 auth:
   token-ttl-seconds: 900
 # 服务客户端注册表（client_id、scopes、audience）在 auth-service 的 application.yml 中维护；
-# 密钥散列只经环境变量 WORKORDER_CLIENT_SECRET_HASH 注入，不放入 Nacos。
+# 密钥散列只经环境变量 WORKORDER_CLIENT_SECRET_HASH、QUALITY_CLIENT_SECRET_HASH 注入，不放入 Nacos。

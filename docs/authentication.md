@@ -114,6 +114,24 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 | AUTH_DEMO_QC01_PASSWORD | 演示账号 qc01（QUALITY_INSPECTOR）密码，init-env 生成；为空不创建，已存在不重置 |
 | AUTH_DEMO_OP01_PASSWORD | 演示账号 op01（OPERATOR）密码，init-env 生成；冒烟用它验证"只读质检、处置 403"；为空不创建，已存在不重置 |
 | AUTH_TOKEN_TTL_SECONDS | 令牌有效期，默认 900 秒，配置范围 60 至 3600 秒 |
+| WORKORDER_CLIENT_SECRET / WORKORDER_CLIENT_SECRET_HASH | 工单服务客户端（scope `inventory:reserve`）的明文密钥（只给 workorder）与 BCrypt 散列（只给 auth），init-env 成对生成 |
+| QUALITY_CLIENT_SECRET / QUALITY_CLIENT_SECRET_HASH | 质检服务客户端（scope `inventory:qc-hold`）的明文密钥（只给 quality）与 BCrypt 散列（只给 auth），init-env 成对生成 |
+
+## 服务客户端（client_credentials）
+
+服务间调用不使用用户令牌，而是由调用方以 `POST /auth/oauth2/token`（`grant_type=client_credentials`）换取服务令牌。
+客户端注册在 auth-service `application.yml` 的 `manufacturing.auth.clients`，不需要数据库迁移：
+
+| client-id | scopes | audience | 调用的接口 | 密钥变量 |
+| --- | --- | --- | --- | --- |
+| `workorder-service` | `inventory:reserve` | `inventory-service` | `/inventory/reservations/**`（物料预留） | `WORKORDER_CLIENT_SECRET` |
+| `quality-service` | `inventory:qc-hold` | `inventory-service` | `/inventory/qc-hold/**`（QC-HOLD 入库、放行、报废） | `QUALITY_CLIENT_SECRET` |
+
+- 每个客户端一把独立密钥、scope 互不包含：认证服务拒绝跨客户端申请对方 scope（`invalid_scope`）；库存服务按路径校验 scope（`/inventory/qc-hold/**` 的过滤链由库存实现 PR 落地）。
+- 认证服务只保存 BCrypt（cost 10）散列；cloud profile 下任一散列缺失即启动失败，compose 用 `${VAR:?}` 提前报错。明文与散列都不进入仓库或 Nacos。
+- 这两类接口都是内部接口，调用方经 Nacos 服务发现直连库存服务；网关已拒绝 `/api/inventory/reservations/**`，`/api/inventory/qc-hold/**` 的拒绝规则随库存实现 PR 落地。
+- 服务令牌不含 `permissions`；`inventory:*` 服务 scope 不属于任何用户角色，不出现在 `Role` 枚举与 `contracts/auth/role-permissions.json` 中（`RolePermissionContractTest` 反向断言）。
+- **已有 `.env` 升级**：重新运行 `scripts/init-env.sh`（或 `init-env.ps1`；`make demo` 会自动执行），只补齐缺失的 `QUALITY_CLIENT_SECRET` 与散列，已有值不变。轮换：删除 `.env` 中对应的两行后重新运行 init-env，并重启 auth 与对应调用方。
 
 现有启动与冒烟脚本默认使用 admin；如改用其他引导用户名，需相应调整调用凭据。认证服务启动时读取 TTL 与签发参数，修改后应重启认证服务。
 
