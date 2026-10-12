@@ -14,4 +14,6 @@ spring:
     driver-class-name: org.h2.Driver
     username: sa
     password: ""
-  sql.init.mode: always
+  # 测试库同样由 Flyway 执行 db/migration 建表；不加载 db/demo 演示数据。
+# 测试设备数据放在测试资源 db/testdata（不是 db/demo），满足“测试不加载演示数据”的约定。
+spring.flyway.locations: classpath:db/migration,classpath:db/testdata

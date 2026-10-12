@@ -1,0 +1,2 @@
+# 演示环境叠加配置（如 SPRING_PROFILES_ACTIVE=cloud,demo）：在 Flyway 迁移位置追加 db/demo，加载演示设备。
+spring.flyway.locations: classpath:db/migration,classpath:db/demo

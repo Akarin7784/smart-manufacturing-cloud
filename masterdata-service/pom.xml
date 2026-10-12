@@ -12,6 +12,9 @@
 <dependency><groupId>com.smartmanufacturing</groupId><artifactId>cloud-common</artifactId></dependency>
 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-jdbc</artifactId></dependency>
 <dependency><groupId>com.mysql</groupId><artifactId>mysql-connector-j</artifactId><scope>runtime</scope></dependency>
+<!-- Flyway 管理表结构版本（db/migration）；MySQL 8.x 需要单独的 flyway-mysql 方言模块，版本由 Spring Boot 统一管理。 -->
+<dependency><groupId>org.flywaydb</groupId><artifactId>flyway-core</artifactId></dependency>
+<dependency><groupId>org.flywaydb</groupId><artifactId>flyway-mysql</artifactId></dependency>
 <dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>
 <dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-starter-alibaba-sentinel</artifactId></dependency><dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-test</artifactId><scope>test</scope></dependency>
 <!-- Testcontainers：*IT 在真实 MySQL 8.4 上验证行锁与并发发布，版本由 Spring Boot 依赖管理统一。 -->

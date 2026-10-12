@@ -36,6 +36,15 @@ class ConcurrentReleaseMySqlIT {
     @Autowired JdbcTemplate jdbc;
     @MockitoBean org.springframework.security.oauth2.jwt.JwtDecoder decoder;
 
+    /** 表结构必须来自 Flyway V1（含 current_flag 唯一约束），防止回退到 spring.sql.init 而使迁移脚本未经真实 MySQL 验证。 */
+    @Test
+    void schemaComesFromFlywayV1() {
+        assertThat(jdbc.queryForObject(
+            "select count(*) from flyway_schema_history where version = '1' and success = 1", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from information_schema.statistics where table_schema = database()"
+            + " and index_name in ('uk_bom_header_current', 'uk_routing_header_current')", Integer.class)).isPositive();
+    }
+
     /** 两个线程在栅栏处同时发布，收集成功/失败，任何非业务异常都会让测试失败。 */
     private static List<Object> race(Callable<?> a, Callable<?> b) throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(2);

@@ -14,4 +14,4 @@ spring:
     driver-class-name: org.h2.Driver
     username: sa
     password: ""
-  sql.init.mode: always
+  # 测试库同样由 Flyway 执行 db/migration 建表；不加载 db/demo 演示数据。
