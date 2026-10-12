@@ -1,0 +1,76 @@
+# quality-service 设计稿（已拍板）
+
+基线：main `0ed2828`。事件字段以 #20（`feat/workorder-reporting`）为准。契约见 `docs/api/quality-openapi.yaml`。
+参照 Opcenter NCR/MRB、鼎捷不良处置：报工发现不良 → 生成 NCR → 评审 → 处置 → 关闭。
+
+## 1. 消费 `mes-workorder-quality`（消费组 `CG_QUALITY_DEFECT`）
+- **DefectReported**：`eventId, workOrderNo, operationNo, materialCode, lotNo, uom, defectQty, reportId, occurredAt`。一次报工建一张 NCR，按 `reportId` 唯一。
+- **DefectReversed**：只认 `reversedReportId`（被冲销的原报工）和 `reversalId`（冲销记录本身）；#20 将去掉 `reportId`。按 `reversedReportId` 找 NCR。
+- **字段口径**：`materialCode` 是工单产品码。不良事件不带 `aggregateVersion`，NCR 与报工一一对应，靠下面的规则处理乱序。
+- **幂等**：`consumed_event(event_id PK)` 与业务写入同一事务，主键冲突直接 ACK；`ncr.source_report_id` 唯一作第二道保险。
+- **乱序：冲销先于报告到达，暂存待对冲**：
+  - 找不到 NCR 时写 `pending_reversal(reversed_report_id PK, reversal_id, event_id, received_at, status=WAITING)`，然后 ACK，不阻塞消费位点。
+  - 原报工在过期前到达：同一事务内命中暂存，直接建 `VOIDED` 的 NCR（`void_reason=REVERSED_BEFORE_REPORTED`），暂存标 `MATCHED`。只发 `NcrVoided`，不发 `NcrOpened`。
+  - **超时兜底**：定时任务把 `WAITING` 超过 `quality.pending-reversal.ttl`（默认 `PT24H`）的记录标 `EXPIRED`（相当于死信），计数 `mes_quality_pending_reversal_expired_total`，告警 `QualityReversalOrphan`，人工按 `reversedReportId` 去工单侧核对。不用 MQ 重试或 DLQ 等待。
+  - 过期后原报工才到：按正常 Reported 建 `OPEN` 的 NCR，暂存保持 `EXPIRED`，由人工处理。
+- **已处置的 NCR 收到冲销**：不回退，因为实物已经返工或报废。
+  - NCR 状态和处置数量不变，写 `ncr_conflict(event_id, ncr_no, type=DISPOSED_REVERSAL_CONFLICT, reversal_id, disposed_qty)`，然后 ACK。
+  - 计数 `mes_quality_event_consumed_total{result="disposed_reversal_conflict"}`，告警 `QualityDisposedReversalConflict`（>0 即告警）。
+  - 消费侧没有 HTTP 可返回，所以不对应任何 Problem type；冲突可经 `GET /api/quality/conflicts` 查询。
+  - 未处置（`OPEN` 或 `UNDER_REVIEW`，没有任何处置行）的 NCR 收到冲销：转 `VOIDED`。
+
+## 2. 领域模型
+- **NCR**：`ncr_no`、`source_report_id`（唯一）、`work_order_no`、`operation_no`、`material_code`、`lot_no`、`uom`、`defect_qty`、`disposed_qty`、`status`、`version`。
+- **状态机**：
+  - `OPEN →(review) UNDER_REVIEW →(处置累计 = 不良量) DISPOSED →(close) CLOSED`
+  - 未处置时收到冲销转 `VOIDED`，终态。
+  - `UNDER_REVIEW` 期间允许多次部分处置。
+- **处置行**：`type` 取 `REWORK`、`SCRAP`、`CONCESSION`，另有 `qty`、`uom`、`reason`、`operator`、`disposed_at`。只追加，不修改。
+- **数量守恒**：`Σqty = disposed_qty ≤ defect_qty`，相等时自动转 `DISPOSED`。用 `DECIMAL(18,6)` 十进制字符串；`uom` 必须等于 NCR 的单位，不换算。登记处置时 `SELECT … FOR UPDATE` 锁 NCR 行；幂等写事务用 READ COMMITTED。
+- **单人处置**：只要有 `quality:write` 就能处置，本期不做审批流。
+
+## 3. API（`/api/quality/**`，用户令牌：查询需 `quality:read`，写入需 `quality:write`）
+- **接口**：
+  - `GET /ncrs`、`GET /ncrs/{ncrNo}`
+  - `POST /ncrs/{ncrNo}/review`、`POST /ncrs/{ncrNo}/dispositions`、`POST /ncrs/{ncrNo}/close`
+  - `GET /pending-reversals`、`GET /conflicts`
+- 所有 POST 必须带 `Idempotency-Key`（作用域为用户 sub，保留 7 天），重放时原样返回首次状态码与响应体。
+- 不提供手工建 NCR 的接口。
+- **Problem type 固定枚举**（RFC 7807，`application/problem+json`）：
+
+| type | HTTP | 含义 |
+| --- | --- | --- |
+| `validation-error` | 400 | 参数校验失败 |
+| `idempotency-key-conflict` | 422 | 同一幂等键已用于不同请求体 |
+| `uom-mismatch` | 422 | 处置单位与 NCR 单位不一致 |
+| `over-dispose` | 422 | 处置数量超过剩余待处置量 |
+| `invalid-status-transition` | 409 | 当前状态不允许该操作（例如 OPEN 直接 close） |
+| `ncr-voided` | 409 | NCR 已作废，不能再评审、处置或关闭 |
+
+401/403/404 用 `about:blank`。
+
+## 4. 与库存的交互
+- **本期不做**：SCRAP 只登记处置记录，不调用库存，也不改动库存（契约中写明）；REWORK 和 CONCESSION 同样只记录。
+- **下期**：处置回写库存，包括 `inventory_writeback` 任务、固定 `Idempotency-Key`、退避重试、库存服务令牌、`QC-HOLD` 库位、回写指标和告警，以及回写 IT。
+- **不做**：RETURN_TO_SUPPLIER、手工 NCR、审批流、IQC/FQC/SPC。
+
+## 5. 事件、指标、运维
+- **Topic `mes-quality-event`**：tag 为 `NcrOpened`、`NcrDisposed`、`NcrClosed`、`NcrVoided`，带 `aggregateVersion`（取 `ncr.version`）。本期只发不消费。outbox 规则同库存：首次失败即结束本批。
+- **指标**：
+  - `mes_quality_api_total{result}`，result 取 `ok`、`replay`、6 种 type 的下划线写法、`error`
+  - `mes_quality_ncr_transition_total{to}`，提交后计数
+  - `mes_quality_disposition_qty_total{type,uom}`
+  - `mes_quality_event_consumed_total{tag,result}`
+  - `mes_quality_pending_reversal_expired_total`
+  - `mes_quality_outbox_pending`
+  - `mes_quality_ncr_open`
+- **Flyway V1**：表 `ncr`、`ncr_disposition`、`consumed_event`、`pending_reversal`、`ncr_conflict`、`outbox_event`、`idempotency_record`。
+- **部署**：compose、网关路由和管理端口 18086 归运维，契约 PR 不改。
+
+## 6. 合入门槛（Testcontainers：真实 RocketMQ + MySQL 8.4，经 broker 投递）
+1. **重复投递**：同一 DefectReported 投递 3 次，只生成 1 条 NCR。
+2. **冲销先于报告**：
+   - 先冲销、后报工（过期前），NCR 为 `VOIDED`，暂存为 `MATCHED`。
+   - 只有冲销时，用可注入的 `Clock` 推进超过 TTL，断言暂存为 `EXPIRED`，过期计数 +1。
+3. **已处置的 NCR 被冲销**：NCR 状态和处置数量不变，有 1 条 `DISPOSED_REVERSAL_CONFLICT` 冲突记录，冲突计数 +1，消息已 ACK、没有重投。
+4. **契约测试**：每个响应按 OpenAPI 校验，6 种 type 全部触发；并发处置不超处置；幂等重放。
