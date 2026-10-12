@@ -40,6 +40,7 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 - 独立库 `manufacturing_inventory`（账号 `inventory_app`），端口 8085，Flyway 从自己的 `V1__init.sql` 开始。数量列统一 `DECIMAL(18,6)`，接口以十进制字符串传输。
 - 表：库位 `warehouse_location`、物料单位登记 `inventory_material`、批次 `lot`、现存量 `stock_on_hand`（物料+库位+批次唯一，带 version）、只追加流水 `stock_txn`、预留单 `reservation`/`reservation_line`、幂等记录 `idempotency_record`（按 client_id/sub 划分作用域，保存首次响应原文）、`outbox_event`。
 - 加锁约定：需要校验可用量的写操作对物料全部现存量行按 id 升序 `SELECT ... FOR UPDATE`，多物料按编码升序；可用量 = 现存量 − ACTIVE 预留未扣减量。死锁牺牲者整笔重试（最多 3 次）。
+- 网关：服务间内部接口统一列在 cloud-gateway `application.yml` 的 `manufacturing.gateway.internal-paths`（预留 `/api/inventory/reservations/**`、QC-HOLD `/api/inventory/qc-hold/**`），由 `InternalPathDenyFilter` 在认证前返回 404 problem+json，不转发；调用方经 Nacos 直连资源服务。新增服务令牌接口须同步该清单与网关测试。
 - 安全：`/inventory/reservations/**` 只接受 aud=`inventory-service` 且 scope 含 `inventory:reserve` 的服务令牌；其他接口使用用户令牌（`inventory:read` / `inventory:write`）。错误统一为 RFC 7807。接口契约见 `docs/api/inventory-openapi.yaml`。
 - 预留：整单原子（按物料编码升序锁行后统一判定），过期只由库存服务的 `ReservationExpiryJob` 判定（`FOR UPDATE SKIP LOCKED`，多实例只过期一次）。幂等事务使用 READ COMMITTED，保证排队拿到行锁后读到最新的有效预留量。
 - 事件：outbox 与业务同事务写入，`OutboxPublisher` 每秒用 `SKIP LOCKED` 领取并经 RocketMQ remoting 客户端同步发送（至少一次，失败指数退避，eventId 不变）；topic/tag 读取 Nacos `manufacturing.mq.*`。
