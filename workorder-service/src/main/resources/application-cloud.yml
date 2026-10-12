@@ -26,3 +26,6 @@ spring:
     hikari:
       maximum-pool-size: 10
       minimum-idle: 2
+# 物料预留：库存服务（PR #14 契约）接入前使用本地替身 local —— 预留总是成功、不检查真实库存，
+# 因此 cloud / demo 环境不能用来验证缺料；接入后改为 inventory。
+manufacturing.workorder.material-reservation: ${WORKORDER_MATERIAL_RESERVATION:local}
