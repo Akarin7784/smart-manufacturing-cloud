@@ -38,5 +38,8 @@ class QuantitiesTest {
         assertThat(ProblemType.RESERVATION_CONSUMED.status().value()).isEqualTo(409);
         assertThat(ProblemType.LINE_CLOSED.status().value()).isEqualTo(409);
         assertThat(ProblemType.VALIDATION_ERROR.status().value()).isEqualTo(400);
+        // uom-mismatch 为 422；契约固定 9 种类型，新增类型必须先改契约再改此处。
+        assertThat(ProblemType.UOM_MISMATCH.status().value()).isEqualTo(422);
+        assertThat(ProblemType.values()).hasSize(9);
     }
 }

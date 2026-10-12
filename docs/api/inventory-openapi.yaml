@@ -110,7 +110,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/InsufficientStockProblem'
         '422':
-          $ref: '#/components/responses/IdempotencyConflict'
+          $ref: '#/components/responses/MovementUnprocessable'
 
   /api/inventory/reservations/{reservationId}:
     get:
@@ -444,7 +444,7 @@ paths:
       operationId: inbound
       summary: 入库
       description: |
-        增加指定（物料、库位、批次）的现存量并写入流水。物料首次入库时登记计量单位，之后必须一致，否则 400。
+        增加指定（物料、库位、批次）的现存量并写入流水。物料首次入库时登记计量单位，之后必须一致，否则 422（type=uom-mismatch）。
         需要 `inventory:write` 与 `Idempotency-Key`（作用域为用户 sub），重放语义同预留接口。
       security:
         - userBearer: []
@@ -470,7 +470,7 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '422':
-          $ref: '#/components/responses/IdempotencyConflict'
+          $ref: '#/components/responses/MovementUnprocessable'
 
   /api/inventory/outbound:
     post:
@@ -510,7 +510,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OutboundShortageProblem'
         '422':
-          $ref: '#/components/responses/IdempotencyConflict'
+          $ref: '#/components/responses/MovementUnprocessable'
 
 components:
   securitySchemes:
@@ -598,6 +598,14 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/IdempotencyConflictProblem'
+    MovementUnprocessable:
+      description: |
+        422 错误：幂等键已用于不同的请求体（type=idempotency-key-conflict），
+        或请求计量单位与该物料已登记的现存量单位不一致（type=uom-mismatch）。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/MovementUnprocessableProblem'
 
   schemas:
     CreateLocationRequest:
@@ -846,8 +854,8 @@ components:
           description: 物料编码。
         uom:
           type: string
-          description: 计量单位编码（如 PCS、KG），必须与物料主数据的基本单位一致，不一致返回 400；数量均以该单位计。
-          examples: ['PCS']
+          description: 计量单位编码，取主数据物料的基本单位编码（如 `个`、`件`、`kg`）；与该物料已登记的现存量单位不一致返回 422（type=uom-mismatch）；数量均以该单位计。
+          examples: ['个']
         qty:
           $ref: '#/components/schemas/Quantity'
         sourceLineId:
@@ -884,8 +892,8 @@ components:
       properties:
         uom:
           type: string
-          description: 计量单位编码（如 PCS、KG），与物料主数据一致；数量均以该单位计。
-          examples: ['PCS']
+          description: 计量单位编码，取主数据物料的基本单位编码（如 `个`、`件`、`kg`）；数量均以该单位计。
+          examples: ['个']
         lineId:
           type: string
           description: 预留行 ID，扣减时使用。
@@ -943,6 +951,7 @@ components:
         - reservation-consumed
         - line-closed
         - validation-error
+        - uom-mismatch
       description: |
         固定的错误类型枚举，调用方按此分支处理，不解析 `detail`。
         | type | HTTP 状态 | 含义 |
@@ -954,7 +963,8 @@ components:
         | `reservation-released` | 410 | 预留单已释放 |
         | `reservation-consumed` | 409 | 预留单已整单扣减 |
         | `line-closed` | 409 | 预留行已关闭 |
-        | `validation-error` | 400 | 请求参数校验失败（含计量单位与主数据不一致） |
+        | `validation-error` | 400 | 请求参数校验失败（格式、必填、范围等；只对应 400） |
+        | `uom-mismatch` | 422 | 请求计量单位与该物料已登记的现存量单位不一致（入库、出库、预留） |
         401/403/404 由框架统一处理，不在此枚举中，调用方按 HTTP 状态码处理。
 
     Problem:
@@ -996,6 +1006,15 @@ components:
           properties:
             type:
               enum: [over-consume, idempotency-key-conflict]
+    MovementUnprocessableProblem:
+      description: 422 错误：幂等键冲突或计量单位与现存量单位不一致。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type]
+          properties:
+            type:
+              enum: [idempotency-key-conflict, uom-mismatch]
     IdempotencyConflictProblem:
       description: 幂等键冲突。
       allOf:
@@ -1058,8 +1077,8 @@ components:
           description: 物料编码。
         uom:
           type: string
-          description: 计量单位编码（如 PCS、KG）；缺口按物料编码 + 计量单位汇总。
-          examples: ['PCS']
+          description: 计量单位编码，取主数据物料的基本单位编码（如 `个`、`kg`）；缺口按物料编码 + 计量单位汇总。
+          examples: ['个']
         requested:
           allOf:
             - $ref: '#/components/schemas/Quantity'
