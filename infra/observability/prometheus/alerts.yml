@@ -84,3 +84,12 @@ groups:
         annotations:
           summary: "{{ $labels.application }} 出现超时未对冲的冲销"
           description: "最近 15 分钟有 {{ $value }} 条暂存冲销超过 TTL 未对冲，请在 /api/quality/pending-reversals 中按 reversedReportId 核对工单侧。"
+      # 坏消息：JSON 解析失败、缺 eventId 或必填字段等不可恢复错误，已写入 invalid_event 表并直接 ACK、不重投。
+      # 消息本身已无法自动修复，一次即告警；启动时 DefectReported/DefectReversed 两个 tag 的 result="invalid" 已以 0 预注册。
+      - alert: QualityInvalidEvent
+        expr: sum by (application) (increase(mes_quality_event_consumed_total{result="invalid"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.application }} 收到无法解析的不良品事件"
+          description: "最近 15 分钟有 {{ $value }} 条坏消息被记入 invalid_event 并跳过，请核对生产方（工单服务）的事件格式。"

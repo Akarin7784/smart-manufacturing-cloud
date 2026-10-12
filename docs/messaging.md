@@ -101,5 +101,5 @@
 
 `infra/rocketmq/broker.conf` 显式设置 `fileReservedTime = 72`（小时）。约束：
 
-- 该值必须等于质检服务的 `mes.quality.broker-retention`（默认 72h，随 #30/#31 引入；属性落地后在 compose 中显式传入，两处一起改）。
+- 该值必须等于质检服务的 `mes.quality.broker-retention`（默认 PT72H；compose 中以 `MES_QUALITY_BROKER_RETENTION=PT72H` 显式传入，两处一起改；质检服务启动时校验去重保留期 > broker 保留期 + 冲销 TTL）。
 - 质检 `consumed_event`、`defect_report_lock` 的保留期必须大于 broker 保留期 + 冲销暂存窗口（`quality.pending-reversal.ttl`，默认 24h），即 > 96h；否则 Broker 仍可能重投的消息在去重记录清理后会被重复处理。

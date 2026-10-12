@@ -321,6 +321,8 @@ services:
       MYSQL_HOST: mysql
       # 服务读取 MYSQL_PASSWORD（无默认值），与库存服务写法一致，映射自 .env 的 MYSQL_APP_PASSWORD。
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
+      # 必须等于 infra/rocketmq/broker.conf 的 fileReservedTime（72 小时），服务据此校验去重记录保留期。
+      MES_QUALITY_BROKER_RETENTION: PT72H
     # 业务端口 8086 与管理端口 18086 都不发布到宿主机：业务接口经网关 /api/quality/** 访问，
     # Prometheus 在内网抓取 quality:18086；冒烟脚本用一次性 curl 容器在内网核对告警计数器。
     networks:
