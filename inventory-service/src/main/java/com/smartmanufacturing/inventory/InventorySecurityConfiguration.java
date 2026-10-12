@@ -31,6 +31,8 @@ import java.util.function.Supplier;
  * <ul>
  *   <li><b>预留接口</b>（/inventory/reservations/**）：只接受工单服务以 OAuth2 客户端凭证获取的服务身份令牌，
  *       令牌受众必须为 {@code inventory-service}（解码阶段校验，不符返回 401），且 scope 含 {@code inventory:reserve}（不足返回 403）。</li>
+ *   <li><b>质检隔离接口</b>（/inventory/qc-hold/**）：只接受质检服务的服务身份令牌，受众同样为 {@code inventory-service}，
+ *       scope 必须含 {@code inventory:qc-hold}（不足 403）；两种 scope 互不通用。</li>
  *   <li><b>其他接口</b>（库位、批次、出入库、查询）：接受用户令牌（受众 manufacturing-api），按 permissions 声明做方法级授权。</li>
  * </ul>
  * 两类令牌均由认证服务用同一 RSA 私钥签名，通过 JWKS 获取公钥；不信任任何外部身份请求头。
@@ -41,6 +43,8 @@ import java.util.function.Supplier;
 public class InventorySecurityConfiguration {
     /** 预留接口所需的 scope（Spring 默认以 SCOPE_ 前缀映射 scope 声明）。 */
     static final String RESERVE_AUTHORITY = "SCOPE_inventory:reserve";
+    /** 质检隔离接口所需的 scope（仅质检服务客户端持有）。 */
+    static final String QC_HOLD_AUTHORITY = "SCOPE_inventory:qc-hold";
 
     private final String jwks;
     private final String issuer;
@@ -64,6 +68,21 @@ public class InventorySecurityConfiguration {
         common(http, mapper)
             .securityMatcher("/inventory/reservations", "/inventory/reservations/**")
             .authorizeHttpRequests(rules -> rules.anyRequest().access(serviceTokenRule()))
+            .oauth2ResourceServer(resource -> resource
+                .jwt(jwt -> jwt.decoder(decoder(serviceAudience)).jwtAuthenticationConverter(new JwtAuthenticationConverter()))
+                .authenticationEntryPoint((req, res, e) -> write(mapper, req, res, 401, "请提供有效的服务身份令牌")));
+        return http.build();
+    }
+
+    /**
+     * 质检隔离接口过滤链（与预留链同级优先）。用户令牌（aud=manufacturing-api）在解码阶段即被拒绝（401），
+     * 预留令牌 scope 不符返回 403。
+     */
+    @Bean @Order(0)
+    SecurityFilterChain qcHoldChain(HttpSecurity http, ObjectMapper mapper) throws Exception {
+        common(http, mapper)
+            .securityMatcher("/inventory/qc-hold", "/inventory/qc-hold/**")
+            .authorizeHttpRequests(rules -> rules.anyRequest().access(serviceTokenRule(QC_HOLD_AUTHORITY)))
             .oauth2ResourceServer(resource -> resource
                 .jwt(jwt -> jwt.decoder(decoder(serviceAudience)).jwtAuthenticationConverter(new JwtAuthenticationConverter()))
                 .authenticationEntryPoint((req, res, e) -> write(mapper, req, res, 401, "请提供有效的服务身份令牌")));
@@ -100,11 +119,16 @@ public class InventorySecurityConfiguration {
 
     /** 服务令牌授权规则：受众含 inventory-service 且具备 inventory:reserve。 */
     AuthorizationManager<RequestAuthorizationContext> serviceTokenRule() {
+        return serviceTokenRule(RESERVE_AUTHORITY);
+    }
+
+    /** 服务令牌授权规则（按所需 scope 参数化）：受众含 inventory-service 且具备指定 scope 权限。 */
+    AuthorizationManager<RequestAuthorizationContext> serviceTokenRule(String requiredAuthority) {
         return (Supplier<Authentication> auth, RequestAuthorizationContext ctx) -> {
             Authentication a = auth.get();
             boolean ok = a instanceof JwtAuthenticationToken jwt
                 && jwt.getToken().getAudience() != null && jwt.getToken().getAudience().contains(serviceAudience)
-                && a.getAuthorities().stream().anyMatch(g -> RESERVE_AUTHORITY.equals(g.getAuthority()));
+                && a.getAuthorities().stream().anyMatch(g -> requiredAuthority.equals(g.getAuthority()));
             return new AuthorizationDecision(ok);
         };
     }
