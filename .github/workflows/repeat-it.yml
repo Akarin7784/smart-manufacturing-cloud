@@ -1,0 +1,142 @@
+# 手动触发：在指定分支上把同一个集成测试（*IT）重复运行 N 次，用于验证并发类缺陷（如死锁）的修复。
+# 只有 workflow_dispatch 触发，不参与 push / pull_request，不影响现有必需检查。
+name: Repeat integration test
+
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: 'Maven 模块，例如 inventory-service'
+        required: true
+        default: inventory-service
+      test:
+        description: '集成测试类或方法，例如 ReservationMySqlIT 或 ReservationMySqlIT#method'
+        required: true
+        default: ReservationMySqlIT
+      repeat:
+        description: '重复次数（1–50）'
+        required: true
+        default: '20'
+
+# 只读仓库内容；报告通过 Actions 的上传接口保存。
+permissions:
+  contents: read
+
+jobs:
+  # 校验输入并生成迭代矩阵，每次迭代对应一个独立 job，运行页面上可以直接看到 N 个结果。
+  setup:
+    name: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - name: Validate inputs and build matrix
+        id: gen
+        # 输入一律经环境变量传入，避免直接拼进脚本造成注入。
+        env:
+          MODULE: ${{ inputs.module }}
+          TEST: ${{ inputs.test }}
+          REPEAT: ${{ inputs.repeat }}
+        run: |
+          if ! [[ "$MODULE" =~ ^[A-Za-z0-9._-]+$ ]]; then echo "::error::module 不合法：$MODULE"; exit 1; fi
+          if ! [[ "$TEST" =~ ^[A-Za-z0-9_.#*+,-]+$ ]]; then echo "::error::test 不合法：$TEST"; exit 1; fi
+          if ! [[ "$REPEAT" =~ ^[0-9]+$ ]] || [ "$REPEAT" -lt 1 ] || [ "$REPEAT" -gt 50 ]; then
+            echo "::error::repeat 必须是 1 到 50 之间的整数，当前为：$REPEAT"; exit 1
+          fi
+          # 生成 [1,2,...,N] 作为矩阵。
+          echo "matrix=$(seq -s, 1 "$REPEAT" | sed 's/^/[/;s/$/]/')" >> "$GITHUB_OUTPUT"
+
+  repeat:
+    name: run ${{ matrix.iteration }}
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # 某次失败不取消其他迭代，最终统计完整的通过/失败次数。
+      fail-fast: false
+      matrix:
+        iteration: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      # 与 build.yml 相同的固定版本 Action、JDK 21 与 Maven 缓存。
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Java 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: '**/pom.xml'
+      # 只构建目标模块及其依赖；跳过全部单测（-Dtest=NONE），failsafe 只跑指定 IT；
+      # 依赖模块里没有匹配的测试不算失败；跳过 JaCoCo，避免只跑一个 IT 时覆盖率门禁误报。
+      - name: Run integration test
+        env:
+          MODULE: ${{ inputs.module }}
+          TEST: ${{ inputs.test }}
+        run: |
+          bash mvnw -B -ntp -pl "$MODULE" -am verify \
+            -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=false \
+            -Dit.test="$TEST" -Dfailsafe.failIfNoSpecifiedTests=false \
+            -Djacoco.skip=true
+      # 防止测试名写错导致什么都没跑却显示通过：目标模块必须实际执行过至少一个用例且无跳过。
+      - name: Assert integration test executed
+        env:
+          MODULE: ${{ inputs.module }}
+        run: |
+          f="$MODULE/target/failsafe-reports/failsafe-summary.xml"
+          if [ ! -f "$f" ]; then echo "::error::未找到 $f，集成测试没有执行"; exit 1; fi
+          c=$(sed -n 's:.*<completed>\([0-9]*\)</completed>.*:\1:p' "$f"); s=$(sed -n 's:.*<skipped>\([0-9]*\)</skipped>.*:\1:p' "$f")
+          echo "第 ${{ matrix.iteration }} 次：执行 ${c:-0} 个用例，跳过 ${s:-0} 个"
+          if [ "${c:-0}" -eq 0 ]; then echo "::error::没有执行任何集成测试，请检查 test 输入"; exit 1; fi
+          if [ "${s:-0}" -ne 0 ]; then echo "::error::有 ${s} 个用例被跳过"; exit 1; fi
+      # 失败时上传报告，便于查看死锁等异常的堆栈。
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-reports-run-${{ matrix.iteration }}
+          path: |
+            **/target/surefire-reports/**
+            **/target/failsafe-reports/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  # 汇总：通过 API 统计各迭代 job 的结论，写入运行摘要；有任何一次失败则本 job 失败。
+  summary:
+    name: summary
+    needs: [setup, repeat]
+    if: always() && needs.setup.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Write pass/fail counts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          MODULE: ${{ inputs.module }}
+          TEST: ${{ inputs.test }}
+          REPEAT: ${{ inputs.repeat }}
+        run: |
+          jobs=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | select(.name | startswith("run ")) | .conclusion')
+          pass=$(grep -cx success <<<"$jobs" || true)
+          fail=$(grep -cxv success <<<"$jobs" || true)
+          {
+            echo "## 集成测试重复运行结果"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| 分支 | \`${GITHUB_REF_NAME}\` (\`${GITHUB_SHA::7}\`) |"
+            echo "| 模块 | \`$MODULE\` |"
+            echo "| 测试 | \`$TEST\` |"
+            echo "| 计划次数 | $REPEAT |"
+            echo "| 通过 | $pass |"
+            echo "| 失败/取消 | $fail |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "通过 $pass / 失败 $fail / 计划 $REPEAT"
+          if [ "$pass" -ne "$REPEAT" ]; then echo "::error::$REPEAT 次中只有 $pass 次通过"; exit 1; fi
