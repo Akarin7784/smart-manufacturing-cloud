@@ -1,0 +1,11 @@
+# Grafana 看板自动加载：读取挂载的 dashboards 目录，看板 JSON 以仓库为准，界面修改不会持久化。
+apiVersion: 1
+providers:
+  - name: smart-manufacturing
+    folder: Smart Manufacturing
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      path: /var/lib/grafana/dashboards
