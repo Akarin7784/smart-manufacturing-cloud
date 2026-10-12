@@ -22,19 +22,31 @@ public class ReservationController {
     private final ReservationService reservations;
     private final IdempotencyService idempotency;
     private final ObjectMapper mapper;
+    private final InventoryMetrics metrics;
 
-    public ReservationController(ReservationService reservations, IdempotencyService idempotency, ObjectMapper mapper) {
-        this.reservations = reservations; this.idempotency = idempotency; this.mapper = mapper;
+    public ReservationController(ReservationService reservations, IdempotencyService idempotency, ObjectMapper mapper, InventoryMetrics metrics) {
+        this.reservations = reservations; this.idempotency = idempotency; this.mapper = mapper; this.metrics = metrics;
     }
 
     /** 整单预留：首次 201 并带 Location；重放同样带 Location（从首次响应体解析）。 */
     @PostMapping
     public ResponseEntity<String> create(@RequestHeader(value = "Idempotency-Key", required = false) String key,
                                          @Valid @RequestBody CreateReservation request, Authentication auth) {
-        CreateReservation normalized = normalize(request);
         String caller = CallerIdentity.of(auth);
-        IdempotencyService.StoredResponse r = LockRetry.run(() -> idempotency.execute(caller, key, "reservation.create", normalized, 201,
-            () -> reservations.create(caller, normalized)));
+        IdempotencyService.StoredResponse r;
+        try {
+            CreateReservation normalized = normalize(request);
+            r = LockRetry.run(() -> idempotency.execute(caller, key, "reservation.create", normalized, 201,
+                () -> reservations.create(caller, normalized)));
+        } catch (ProblemException e) {
+            // 业务错误按 ProblemType 计数（下划线写法，如 insufficient_stock）。
+            metrics.reservation(e.type().value().replace('-', '_'));
+            throw e;
+        } catch (RuntimeException e) {
+            metrics.reservation("error");
+            throw e;
+        }
+        metrics.reservation(r.replayed() ? "replay" : "ok");
         ResponseEntity<String> response = StockController.respond(r);
         try {
             String id = mapper.readTree(r.body()).path("reservationId").asText();

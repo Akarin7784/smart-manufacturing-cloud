@@ -31,10 +31,11 @@ public class ReservationService {
     private final OutboxWriter outbox;
     private final Clock clock;
     private final Duration ttl;
+    private final InventoryMetrics metrics;
 
-    public ReservationService(JdbcTemplate jdbc, StockService stock, OutboxWriter outbox, Clock clock,
+    public ReservationService(JdbcTemplate jdbc, StockService stock, OutboxWriter outbox, Clock clock, InventoryMetrics metrics,
                               @Value("${inventory.reservation.ttl:PT15M}") Duration ttl) {
-        this.jdbc = jdbc; this.stock = stock; this.outbox = outbox; this.clock = clock; this.ttl = ttl;
+        this.jdbc = jdbc; this.stock = stock; this.outbox = outbox; this.clock = clock; this.ttl = ttl; this.metrics = metrics;
     }
 
     /** 预留单头（已加锁或快照）。 */
@@ -95,6 +96,7 @@ public class ReservationService {
                 n.line().materialCode(), n.line().uom(), n.qty(), n.qty());
         }
         Reservation result = load(id);
+        metrics.transition(Status.ACTIVE);
         outbox.append("ReservationCreated", id, request.workOrderNo(), "ACTIVE", Map.of("expiresAt", expiresAt, "lines", result.lines()));
         return result;
     }
@@ -122,6 +124,7 @@ public class ReservationService {
         ReleaseReason r = reason == null ? ReleaseReason.CALLER_REQUEST : reason;
         jdbc.update("update reservation set status = 'RELEASED', release_reason = ?, version = version + 1, updated_at = ? where id = ?",
             r.name(), Timestamp.from(clock.instant()), id);
+        metrics.transition(Status.RELEASED);
         outbox.append("ReservationReleased", id, h.workOrderNo(), "RELEASED", Map.of("reason", r.name()));
         return load(id);
     }
@@ -168,6 +171,7 @@ public class ReservationService {
         if (open != null && open == 0) {
             jdbc.update("update reservation set status = 'CONSUMED', version = version + 1, updated_at = ? where id = ?", Timestamp.from(clock.instant()), id);
             Reservation result = load(id);
+            metrics.transition(Status.CONSUMED);
             outbox.append("ReservationConsumed", id, h.workOrderNo(), "CONSUMED", Map.of("lines", result.lines()));
             return result;
         }
@@ -184,6 +188,7 @@ public class ReservationService {
             Timestamp.from(now), id, Timestamp.from(now));
         if (n == 0) return false;
         Header h = jdbc.queryForObject("select id, work_order_no, status, expires_at from reservation where id = ?", (rs, i) -> header(rs), id);
+        metrics.transition(Status.EXPIRED);
         outbox.append("ReservationExpired", id, h.workOrderNo(), "EXPIRED", Map.of("expiresAt", h.expiresAt()));
         return true;
     }

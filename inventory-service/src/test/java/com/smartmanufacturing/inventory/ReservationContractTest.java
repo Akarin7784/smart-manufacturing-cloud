@@ -40,6 +40,7 @@ class ReservationContractTest {
     @Autowired StockService stock;
     @Autowired LocationService locations;
     @Autowired ReservationExpiryJob expiry;
+    @Autowired io.micrometer.core.instrument.MeterRegistry registry;
 
     /** 已触发的 ProblemType，最终必须覆盖契约中的全部取值。 */
     private final Set<String> covered = new TreeSet<>();
@@ -151,5 +152,19 @@ class ReservationContractTest {
         call(postJson(svc(BASE) + "/" + id3 + "/renew", key(), null), ONE + "/renew", "post", 410);
 
         assertThat(covered).isEqualTo(OpenApiContract.problemTypes());
+
+        // 指标：结果、状态迁移、出入库数量均已计数，且标签不含工单号/物料号。
+        assertThat(registry.get("mes.inventory.reservation").tag("result", "ok").counter().count()).isGreaterThanOrEqualTo(3);
+        assertThat(registry.get("mes.inventory.reservation").tag("result", "replay").counter().count()).isGreaterThanOrEqualTo(1);
+        for (String result : List.of("insufficient_stock", "validation_error", "idempotency_key_conflict"))
+            assertThat(registry.get("mes.inventory.reservation").tag("result", result).counter().count()).as(result).isGreaterThanOrEqualTo(1);
+        for (String to : List.of("ACTIVE", "RELEASED", "EXPIRED", "CONSUMED"))
+            assertThat(registry.get("mes.inventory.reservation.transition").tag("to", to).counter().count()).as(to).isGreaterThanOrEqualTo(1);
+        assertThat(registry.get("mes.inventory.movement.qty").tag("kind", "consume").tag("uom", "kg").summary().totalAmount()).isGreaterThanOrEqualTo(10.5);
+        assertThat(registry.get("mes.inventory.outbox.pending").gauge().value()).isGreaterThanOrEqualTo(1);
+        assertThat(registry.get("mes.inventory.stock.lock.wait").timer().count()).isPositive();
+        registry.getMeters().stream().filter(m -> m.getId().getName().startsWith("mes.inventory"))
+            .flatMap(m -> m.getId().getTags().stream())
+            .forEach(t -> assertThat(t.getKey()).isIn("result", "to", "kind", "uom"));
     }
 }
