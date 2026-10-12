@@ -35,7 +35,7 @@ class WorkOrderJournal {
     /** 追加一条状态转换审计；requestId 取自当前请求的关联标识，便于与网关日志对照。 */
     void statusChanged(String orderId, String from, String to, String reason, String note, String operator) {
         jdbc.update("insert into work_order_status_log (id, order_id, from_status, to_status, reason, note, operator, request_id, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            UUID.randomUUID().toString(), orderId, from, to, reason, note, operator, MDC.get("requestId"), DbTime.ts(clock.instant()));
+            UUID.randomUUID().toString(), orderId, from, to, reason, note, operator, MDC.get("requestId"), Timestamp.from(clock.instant()));
         // 状态真正变化时计入 mes_workorder_status_transition_total{from,to}（同状态的审计，如追加冻结原因，不计）
         if (!from.equals(to)) metrics.transitionAfterCommit(from, to);
     }
@@ -53,7 +53,7 @@ class WorkOrderJournal {
         body.put("occurredAt", now.toString());
         try {
             jdbc.update("insert into outbox_event (event_id, aggregate_id, event_type, payload, occurred_at, topic, tag) values (?, ?, ?, ?, ?, ?, ?)",
-                eventId, orderId, eventType, mapper.writeValueAsString(body), DbTime.ts(now), topic, tag);
+                eventId, orderId, eventType, mapper.writeValueAsString(body), Timestamp.from(now), topic, tag);
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("事件序列化失败", e);
         }
