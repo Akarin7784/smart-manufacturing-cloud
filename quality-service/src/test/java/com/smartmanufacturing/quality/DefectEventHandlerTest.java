@@ -139,6 +139,17 @@ class DefectEventHandlerTest {
         assertThatThrownBy(() -> handler.handle("DefectReversed", e, noReversal)).isInstanceOf(DefectEventHandler.InvalidEventException.class);
     }
 
+    /**
+     * #46 回归：时钟固定在亚毫秒时刻（.000600），写入后同一时刻立即发布，事件必须被选中。
+     * 修复前 next_attempt_at 会被 TIMESTAMP(3) 舍入为 .001，晚于发布时刻而被跳过（Windows 上间歇失败）。
+     */
+    @Test void eventWrittenAndPublishedInSameMillisecondIsDue() {
+        clock.pin(java.time.Instant.parse("2026-10-12T04:00:00.000600Z"));
+        report(DefectEvents.id(), rid());
+        assertThat(publisher.publishBatch()).isEqualTo(1);
+        assertThat(sender.sent()).extracting(RecordingEventSender.Sent::tag).containsExactly("NcrOpened");
+    }
+
     @Test void outboxStopsBatchOnFirstFailureAndKeepsEventId() {
         report(DefectEvents.id(), rid());
         report(DefectEvents.id(), rid());
