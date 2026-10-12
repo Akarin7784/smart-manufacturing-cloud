@@ -1,0 +1,12 @@
+# Spectral 规则集：用于校验 docs/api 下的 OpenAPI 契约文档。
+# 继承官方 spectral:oas 推荐规则，并把警告级问题也视为需修复项（CI 使用 --fail-severity=warn）。
+extends:
+  - spectral:oas
+rules:
+  # 契约文档面向多方协作，每个操作都必须有说明和 operationId，便于生成替身与契约测试。
+  operation-description: error
+  operation-operationId: error
+  operation-tags: error
+  # 事件结构（Reservation*Event）只被 x-events 扩展以字符串引用，不出现在 HTTP 接口中，
+  # 该规则会误报为未使用组件，因此关闭；新增 HTTP 组件时请在评审中确认确实被引用。
+  oas3-unused-component: off

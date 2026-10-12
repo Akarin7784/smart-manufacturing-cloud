@@ -16,6 +16,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 接口契约校验：用 Spectral 按 .spectral.yaml 检查 docs/api 下的 OpenAPI 文档，警告级问题也视为失败。
+  openapi-lint:
+    name: openapi-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # spectral-cli 6.17 要求 Node 22 及以上；固定 CLI 主版本，避免规则集随上游变化。
+      - name: Set up Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Lint OpenAPI documents
+        run: npx -y @stoplight/spectral-cli@6.17.0 lint "docs/api/*.yaml" --fail-severity=warn
+
   verify:
     name: verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
