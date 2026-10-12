@@ -41,18 +41,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\init-auth.ps1
 完整容器环境：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\init-auth.ps1
-docker compose --profile app up -d --build
-powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\demo.ps1   # 或 make demo
 powershell -ExecutionPolicy Bypass -File .\scripts\security-smoke-test.ps1
 ```
 
-auth-db-init 是一次性初始化容器，为已有 MySQL 数据卷创建独立认证库及账号。它正常执行后显示 Exited (0)，认证服务随后启动。设备和工单数据不被删除。认证私钥保存在 auth-keys 数据卷，只有认证服务挂载该卷。
+db-init 是一次性初始化容器，幂等创建认证、设备、工单三个独立库及专用账号，并把账号密码同步为 .env 中的 MYSQL_APP_PASSWORD。它正常执行后显示 Exited (0)，认证服务随后启动。设备和工单数据不被删除。认证私钥保存在 auth-keys 数据卷，只有认证服务挂载该卷。
 
 如果使用本机 Java 的 cloud profile，先在基础设施就绪后运行：
 
 ```powershell
-docker compose --profile app run --rm auth-db-init
+docker compose up -d --wait db-init nacos-config-init
 powershell -ExecutionPolicy Bypass -File .\scripts\start-local.ps1 -Profile cloud -SkipBuild
 ```
 

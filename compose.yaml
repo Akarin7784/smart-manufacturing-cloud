@@ -1,17 +1,37 @@
-# 本机开发编排：基础设施默认启动，添加 app profile 后同时运行业务服务。
+# 本机开发/演示编排：基础设施默认启动，添加 app profile 后同时运行业务服务。
+# 所有密钥来自被 Git 忽略的 .env（由 scripts/init-env.sh 生成），compose 中不写明文密钥；缺失时 ${VAR:?} 直接报错。
 name: manufacturing-cloud
+
+# 业务服务共用的 Nacos/Sentinel/认证环境变量。
+x-cloud-env: &cloud-env
+  SPRING_PROFILES_ACTIVE: cloud
+  NACOS_ADDR: nacos:8848
+  NACOS_USERNAME: ${NACOS_USERNAME:-nacos}
+  NACOS_PASSWORD: ${NACOS_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
+  SENTINEL_DASHBOARD: sentinel:8858
+  AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
+  AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
+
+# 业务服务健康检查公共参数：JVM 服务启动较慢，给足 start_period 和重试次数。
+x-probe-timing: &probe-timing
+  interval: 10s
+  timeout: 8s
+  retries: 30
+  start_period: 60s
+
 services:
   nacos:
     image: nacos/nacos-server:v3.0.3
     environment:
       MODE: standalone
       PREFER_HOST_MODE: hostname
-      NACOS_AUTH_ENABLE: "false"
-      NACOS_AUTH_ADMIN_ENABLE: "false"
-      NACOS_AUTH_CONSOLE_ENABLE: "false"
-      NACOS_AUTH_IDENTITY_KEY: localIdentity
-      NACOS_AUTH_IDENTITY_VALUE: localIdentityValue
-      NACOS_AUTH_TOKEN: VGhpc0lzTXlDdXN0b21TZWNyZXRLZXkwMTIzNDU2Nzg=
+      # P1 起开启 Nacos 鉴权：服务端、管理接口和控制台都需要登录。
+      NACOS_AUTH_ENABLE: "true"
+      NACOS_AUTH_ADMIN_ENABLE: "true"
+      NACOS_AUTH_CONSOLE_ENABLE: "true"
+      NACOS_AUTH_IDENTITY_KEY: ${NACOS_AUTH_IDENTITY_KEY:?请先运行 scripts/init-env.sh 生成 .env}
+      NACOS_AUTH_IDENTITY_VALUE: ${NACOS_AUTH_IDENTITY_VALUE:?请先运行 scripts/init-env.sh 生成 .env}
+      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN:?请先运行 scripts/init-env.sh 生成 .env}
     ports:
       - "127.0.0.1:8848:8848"
       - "127.0.0.1:9848:9848"
@@ -20,22 +40,38 @@ services:
       - nacos-data:/home/nacos/data
       - nacos-logs:/home/nacos/logs
     healthcheck:
+      # Nacos 官方镜像自带 curl，此处探测的是第三方镜像，不涉及项目运行镜像。
       test: ["CMD-SHELL", "curl -fsS http://localhost:8848/nacos/v3/admin/core/state/readiness || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 40s
+  # 一次性容器：初始化 Nacos 管理员密码并导入 infra/nacos 配置，业务服务等待其成功退出后再启动。
+  nacos-config-init:
+    image: curlimages/curl:8.11.1
+    environment:
+      NACOS_URL: http://nacos:8848
+      NACOS_USERNAME: ${NACOS_USERNAME:-nacos}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
+      NACOS_CONFIG_DIR: /config
+    volumes:
+      - ./scripts/import-nacos.sh:/import-nacos.sh:ro
+      - ./infra/nacos:/config:ro
+    entrypoint: ["sh", "/import-nacos.sh"]
+    depends_on:
+      nacos:
+        condition: service_healthy
   mysql:
     image: mysql:8.4
     environment:
-      MYSQL_ROOT_PASSWORD: local-root-password
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
     ports:
       - "127.0.0.1:3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./infra/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$$MYSQL_ROOT_PASSWORD --silent"]
+      # 用 TCP 127.0.0.1 探测：首次初始化时的临时服务器只监听 socket，避免过早判定 healthy。
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 -uroot --silent"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -43,15 +79,16 @@ services:
     build: ./infra/sentinel
     ports:
       - "127.0.0.1:8858:8858"
-  # 初始化认证数据库，支持现有数据卷，无需删除设备和工单数据。
-  auth-db-init:
-    profiles: ["app"]
+  # 一次性容器：幂等创建三个业务库与专用账号，并把账号密码同步为 .env 中的值，支持已有数据卷。
+  db-init:
     image: mysql:8.4
     environment:
-      MYSQL_ROOT_PASSWORD: local-root-password
+      MYSQL_HOST: mysql
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
+      MYSQL_APP_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
     volumes:
-      - ./infra/mysql/auth-init.sql:/init.sql:ro
-    command: ["sh", "-c", "mysql -h mysql -uroot -p\"$$MYSQL_ROOT_PASSWORD\" < /init.sql"]
+      - ./infra/mysql/init-databases.sh:/init-databases.sh:ro
+    entrypoint: ["sh", "/init-databases.sh"]
     depends_on:
       mysql:
         condition: service_healthy
@@ -62,20 +99,21 @@ services:
       args:
         MODULE: auth-service
     environment:
-      SPRING_PROFILES_ACTIVE: cloud
-      NACOS_ADDR: nacos:8848
-      SENTINEL_DASHBOARD: sentinel:8858
+      <<: *cloud-env
       MYSQL_HOST: mysql
-      AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
-      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
       AUTH_BOOTSTRAP_PASSWORD: ${AUTH_BOOTSTRAP_PASSWORD:-}
       AUTH_PRIVATE_KEY_PATH: /home/app/security/signing-key.json
     volumes:
       - auth-keys:/home/app/security
+    # 运行镜像无 curl：用构建阶段编译的 JDK HttpClient 探针检查就绪端点。
+    healthcheck:
+      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:8083/actuator/health/readiness"]
+      <<: *probe-timing
     depends_on:
-      nacos:
-        condition: service_healthy
-      auth-db-init:
+      nacos-config-init:
+        condition: service_completed_successfully
+      db-init:
         condition: service_completed_successfully
   gateway:
     profiles: ["app"]
@@ -84,23 +122,23 @@ services:
       args:
         MODULE: cloud-gateway
     environment:
-      SPRING_PROFILES_ACTIVE: cloud
-      NACOS_ADDR: nacos:8848
-      SENTINEL_DASHBOARD: sentinel:8858
+      <<: *cloud-env
       AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
-      AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
-      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
     ports:
       - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:8080/actuator/health/readiness"]
+      <<: *probe-timing
+    # 网关只在下游全部就绪后启动，避免演示开始时出现 503 或服务发现为空。
     depends_on:
-      nacos:
-        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
       auth:
-        condition: service_started
+        condition: service_healthy
       device:
-        condition: service_started
+        condition: service_healthy
       workorder:
-        condition: service_started
+        condition: service_healthy
   device:
     profiles: ["app"]
     build:
@@ -108,18 +146,18 @@ services:
       args:
         MODULE: device-service
     environment:
-      SPRING_PROFILES_ACTIVE: cloud
-      NACOS_ADDR: nacos:8848
-      SENTINEL_DASHBOARD: sentinel:8858
+      <<: *cloud-env
       AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
-      AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
-      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
       MYSQL_HOST: mysql
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
+    healthcheck:
+      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:8081/actuator/health/readiness"]
+      <<: *probe-timing
     depends_on:
-      nacos:
-        condition: service_healthy
-      mysql:
-        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
+      db-init:
+        condition: service_completed_successfully
   workorder:
     profiles: ["app"]
     build:
@@ -127,18 +165,18 @@ services:
       args:
         MODULE: workorder-service
     environment:
-      SPRING_PROFILES_ACTIVE: cloud
-      NACOS_ADDR: nacos:8848
-      SENTINEL_DASHBOARD: sentinel:8858
+      <<: *cloud-env
       AUTH_JWK_SET_URI: http://auth:8083/auth/jwks
-      AUTH_ISSUER: ${AUTH_ISSUER:-http://localhost:8080}
-      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-manufacturing-api}
       MYSQL_HOST: mysql
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
+    healthcheck:
+      test: ["CMD", "java", "-Xshare:auto", "-XX:TieredStopAtLevel=1", "-Xmx32m", "-cp", "/app/probe", "HealthProbe", "http://localhost:8082/actuator/health/readiness"]
+      <<: *probe-timing
     depends_on:
-      nacos:
-        condition: service_healthy
-      mysql:
-        condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
+      db-init:
+        condition: service_completed_successfully
 volumes:
   auth-keys:
   nacos-data:

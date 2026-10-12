@@ -15,7 +15,7 @@ application.yml 放服务名和通用参数；application-local.yml 用于独立
 | SENTINEL_CLIENT_PORT | 网关 9080、设备 9081、工单 9082、认证 9083 |
 | MYSQL_HOST / MYSQL_PORT | localhost / 3306 |
 | MYSQL_USERNAME | device_app / workorder_app / auth_app |
-| MYSQL_PASSWORD | local-demo-password |
+| MYSQL_PASSWORD | 容器环境取 .env 的 MYSQL_APP_PASSWORD（随机生成）；本机默认 local-demo-password |
 | DEVICE_SERVICE_URL / WORKORDER_SERVICE_URL | 仅 local 网关的固定目标 |
 | CLIENTS_DEVICE_URL | 仅明确需要绕过发现时覆盖 Feign 目标 URL |
 

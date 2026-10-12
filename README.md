@@ -82,15 +82,24 @@ java -jar cloud-gateway/target/cloud-gateway-1.0.0-SNAPSHOT.jar
 
 ## 2. Alibaba 完整开发环境
 
-需要运行中的 Docker Desktop，端口 3306、8848、9848、8849、8858 空闲。先停止 local 服务。
+### 一条命令启动演示环境（推荐）
+
+需要 Docker（含 Compose v2），端口 3306、8080、8848、9848、8849、8858 空闲；冒烟测试依赖 curl 与 jq。
+
+```bash
+make demo          # 或 sh scripts/demo.sh；Windows：powershell -ExecutionPolicy Bypass -File .\scripts\demo.ps1
+make smoke         # 对已运行环境重新冒烟
+make demo-down     # 停止，保留数据
+make demo-reset    # 删除数据卷后重建
+```
+
+`make demo` 会：缺少 `.env` 时从 `.env.example` 生成并填充随机密钥（`.env` 不入库）→ 构建并启动全部容器 → `db-init` 初始化数据库账号、`nacos-config-init` 初始化 Nacos 管理员并导入 `infra/nacos` 配置 → 等待所有业务服务 healthy（网关在下游 healthy 后才启动）→ 运行 `scripts/smoke-test.sh`。Nacos 已开启鉴权，控制台账号为 `.env` 中的 `NACOS_USERNAME`/`NACOS_PASSWORD`。已有旧数据卷时如出现 Nacos 登录失败，执行 `make demo-reset`。
+
+### 本机运行服务（便于 IDE 调试）
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\init-auth.ps1
-docker compose up -d --build nacos mysql sentinel
-docker compose --profile app run --rm auth-db-init
-docker compose ps
-# 等待 Nacos 和 MySQL 显示 healthy
-powershell -ExecutionPolicy Bypass -File .\scripts\import-nacos.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\init-env.ps1
+docker compose up -d --build --wait nacos mysql sentinel db-init nacos-config-init
 powershell -ExecutionPolicy Bypass -File .\scripts\start-local.ps1 -Profile cloud -SkipBuild
 powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 ```
@@ -110,11 +119,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 
 ### 全部容器化
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\init-auth.ps1
-docker compose --profile app up -d --build
-powershell -ExecutionPolicy Bypass -File .\scripts\import-nacos.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
+```bash
+make demo
 docker compose --profile app logs -f auth gateway device workorder
 ```
 
