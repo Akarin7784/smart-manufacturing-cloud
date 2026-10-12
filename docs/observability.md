@@ -75,8 +75,8 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | `QualityInvalidEvent` | `sum by (application) (increase(mes_quality_event_consumed_total{result="invalid"}[15m])) > 0` | 无（一次即告警） | warning |
 | `WorkorderReservationReleaseFailed` | `sum by (application, result) (increase(mes_workorder_reservation_release_total{result=~"reservation_consumed\|reservation_not_found\|error"}[15m])) > 0` | 无（一次即告警） | warning |
 | `WorkorderReservationReleaseBacklog` | `max by (application) (mes_workorder_reservation_release_pending) > 0` | 15m | warning |
-| `WorkorderReservationContractMismatch` | `sum by (application) (increase(mes_workorder_reservation_release_total{result="contract_mismatch"}[1h])) > 0` | 无（一次即告警） | warning |
-| `WorkorderInventoryAuthFailure` | `sum by (application, operation) (increase(mes_workorder_inventory_auth_failure_total[5m])) > 0` | 无（一次即告警） | critical |
+| `WorkorderReservationContractMismatch` | `sum by (application, operation) (increase(mes_workorder_inventory_contract_mismatch_total[1h])) > 0` | 无（一次即告警） | warning |
+| `WorkorderInventoryAuthFailure` | `sum by (application, operation) (increase(mes_workorder_inventory_auth_failure_total[5m])) > 0` | 5m | critical |
 
 `OutboxBacklog` 依赖第 5 节约定的 `mes_*_outbox_pending` Gauge。**这个指标目前还不存在**，选择器匹配不到任何序列，所以规则已加载但不会触发；工单和库存服务实现该指标后自动生效，不需要再改规则。
 
@@ -86,8 +86,9 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 
 - `WorkorderReservationReleaseFailed`：按 `result` 区分。`reservation_consumed`（预留已被消费）和 `reservation_not_found`（库存没有该预留）的任务已停止（`wo_reservation_release_task.status = STOPPED`），不再重试，需在 `wo_inventory_audit` 中按工单号核对物料去向并人工结案；`error` 为未归类异常，任务仍在退避重试，按工单服务 ERROR 日志定位原因。
 - `WorkorderReservationReleaseBacklog`：查 `wo_reservation_release_task` 中 `PENDING` 任务的 `last_error` 与 `next_attempt_at`；通常是库存服务不可用（`result="unavailable"` 持续增长），库存恢复后任务自动完成。释放结果 `unavailable` 不单独告警，由本条覆盖。
-- `WorkorderInventoryAuthFailure`：按 `operation` 区分；`token` 表示向认证服务申请服务令牌被拒（客户端密钥或 scope），其余表示库存拒绝令牌（aud、scope、续约 403 表示本服务不是持有方）。释放结果 `auth_error` 由本条覆盖。
-- `WorkorderReservationContractMismatch`：库存对释放返回了契约外响应（如 422 `uom-mismatch`、未约定的状态码或 type）。按工单服务 ERROR 日志中的状态码和 type，对照 `docs/api/inventory-openapi.yaml` 与库存实现对账。依赖 `result="contract_mismatch"`（待业务开发 PR 新增并以 0 预注册），合入前不会触发。
+- `WorkorderInventoryAuthFailure`（持续 5 分钟）：先查两件事：① 客户端密钥是否一致：`init-env` 生成的 `.env` 中 `WORKORDER_CLIENT_SECRET` 与认证服务中 `workorder-service` 客户端保存的密钥哈希是否对应（重新生成 `.env` 后未重建认证数据会失配）；② 认证服务健康（`/actuator/health`、`ServiceDown`）。再按 `operation` 区分：`token` 表示向认证服务申请服务令牌被拒（客户端密钥或 scope），其余表示库存拒绝令牌（aud、scope；续约 403 表示本服务不是持有方）。释放结果 `auth_error` 由本条覆盖。
+- `WorkorderReservationContractMismatch`：库存返回了契约外响应（如 422 `uom-mismatch`、未约定的状态码或 type），按 `operation` 区分是哪类调用。按工单服务 ERROR 日志中的状态码和 type，对照 `docs/api/inventory-openapi.yaml` 与库存实现对账。依赖 `mes_workorder_inventory_contract_mismatch_total`（待业务开发 PR 新增并以 0 预注册），合入前不会触发。
+- **契约不一致的两个指标分工**：`mes_workorder_inventory_contract_mismatch_total{operation}` 覆盖 reserve/renew/release/get 四类调用，**只供告警**；`mes_workorder_reservation_release_total{result="contract_mismatch"}` 是释放任务结果的一个取值，**只供看板“预留释放结果”统计**，不进告警。释放路径上一次契约外响应会同时让两者各加 1，这是有意的：前者按调用类型统计契约问题，后者让释放结果各取值加总等于尝试次数，二者口径不同，不是重复计数。
 - `result="reservation_gone"`（库存对释放返回 410）只计数，在看板“预留释放结果”面板中观察，不告警。
 
 阈值按演示规模（单实例、低流量）设定，生产环境需要按 SLO 重新评估。

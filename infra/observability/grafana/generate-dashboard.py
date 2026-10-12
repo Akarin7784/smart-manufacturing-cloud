@@ -85,7 +85,7 @@ panels = [
     row(40, "工单预留释放", 56),
     ts(41, "预留释放结果（次 / 15m）", [
         ('sum by (result) (increase(mes_workorder_reservation_release_total{application="workorder-service"}[15m]))', "{{result}}")],
-        "取消工单后释放预留的每次尝试结果；reservation_consumed / reservation_not_found / error 触发 WorkorderReservationReleaseFailed，reservation_gone 只计数。", 0, 57),
+        "取消工单后释放预留的每次尝试结果；reservation_consumed / reservation_not_found / error 触发 WorkorderReservationReleaseFailed，reservation_gone 与 contract_mismatch 只计数（契约告警走 mes_workorder_inventory_contract_mismatch_total）。", 0, 57),
     ts(42, "待释放任务 / 库存鉴权失败", [
         ('max(mes_workorder_reservation_release_pending{application="workorder-service"})', "待释放任务"),
         ('sum by (operation) (increase(mes_workorder_inventory_auth_failure_total{application="workorder-service"}[5m]))', "鉴权失败 {{operation}}")],
