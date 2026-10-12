@@ -34,6 +34,11 @@ if ($order.data.id -notin $list.data.id) { throw 'Created order not found in sto
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/devices/missing" -Headers $headers } 404
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"missing","product":"bearing","quantity":10}' } 404
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D002","product":"bearing","quantity":10}' } 409
+# 服务间内部接口（预留、QC-HOLD）只供直连：网关对无令牌与管理员令牌都返回 404（与 smoke-test.sh 对等）。
+foreach ($qcPath in '/api/inventory/reservations', '/api/inventory/reservations/R1/release', '/api/inventory/qc-hold/receipts', '/api/inventory/qc-hold/releases', '/api/inventory/qc-hold/scraps') {
+    Assert-HttpStatus { Invoke-RestMethod "$BaseUrl$qcPath" -Method Post -TimeoutSec 5 } 404
+    Assert-HttpStatus { Invoke-RestMethod "$BaseUrl$qcPath" -Method Post -Headers $headers -TimeoutSec 5 } 404
+}
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D001","product":"bearing","quantity":0}' } 400
 # 主数据（经网关）：演示 BOM 已发布且 10 台展开结果与演示数据一致（20CrMnTi 圆钢合计 10.5 kg）。
 $bom = Invoke-RestMethod "$BaseUrl/api/boms/FG-GR60-20/effective?date=2026-10-12" -Headers $headers

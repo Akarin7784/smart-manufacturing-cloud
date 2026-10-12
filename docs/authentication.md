@@ -129,7 +129,7 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 
 - 每个客户端一把独立密钥、scope 互不包含：认证服务拒绝跨客户端申请对方 scope（`invalid_scope`）；库存服务按路径校验 scope（`/inventory/qc-hold/**` 的过滤链由库存实现 PR 落地）。
 - 认证服务只保存 BCrypt（cost 10）散列；cloud profile 下任一散列缺失即启动失败，compose 用 `${VAR:?}` 提前报错。明文与散列都不进入仓库或 Nacos。
-- 这两类接口都是内部接口，调用方经 Nacos 服务发现直连库存服务；网关已拒绝 `/api/inventory/reservations/**`，`/api/inventory/qc-hold/**` 的拒绝规则随库存实现 PR 落地。
+- 这两类接口都是内部接口，调用方经 Nacos 服务发现直连库存服务；网关按 `manufacturing.gateway.internal-paths` 清单（`/api/inventory/reservations/**`、`/api/inventory/qc-hold/**`）在认证之前一律返回 404 problem+json（`type=gateway-not-found`，`InternalPathDenyFilter`；无令牌、任意令牌结果相同，不暴露接口存在；路径先解码、去矩阵参数、合并斜杠再匹配）。
 - 服务令牌不含 `permissions`；`inventory:*` 服务 scope 不属于任何用户角色，不出现在 `Role` 枚举与 `contracts/auth/role-permissions.json` 中（`RolePermissionContractTest` 反向断言）。
 - **已有 `.env` 升级**：重新运行 `scripts/init-env.sh`（或 `init-env.ps1`；`make demo` 会自动执行），只补齐缺失的 `QUALITY_CLIENT_SECRET` 与散列，已有值不变。轮换：删除 `.env` 中对应的两行后重新运行 init-env，并重启 auth 与对应调用方。
 

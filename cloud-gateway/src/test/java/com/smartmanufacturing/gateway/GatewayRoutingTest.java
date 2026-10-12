@@ -5,6 +5,8 @@ import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.sun.net.httpserver.HttpServer;
 import java.net.*;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
 import java.time.Instant;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -182,11 +184,54 @@ class GatewayRoutingTest {
         client().post().uri("/api/inventory/inbound").headers(h -> h.setBearerAuth(inv)).exchange().expectStatus().isForbidden();
     }
 
-    /** 预留接口只供服务间直连：即使用户持有全部库存权限，网关也拒绝转发。 */
-    @Test void deniesInventoryReservationsAtGateway() {
-        String inv = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("inventory:read", "inventory:write"));
-        client().post().uri("/api/inventory/reservations").headers(h -> h.setBearerAuth(inv)).exchange().expectStatus().isForbidden();
-        client().get().uri("/api/inventory/reservations/R1").headers(h -> h.setBearerAuth(inv)).exchange().expectStatus().isForbidden();
+    /**
+     * 内部路径清单逐条断言：每个服务间接口（工单的预留创建/查询/续期/释放/消耗，质检的 QC-HOLD 入库/放行/报废）
+     * 对无令牌、无权限用户令牌、全权限用户令牌、非法令牌一律 404 problem+json，且不转发到下游。
+     */
+    @Test void hidesInternalServicePathsAtGateway() {
+        String all = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300),
+            List.of("inventory:read", "inventory:write", "quality:read", "quality:write", "user:manage"));
+        String noPerm = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of());
+        Map<String, String> internal = new java.util.LinkedHashMap<>();
+        internal.put("/api/inventory/reservations", "POST");                     // 创建预留
+        internal.put("/api/inventory/reservations/R1", "GET");                   // 查询预留
+        internal.put("/api/inventory/reservations/R1/renew", "POST");            // 续期
+        internal.put("/api/inventory/reservations/R1/release", "POST");          // 释放
+        internal.put("/api/inventory/reservations/R1/lines/L1/consume", "POST"); // 按行消耗
+        internal.put("/api/inventory/qc-hold", "GET");                           // QC-HOLD 前缀
+        internal.put("/api/inventory/qc-hold/receipts", "POST");                 // 入隔离
+        internal.put("/api/inventory/qc-hold/releases", "POST");                 // 放行
+        internal.put("/api/inventory/qc-hold/scraps", "POST");                   // 报废
+        // 路径变体：尾斜杠、矩阵参数、重复斜杠、编码斜杠都不能绕过。
+        internal.put("/api/inventory/reservations/", "POST");
+        internal.put("/api/inventory/qc-hold;x=1/receipts", "POST");
+        internal.put("/api/inventory//qc-hold/scraps", "POST");
+        internal.put("/api/inventory/qc-hold%2Freleases", "POST");
+        internal.forEach((path, method) -> {
+            URI uri = URI.create("http://localhost:" + port + path);
+            client().method(HttpMethod.valueOf(method)).uri(uri).exchange().expectStatus().isNotFound()
+                .expectHeader().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON)
+                .expectHeader().doesNotExist("WWW-Authenticate")
+                .expectBody().jsonPath("$.type").isEqualTo("gateway-not-found").jsonPath("$.status").isEqualTo(404);
+            for (String t : List.of(all, noPerm, "not-a-jwt"))
+                client().method(HttpMethod.valueOf(method)).uri(uri).headers(h -> h.setBearerAuth(t)).exchange()
+                    .expectStatus().isNotFound().expectBody().jsonPath("$.type").isEqualTo("gateway-not-found");
+        });
+        // instance 不含查询串。
+        client().get().uri("/api/inventory/reservations/R1?x=1").exchange().expectStatus().isNotFound()
+            .expectBody().jsonPath("$.instance").isEqualTo("/api/inventory/reservations/R1");
+    }
+
+    /** 内部路径清单不误伤正常用户路径：相邻前缀与常规库存接口仍按原规则授权并转发。 */
+    @Test void userInventoryPathsStillRoute() {
+        String all = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("inventory:read", "inventory:write"));
+        for (String path : List.of("/api/inventory/stock", "/api/inventory/locations", "/api/inventory/lots", "/api/inventory/ledger",
+                "/api/inventory/stock/availability?materialCode=X", "/api/inventory/qc-holdings", "/api/inventory/reservationsx"))
+            client().get().uri(path).headers(h -> h.setBearerAuth(all)).exchange().expectStatus().isOk()
+                .expectBody(String.class).value(body -> Assertions.assertTrue(body.startsWith(path.substring(4).split("\\?")[0] + "|"), body));
+        client().post().uri("/api/inventory/inbound").headers(h -> h.setBearerAuth(all)).exchange().expectStatus().isOk();
+        // 普通库存路径未带令牌仍是 401（而非内部路径的 404）。
+        client().get().uri("/api/inventory/stock").exchange().expectStatus().isUnauthorized();
     }
 
     /** 质检查询需 quality:read 并移除 /api 前缀；只读权限不能处置，写入需 quality:write。 */

@@ -66,8 +66,7 @@ public class GatewaySecurityConfiguration {
                 .pathMatchers(HttpMethod.POST, "/api/boms/*/*/release", "/api/routings/*/*/release").hasAuthority("masterdata:release")
                 .pathMatchers(HttpMethod.POST, "/api/materials", "/api/workcenters", "/api/workcenters/*/stations", "/api/boms", "/api/routings").hasAuthority("masterdata:write")
                 .pathMatchers(HttpMethod.PUT, "/api/materials/*", "/api/boms/*/*", "/api/routings/*/*").hasAuthority("masterdata:write")
-                // 库存：预留接口只供服务间直连（服务令牌 aud=inventory-service 本就过不了网关验签），这里显式拒绝，排在通用库存规则之前。
-                .pathMatchers("/api/inventory/reservations", "/api/inventory/reservations/**").denyAll()
+                // 库存：预留、QC-HOLD 等服务间内部接口已由 InternalPathDenyFilter 在认证前统一返回 404，不会到达这里。
                 .pathMatchers(HttpMethod.GET, "/api/inventory/**").hasAuthority("inventory:read")
                 .pathMatchers(HttpMethod.POST, "/api/inventory/locations", "/api/inventory/inbound", "/api/inventory/outbound").hasAuthority("inventory:write")
                 // 质检：查询需 quality:read；评审、处置、关闭需 quality:write（与 quality-openapi.yaml 一致，服务内 @PreAuthorize 再校验）。
