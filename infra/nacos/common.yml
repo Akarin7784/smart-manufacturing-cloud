@@ -10,3 +10,25 @@ spring:
           default:
             connectTimeout: 2000
             readTimeout: 3000
+# RocketMQ 公共配置：地址来自容器环境变量 ROCKETMQ_NAMESRV_ADDR（compose 中统一注入），本机直跑时回退到 localhost。
+# rocketmq.name-server 与 rocketmq-spring-boot-starter 的标准属性名一致，服务引入客户端后无需再配地址。
+rocketmq:
+  name-server: ${ROCKETMQ_NAMESRV_ADDR:localhost:9876}
+# Topic、Tag 与消费组统一在此定义，服务通过 @Value / @ConfigurationProperties 引用，禁止在代码里硬编码。
+# Topic 须同时登记在 infra/rocketmq/topics.txt（由 rocketmq-init 预创建，Broker 已关闭自动建 Topic）。
+manufacturing:
+  mq:
+    topics:
+      # 库存预留事件：库存服务经 outbox 发布，工单服务订阅。
+      inventory-reservation: mes-inventory-reservation
+      # 工单状态事件：工单服务经 outbox 发布。
+      workorder-event: mes-workorder-event
+    tags:
+      reservation-created: ReservationCreated
+      reservation-released: ReservationReleased
+      reservation-consumed: ReservationConsumed
+      # 预留过期由库存服务定时任务判定后发布，工单服务只订阅，不自行计算过期。
+      reservation-expired: ReservationExpired
+    consumer-groups:
+      # 工单服务订阅库存预留事件的消费组。
+      workorder-reservation: CG_WORKORDER_RESERVATION

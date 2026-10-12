@@ -85,7 +85,7 @@ java -jar cloud-gateway/target/cloud-gateway-1.0.0-SNAPSHOT.jar
 
 ### 一条命令启动演示环境（推荐）
 
-需要 Docker（含 Compose v2），端口 3306、8080、8848、9848、8849、8858 空闲；冒烟测试依赖 curl 与 jq。
+需要 Docker（含 Compose v2），端口 3306、8080、8848、9848、8849、8858、9876 空闲；冒烟测试依赖 curl 与 jq。
 
 ```bash
 make demo          # 或 sh scripts/demo.sh；Windows：powershell -ExecutionPolicy Bypass -File .\scripts\demo.ps1
@@ -93,6 +93,9 @@ make smoke         # 对已运行环境重新冒烟
 make demo-down     # 停止，保留数据
 make demo-reset    # 删除数据卷和本项目构建的本地镜像后重建
 ```
+
+> **RocketMQ 消息不持久化（仅演示）**：演示环境的 Broker 不挂数据卷，`make demo-down`、`docker compose down` 或删除容器后，未消费和已存储的消息全部丢失。
+> 业务可靠性不依赖 MQ 持久化，而是依赖 **outbox**：领域事件与业务数据在同一事务写入 outbox 表，由发布任务投递，投递失败或消息丢失时从 outbox 重新发布，消费者按 eventId 幂等。详见 [docs/messaging.md](docs/messaging.md)。
 
 `make demo` 会：缺少 `.env` 时从 `.env.example` 生成并填充随机密钥（`.env` 不入库）→ 构建并启动全部容器 → `db-init` 初始化数据库账号、`nacos-config-init` 初始化 Nacos 管理员并导入 `infra/nacos` 配置 → 等待所有业务服务 healthy（网关在下游 healthy 后才启动）→ 运行 `scripts/smoke-test.sh`。Nacos 已开启鉴权，控制台账号为 `.env` 中的 `NACOS_USERNAME`/`NACOS_PASSWORD`。已有旧数据卷时如出现 Nacos 登录失败，执行 `make demo-reset`。表结构由各服务启动时的 Flyway 迁移创建，演示数据（`db/demo`）只在 demo profile 加载，详见 docs/architecture.md。
 
