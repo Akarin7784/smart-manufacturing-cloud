@@ -93,8 +93,8 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 
 ## 错误及生命周期
 
-- 未登录、篡改、过期、签发者或受众错误：401，`type=gateway-authentication-required`（带 `WWW-Authenticate: Bearer`）。
-- 身份有效但权限不足：403，`type=gateway-access-denied`。
+- 未登录、篡改、过期、签发者或受众错误：401，经网关为 `type=gateway-authentication-required`，直连服务为 `authentication-required`（均带 `WWW-Authenticate: Bearer`）。
+- 身份有效但权限不足：403，经网关为 `type=gateway-access-denied`，直连服务为 `access-denied`。
 
 ### 网关错误格式（RFC 9457）
 
@@ -114,6 +114,20 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 ```
 
 请求通过网关后，由业务服务返回的错误保持各服务契约（见 `docs/api/*-openapi.yaml`）。
+
+### 服务自身的 401/403（RFC 9457）
+
+绕过网关直连服务（服务间调用、内网排障）时，401/403 由服务自己返回，同样是 `application/problem+json`，五个字段 `type`、`title`、`status`、`detail`、`instance`，无 `code` 字段：
+
+| 来源 | 401 type | 403 type |
+| --- | --- | --- |
+| auth-service、cloud-common 共用安全配置（device、workorder、masterdata） | `authentication-required` | `access-denied` |
+| inventory-service、quality-service（各自的安全链，见对应 OpenAPI） | `about:blank` | `about:blank` |
+
+- 401 附带 `WWW-Authenticate: Bearer`；`instance` 为请求路径，不含查询串。
+- 方法级权限拒绝（`@PreAuthorize`）与过滤链拒绝格式相同，由 cloud-common 的 `ApiExceptionHandler` 输出。
+- 示例：`{"type":"access-denied","title":"没有访问权限","status":403,"detail":"当前身份缺少访问该接口所需的权限","instance":"/devices/config"}`
+- 冒烟脚本经 compose 内网直连 `device:8081/devices/config`（op01 无 `config:read`）断言该格式。
 - 账号不存在、密码错误、禁用或锁定：统一 401 / INVALID_CREDENTIALS。
 - 同一账号连续五次错误密码后锁定十五分钟；成功登录或管理员状态更新清除失败计数。
 - 默认访问令牌有效期十五分钟，时间校验允许 Spring Security 默认的六十秒时钟偏差。

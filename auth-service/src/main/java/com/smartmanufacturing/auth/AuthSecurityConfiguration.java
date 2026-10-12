@@ -3,6 +3,7 @@ package com.smartmanufacturing.auth;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.smartmanufacturing.common.ResourceSecurityConfiguration;
+import com.smartmanufacturing.common.SecurityProblem;
 import com.smartmanufacturing.security.SecurityClaims;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.*;
@@ -48,11 +49,11 @@ public class AuthSecurityConfiguration {
                 .requestMatchers("/auth/me", "/auth/users", "/auth/users/**").authenticated()
                 .anyRequest().denyAll())
             .exceptionHandling(errors -> errors
-                .authenticationEntryPoint((req, res, e) -> ResourceSecurityConfiguration.writeError(mapper, res, 401, "AUTHENTICATION_REQUIRED", "请登录或重新获取令牌"))
-                .accessDeniedHandler((req, res, e) -> ResourceSecurityConfiguration.writeError(mapper, res, 403, "ACCESS_DENIED", "没有访问权限")))
+                .authenticationEntryPoint((req, res, e) -> SecurityProblem.AUTHENTICATION_REQUIRED.write(mapper, req, res))
+                .accessDeniedHandler((req, res, e) -> SecurityProblem.ACCESS_DENIED.write(mapper, req, res)))
             .oauth2ResourceServer(resource -> resource
                 .jwt(jwt -> jwt.jwtAuthenticationConverter(SecurityClaims.authenticationConverter()))
-                .authenticationEntryPoint((req, res, e) -> ResourceSecurityConfiguration.writeError(mapper, res, 401, "AUTHENTICATION_REQUIRED", "请登录或重新获取令牌")));
+                .authenticationEntryPoint((req, res, e) -> SecurityProblem.AUTHENTICATION_REQUIRED.write(mapper, req, res)));
         return http.build();
     }
 }
