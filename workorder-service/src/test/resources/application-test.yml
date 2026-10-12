@@ -19,3 +19,22 @@ spring:
 workorder.idempotency.cleanup.enabled: false
 # 关闭续约定时任务，测试中手动调用以获得确定性结果。
 manufacturing.workorder.scheduling-enabled: false
+# 关闭 outbox 中继的定时触发，用例直接调用 publishBatch。
+workorder.outbox.relay.enabled: false
+
+# 与 infra/nacos/common.yml 的 manufacturing.mq 保持一致（本地 / 测试不连 Nacos）。
+manufacturing:
+  mq:
+    topics:
+      workorder-event: mes-workorder-event
+      workorder-quality: mes-workorder-quality
+    tags:
+      workorder-started: WorkOrderStarted
+      workorder-completed: WorkOrderCompleted
+      workorder-reopened: WorkOrderReopened
+      workorder-released: WorkOrderReleased
+      workorder-held: WorkOrderHeld
+      workorder-resumed: WorkOrderResumed
+      workorder-hold-reason-cleared: WorkOrderHoldReasonCleared
+      defect-reported: DefectReported
+      defect-reversed: DefectReversed

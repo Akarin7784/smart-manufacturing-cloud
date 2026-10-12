@@ -16,6 +16,7 @@ import java.time.ZoneId;
  * </ul>
  */
 @Configuration
+@org.springframework.boot.context.properties.EnableConfigurationProperties(MqProperties.class)
 public class WorkOrderConfiguration {
     /** 工厂时区时钟；BOM / 工艺生效日期按此时区的“当天”判断。 */
     @Bean Clock workOrderClock(@Value("${manufacturing.workorder.zone:Asia/Shanghai}") String zone) {

@@ -53,7 +53,7 @@ groups:
   - name: outbox
     rules:
       # Outbox 积压：待投递事件数超过 100 并持续 5 分钟，说明 RocketMQ 投递受阻或投递任务停摆。
-      # 依赖各服务的 mes_<领域>_outbox_pending（Gauge），该指标尚未实现：在此之前选择器匹配不到序列，规则不会触发。
+      # 依赖各服务的 mes_<领域>_outbox_pending（Gauge）：工单、库存服务已实现；其他服务实现前其选择器匹配不到序列。
       - alert: OutboxBacklog
         expr: max by (application) ({__name__=~"mes_.*_outbox_pending"}) > 100
         for: 5m

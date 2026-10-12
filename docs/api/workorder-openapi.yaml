@@ -1,0 +1,655 @@
+# 工单服务（workorder-service）工序报工接口与事件契约。
+# 修改接口、Problem type 或事件字段必须先修改本文件并通过评审；WorkOrderProblemTypeTest 校验 ProblemType 与代码枚举一致。
+openapi: 3.1.0
+info:
+  title: 工单服务工序报工接口（workorder-service）
+  version: 1.0.0
+  contact:
+    name: smart-manufacturing-cloud 维护者
+    url: https://github.com/Akarin7784/smart-manufacturing-cloud
+  summary: 工序报工、整条冲销、手工完工与报工进度查询。
+  description: |
+    ## 业务概述
+    报工粒度为“工单 + 下达时工艺快照中的工序号”。首道工序上限为计划数，后续工序上限为上道累计合格数，
+    累计（合格 + 不良 + 报废）不得超过上限，无容差。数量为 `DECIMAL(18,6)`，响应与事件中以 6 位小数十进制字符串表示。
+
+    ## 并发
+    每个写命令在单个事务内先对工单行 `SELECT … FOR UPDATE`，再校验、更新累计、追加流水、写 outbox 与幂等记录，同一工单的写命令串行执行。
+
+    ## 状态
+    - 首次报工：RELEASED → IN_PROGRESS；末道累计合格数 ≥ 计划数：→ COMPLETED。
+    - 冲销使末道不足计划数：COMPLETED → IN_PROGRESS（发布 WorkOrderReopened）；全部冲销后仍为 IN_PROGRESS。
+    - CLOSED：报工、冲销、完工均返回 409 `workorder-closed`；ON_HOLD：返回 409 `workorder-state-conflict`。
+
+    ## 幂等
+    报工、冲销、手工完工必须携带 `Idempotency-Key`。同一调用方同键同请求：原样返回首次的状态码与响应体，并带
+    `Idempotent-Replayed: true`；同键不同请求：422 `idempotency-key-conflict`。只记录成功结果，失败可用同键重试。
+
+    ## 错误
+    错误响应遵循 RFC 7807（`application/problem+json`），`type` 取自固定枚举 `ProblemType`；扩展字段 `code`（历史业务码）与 `data`（结构化明细）保留以兼容旧调用方。
+
+    ## 事件
+    经 outbox 至少一次投递到 RocketMQ，消费端按 `eventId` 幂等；工单状态事件按 `aggregateVersion` 丢弃过时事件。字段详见 `x-events` 与 docs/messaging.md。
+servers:
+  - url: http://localhost:8080
+    description: 本地经网关访问
+tags:
+  - name: reporting
+    description: 工序报工、冲销与完工
+security:
+  - userBearer: []
+
+paths:
+  /api/workorders/{workOrderNo}/operations/{operationNo}/reports:
+    post:
+      tags: [reporting]
+      operationId: reportOperation
+      summary: 工序报工
+      description: 追加一条报工记录并更新工序累计；不良数大于 0 时发布 DefectReported。需要 `workorder:write`。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/OperationNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportOperationRequest'
+      responses:
+        '201':
+          description: 报工成功（重放时同样返回 201 与首次响应体）。
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationReportResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: 工单或工序不存在（type=workorder-not-found、operation-not-found）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: 工单已关闭或状态不允许（type=workorder-closed、workorder-state-conflict）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: 超过上限（over-report）、单位不一致（uom-mismatch）或幂等键冲突（idempotency-key-conflict）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /api/workorders/{workOrderNo}/reports/{reportId}/reversal:
+    post:
+      tags: [reporting]
+      operationId: reverseReport
+      summary: 整条冲销报工
+      description: 追加一条数量取负的 REVERSAL 记录；原报工带不良数时发布 DefectReversed。需要 `workorder:write`。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/ReportId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReverseReportRequest'
+      responses:
+        '201':
+          description: 冲销成功。
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationReportResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          description: 工单或报工不存在（type=workorder-not-found、report-not-found）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: 已冲销（report-already-reversed）、影响下游（downstream-reported）、工单关闭（workorder-closed）或状态不允许（workorder-state-conflict）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: 幂等键冲突（idempotency-key-conflict）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /api/workorders/{workOrderNo}/complete:
+    post:
+      tags: [reporting]
+      operationId: completeWorkOrder
+      summary: 手工完工
+      description: 每道工序至少一次有效报工时允许短缺完工，发布 WorkOrderCompleted（completionMode=MANUAL）。需要 `workorder:write`。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteWorkOrderRequest'
+      responses:
+        '200':
+          description: 完工成功。
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderCompletionResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          description: 存在未报工序（operations-unreported）、工单关闭（workorder-closed）或状态不允许（workorder-state-conflict）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: 幂等键冲突（idempotency-key-conflict）。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /api/workorders/{workOrderNo}/progress:
+    get:
+      tags: [reporting]
+      operationId: getWorkOrderProgress
+      summary: 查询报工进度
+      description: 返回工单状态、计划数与各工序累计及当前上限。需要 `workorder:read`。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+      responses:
+        '200':
+          description: 报工进度。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderProgressResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+
+  /api/workorders/{workOrderNo}/reports:
+    get:
+      tags: [reporting]
+      operationId: listReports
+      summary: 查询报工流水
+      description: 按时间顺序返回报工与冲销记录（冲销记录数量为负数）。需要 `workorder:read`。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+      responses:
+        '200':
+          description: 报工流水。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationReportListResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+
+components:
+  securitySchemes:
+    userBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 用户令牌（受众 manufacturing-api），查询需 `workorder:read`，写入需 `workorder:write`。
+
+  headers:
+    IdempotentReplayed:
+      description: 为 true 表示本响应是同键请求的重放。
+      schema:
+        type: string
+        enum: ['true', 'false']
+
+  parameters:
+    WorkOrderNo:
+      name: workOrderNo
+      in: path
+      required: true
+      description: 工单号。
+      schema:
+        type: string
+    OperationNo:
+      name: operationNo
+      in: path
+      required: true
+      description: 工序号（下达时工艺快照中的 opNo，如 OP10）。
+      schema:
+        type: string
+    ReportId:
+      name: reportId
+      in: path
+      required: true
+      description: 被冲销的原报工记录 ID。
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 幂等键，按调用方划分作用域。
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9._:-]{1,128}$'
+
+  responses:
+    Problem:
+      description: 错误（RFC 7807），type 见 ProblemType。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    Decimal:
+      type: string
+      pattern: '^-?\d{1,12}(\.\d{1,6})?$'
+      description: 十进制数量字符串，最多 6 位小数（响应中固定 6 位）。
+    ReportOperationRequest:
+      type: object
+      description: 工序报工请求；数量可为 JSON 数字或十进制字符串，不得为负且合计大于 0。
+      required: [goodQty, defectQty, scrapQty, uom]
+      properties:
+        goodQty:
+          $ref: '#/components/schemas/Decimal'
+        defectQty:
+          $ref: '#/components/schemas/Decimal'
+        scrapQty:
+          $ref: '#/components/schemas/Decimal'
+        uom:
+          type: string
+          maxLength: 16
+          description: 计量单位，同一工单内必须一致。
+        lotNo:
+          type: string
+          maxLength: 64
+          description: 批次号（可选），随不良品事件发给质检。
+        note:
+          type: string
+          maxLength: 256
+          description: 备注。
+    ReverseReportRequest:
+      type: object
+      description: 冲销请求。
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: 冲销原因。
+    CompleteWorkOrderRequest:
+      type: object
+      description: 手工完工请求。
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: 完工原因，写入审计与事件。
+    OperationReportView:
+      type: object
+      description: 报工流水。
+      properties:
+        reportId:
+          type: string
+          description: 记录 ID。
+        type:
+          type: string
+          enum: [REPORT, REVERSAL]
+          description: 报工或冲销。
+        operationNo:
+          type: string
+          description: 工序号。
+        goodQty:
+          $ref: '#/components/schemas/Decimal'
+        defectQty:
+          $ref: '#/components/schemas/Decimal'
+        scrapQty:
+          $ref: '#/components/schemas/Decimal'
+        uom:
+          type: string
+          description: 计量单位。
+        lotNo:
+          type: [string, 'null']
+          description: 批次号。
+        note:
+          type: [string, 'null']
+          description: 备注；冲销记录为冲销原因。
+        reversedReportId:
+          type: [string, 'null']
+          description: 仅 REVERSAL：被冲销的原报工 ID。
+        operator:
+          type: string
+          description: 操作人。
+        createdAt:
+          type: string
+          format: date-time
+          description: 记录时间。
+    OperationProgressView:
+      type: object
+      description: 工序累计。
+      properties:
+        operationNo:
+          type: string
+          description: 工序号。
+        seq:
+          type: integer
+          description: 工序顺序。
+        goodQty:
+          $ref: '#/components/schemas/Decimal'
+        defectQty:
+          $ref: '#/components/schemas/Decimal'
+        scrapQty:
+          $ref: '#/components/schemas/Decimal'
+        uom:
+          type: [string, 'null']
+          description: 计量单位（首次报工前为 null）。
+        limit:
+          $ref: '#/components/schemas/Decimal'
+        effectiveReports:
+          type: integer
+          description: 未被冲销的报工条数。
+    WorkOrderProgressView:
+      type: object
+      description: 工单报工进度。
+      properties:
+        workOrderNo:
+          type: string
+          description: 工单号。
+        status:
+          type: string
+          description: 工单状态。
+        plannedQty:
+          $ref: '#/components/schemas/Decimal'
+        operations:
+          type: array
+          description: 各工序累计（按工序顺序）。
+          items:
+            $ref: '#/components/schemas/OperationProgressView'
+    OperationReportResult:
+      type: object
+      description: 报工 / 冲销结果。
+      properties:
+        report:
+          $ref: '#/components/schemas/OperationReportView'
+        progress:
+          $ref: '#/components/schemas/WorkOrderProgressView'
+    WorkOrderCompletionView:
+      type: object
+      description: 手工完工结果。
+      properties:
+        progress:
+          $ref: '#/components/schemas/WorkOrderProgressView'
+        shortfall:
+          $ref: '#/components/schemas/Decimal'
+        reason:
+          type: string
+          description: 完工原因。
+    Envelope:
+      type: object
+      description: 统一响应包装。
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: 成功为 OK。
+        message:
+          type: string
+          description: 说明。
+    OperationReportResponse:
+      description: 报工 / 冲销响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/OperationReportResult'
+    WorkOrderCompletionResponse:
+      description: 手工完工响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/WorkOrderCompletionView'
+    WorkOrderProgressResponse:
+      description: 报工进度响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/WorkOrderProgressView'
+    OperationReportListResponse:
+      description: 报工流水响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/OperationReportView'
+    ProblemType:
+      type: string
+      description: |
+        固定的错误类型枚举（与代码 WorkOrderProblemType 一致），调用方按此分支处理，不解析 `detail`。
+        指标 `mes_workorder_report_total` 的 `result` 取值为本枚举的下划线写法，另加 `ok`、`replay`、`error`。
+        | type | HTTP 状态 | 含义 |
+        | --- | --- | --- |
+        | `over-report` | 422 | 累计报工（合格 + 不良 + 报废）将超过本工序上限（首道 = 计划数，后续 = 上道累计合格数），无容差；`data` 含 limit / reported / requested / remaining |
+        | `downstream-reported` | 409 | 冲销后上游工序累计合格数将小于下游已报总数 |
+        | `workorder-closed` | 409 | 工单已关闭，不接受报工、冲销与完工 |
+        | `operations-unreported` | 409 | 手工完工时存在没有有效报工的工序，`data.operations` 列出工序号 |
+        | `report-already-reversed` | 409 | 报工已被冲销（只允许冲销一次），或冲销对象本身是冲销记录 |
+        | `operation-not-found` | 404 | 工序号不在下达时的工艺快照中 |
+        | `report-not-found` | 404 | 该工单下不存在此报工记录 |
+        | `uom-mismatch` | 422 | 报工计量单位与本工单已有报工的单位不一致；`data` 含 expectedUom / requestedUom |
+        | `validation-error` | 400 | 请求参数校验失败（格式、必填、范围、小数位超过 6 位等） |
+        | `idempotency-key-required` | 400 | 缺少或格式非法的 `Idempotency-Key` |
+        | `idempotency-key-conflict` | 422 | 同一调用方的幂等键已用于不同请求 |
+        | `idempotency-in-progress` | 409 | 同键请求正在处理 |
+        | `authentication-required` | 401 | 未认证 |
+        | `access-denied` | 403 | 无权限 |
+        | `workorder-not-found` | 404 | 工单不存在 |
+        | `workorder-not-released` | 404 | 工单未下达 |
+        | `workorder-state-conflict` | 409 | 工单当前状态不允许该操作（如 ON_HOLD、COMPLETED 状态下报工） |
+        | `concurrent-modification` | 409 | 并发修改冲突 |
+        | `device-not-found` | 404 | 设备不存在 |
+        | `device-offline` | 409 | 设备离线 |
+        | `device-service-unavailable` | 503 | 设备服务不可用 |
+        | `masterdata-service-unavailable` | 503 | 主数据服务不可用 |
+        | `release-masterdata-invalid` | 422 | 下达所需主数据无效 |
+        | `material-shortage` | 409 | 物料短缺 |
+        | `internal-error` | 500 | 内部错误 |
+      enum:
+        - over-report
+        - downstream-reported
+        - workorder-closed
+        - operations-unreported
+        - report-already-reversed
+        - operation-not-found
+        - report-not-found
+        - uom-mismatch
+        - validation-error
+        - idempotency-key-required
+        - idempotency-key-conflict
+        - idempotency-in-progress
+        - authentication-required
+        - access-denied
+        - workorder-not-found
+        - workorder-not-released
+        - workorder-state-conflict
+        - concurrent-modification
+        - device-not-found
+        - device-offline
+        - device-service-unavailable
+        - masterdata-service-unavailable
+        - release-masterdata-invalid
+        - material-shortage
+        - internal-error
+    Problem:
+      type: object
+      description: RFC 7807 错误。
+      required: [type, title, status]
+      properties:
+        type:
+          $ref: '#/components/schemas/ProblemType'
+        title:
+          type: string
+          description: 枚举常量名。
+        status:
+          type: integer
+          description: HTTP 状态码。
+        detail:
+          type: string
+          description: 人类可读说明（中文），不用于程序分支。
+        code:
+          type: string
+          description: 历史业务码（兼容字段）。
+        data:
+          type: object
+          description: 结构化明细（如 over-report 的 limit、uom-mismatch 的 expectedUom）。
+
+    DefectReportedEvent:
+      type: object
+      description: 报工不良数大于 0 时发布（Topic mes-workorder-quality，Tag DefectReported）。
+      required: [eventId, workOrderNo, operationNo, materialCode, uom, defectQty, reportId, occurredAt]
+      properties:
+        eventId: {type: string, description: 事件 ID，消费幂等键。}
+        workOrderNo: {type: string, description: 工单号。}
+        operationNo: {type: string, description: 工序号。}
+        materialCode: {type: string, description: 物料编码（工单产品）。}
+        lotNo: {type: [string, 'null'], description: 批次号。}
+        uom: {type: string, description: 计量单位。}
+        defectQty: {$ref: '#/components/schemas/Decimal'}
+        reportId: {type: string, description: 本次报工记录 ID。}
+        occurredAt: {type: string, format: date-time, description: 发生时间（仅展示 / 审计）。}
+    DefectReversedEvent:
+      type: object
+      description: 冲销带不良数的报工时发布（Tag DefectReversed）；不含 reportId。
+      required: [eventId, workOrderNo, operationNo, materialCode, uom, defectQty, reversedReportId, reversalId, occurredAt]
+      properties:
+        eventId: {type: string, description: 事件 ID。}
+        workOrderNo: {type: string, description: 工单号。}
+        operationNo: {type: string, description: 工序号。}
+        materialCode: {type: string, description: 物料编码。}
+        lotNo: {type: [string, 'null'], description: 批次号。}
+        uom: {type: string, description: 计量单位。}
+        defectQty: {$ref: '#/components/schemas/Decimal'}
+        reversedReportId: {type: string, description: 被冲销的原报工 ID。}
+        reversalId: {type: string, description: 本次冲销记录 ID。}
+        occurredAt: {type: string, format: date-time, description: 发生时间。}
+    WorkOrderStartedEvent:
+      type: object
+      description: 首次报工，RELEASED → IN_PROGRESS。
+      required: [eventId, workOrderNo, occurredAt, aggregateVersion]
+      properties:
+        eventId: {type: string, description: 事件 ID。}
+        workOrderNo: {type: string, description: 工单号。}
+        occurredAt: {type: string, format: date-time, description: 发生时间。}
+        aggregateVersion: {type: integer, description: 工单聚合版本，递增；消费端丢弃不高于本地版本的事件。}
+    WorkOrderCompletedEvent:
+      type: object
+      description: 工单完工；plannedQty = completedQty + shortfallQty。
+      required: [eventId, workOrderNo, uom, occurredAt, completionMode, plannedQty, completedQty, shortfallQty, aggregateVersion]
+      properties:
+        eventId: {type: string, description: 事件 ID。}
+        workOrderNo: {type: string, description: 工单号。}
+        uom: {type: string, description: 计量单位。}
+        occurredAt: {type: string, format: date-time, description: 发生时间。}
+        completionMode: {type: string, enum: [AUTO, MANUAL], description: 完工方式。}
+        plannedQty: {$ref: '#/components/schemas/Decimal'}
+        completedQty: {$ref: '#/components/schemas/Decimal'}
+        shortfallQty: {$ref: '#/components/schemas/Decimal'}
+        reason: {type: string, description: 仅 MANUAL：完工原因。}
+        aggregateVersion: {type: integer, description: 工单聚合版本。}
+    WorkOrderReopenedEvent:
+      type: object
+      description: 冲销使 COMPLETED 退回 IN_PROGRESS。
+      required: [eventId, workOrderNo, occurredAt, reversedReportId, completedQty, uom, aggregateVersion]
+      properties:
+        eventId: {type: string, description: 事件 ID。}
+        workOrderNo: {type: string, description: 工单号。}
+        occurredAt: {type: string, format: date-time, description: 发生时间。}
+        reversedReportId: {type: string, description: 被冲销的原报工 ID。}
+        completedQty: {$ref: '#/components/schemas/Decimal'}
+        uom: {type: string, description: 计量单位。}
+        aggregateVersion: {type: integer, description: 工单聚合版本。}
+
+# 事件投递约定：topic 与 tag 实际值从 Nacos manufacturing.mq.* 读取，此处为约定默认值。
+x-events:
+  transport: RocketMQ
+  publishVia: outbox
+  delivery: at-least-once
+  topicConfigKey: manufacturing.mq.*
+  messageKey: workOrderNo
+  consumerIdempotency: eventId
+  ordering: aggregateVersion
+  events:
+    - topic: mes-workorder-quality
+      tag: DefectReported
+      schema: '#/components/schemas/DefectReportedEvent'
+      consumerGroups: [CG_QUALITY_DEFECT]
+    - topic: mes-workorder-quality
+      tag: DefectReversed
+      schema: '#/components/schemas/DefectReversedEvent'
+      consumerGroups: [CG_QUALITY_DEFECT]
+    - topic: mes-workorder-event
+      tag: WorkOrderStarted
+      schema: '#/components/schemas/WorkOrderStartedEvent'
+    - topic: mes-workorder-event
+      tag: WorkOrderCompleted
+      schema: '#/components/schemas/WorkOrderCompletedEvent'
+    - topic: mes-workorder-event
+      tag: WorkOrderReopened
+      schema: '#/components/schemas/WorkOrderReopenedEvent'
+
