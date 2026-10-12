@@ -67,6 +67,9 @@ public class GatewaySecurityConfiguration {
                 .pathMatchers("/api/inventory/reservations", "/api/inventory/reservations/**").denyAll()
                 .pathMatchers(HttpMethod.GET, "/api/inventory/**").hasAuthority("inventory:read")
                 .pathMatchers(HttpMethod.POST, "/api/inventory/locations", "/api/inventory/inbound", "/api/inventory/outbound").hasAuthority("inventory:write")
+                // 质检：查询需 quality:read；评审、处置、关闭需 quality:write（与 quality-openapi.yaml 一致，服务内 @PreAuthorize 再校验）。
+                .pathMatchers(HttpMethod.GET, "/api/quality/**").hasAuthority("quality:read")
+                .pathMatchers(HttpMethod.POST, "/api/quality/ncrs/*/review", "/api/quality/ncrs/*/dispositions", "/api/quality/ncrs/*/close").hasAuthority("quality:write")
                 .anyExchange().denyAll())
             .exceptionHandling(errors -> errors
                 .authenticationEntryPoint((exchange, e) -> writeError(mapper, exchange, 401))

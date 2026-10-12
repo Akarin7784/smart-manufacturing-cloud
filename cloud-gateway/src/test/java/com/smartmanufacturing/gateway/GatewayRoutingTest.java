@@ -46,7 +46,7 @@ class GatewayRoutingTest {
 
     /** 单独覆盖目标地址，保持路由列表和过滤器配置来自实际配置文件。 */
     @DynamicPropertySource static void routes(DynamicPropertyRegistry registry) {
-        for (String property : List.of("DEVICE_SERVICE_URL", "WORKORDER_SERVICE_URL", "AUTH_SERVICE_URL", "MASTERDATA_SERVICE_URL", "INVENTORY_SERVICE_URL"))
+        for (String property : List.of("DEVICE_SERVICE_URL", "WORKORDER_SERVICE_URL", "AUTH_SERVICE_URL", "MASTERDATA_SERVICE_URL", "INVENTORY_SERVICE_URL", "QUALITY_SERVICE_URL"))
             registry.add(property, () -> "http://127.0.0.1:" + upstream.getAddress().getPort());
         registry.add("manufacturing.security.jwk-set-uri", () -> "http://127.0.0.1:" + upstream.getAddress().getPort() + "/auth/jwks");
     }
@@ -170,5 +170,18 @@ class GatewayRoutingTest {
         String inv = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("inventory:read", "inventory:write"));
         client().post().uri("/api/inventory/reservations").headers(h -> h.setBearerAuth(inv)).exchange().expectStatus().isForbidden();
         client().get().uri("/api/inventory/reservations/R1").headers(h -> h.setBearerAuth(inv)).exchange().expectStatus().isForbidden();
+    }
+
+    /** 质检查询需 quality:read 并移除 /api 前缀；只读权限不能处置，写入需 quality:write。 */
+    @Test void routesQualityWithReadAndWritePermissions() {
+        String reader = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("quality:read"));
+        String writer = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("quality:read", "quality:write"));
+        client().get().uri("/api/quality/ncrs").headers(h -> h.setBearerAuth(reader)).exchange()
+            .expectStatus().isOk().expectBody(String.class).value(body -> Assertions.assertTrue(body.startsWith("/quality/ncrs|")));
+        client().get().uri("/api/quality/ncrs").headers(h -> h.setBearerAuth(reader())).exchange().expectStatus().isForbidden();
+        client().post().uri("/api/quality/ncrs/NCR-1/dispositions").headers(h -> h.setBearerAuth(reader)).exchange().expectStatus().isForbidden();
+        client().post().uri("/api/quality/ncrs/NCR-1/dispositions").headers(h -> h.setBearerAuth(writer)).exchange().expectStatus().isOk();
+        // 契约之外的写路径一律拒绝。
+        client().post().uri("/api/quality/ncrs").headers(h -> h.setBearerAuth(writer)).exchange().expectStatus().isForbidden();
     }
 }

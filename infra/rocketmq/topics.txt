@@ -5,5 +5,7 @@ mes-inventory-reservation
 mes-workorder-event
 # 工单不良品待质检事件（Tag：DefectReported/DefectReversed；消费组 CG_QUALITY_DEFECT）
 mes-workorder-quality
+# 质检 NCR 事件（由质检服务 outbox 发布；Tag：NcrOpened/NcrDisposed/NcrClosed/NcrVoided，带 aggregateVersion）
+mes-quality-event
 # 冒烟测试专用：发一条再收回，验证 Broker 收发链路
 mes-smoke-test

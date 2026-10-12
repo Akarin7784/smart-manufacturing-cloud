@@ -48,11 +48,12 @@ flowchart LR
 - cloud-security：跨 Servlet / WebFlux 共享 JWT 声明校验与权限映射。
 - auth-service：账号登录、公钥发布、当前身份、管理员用户管理，独立认证库。
 - cloud-common：Servlet 服务的异常处理、请求 ID、Sentinel HTTP 429 响应。网关不引用此模块。
-- cloud-gateway：显式路由 /api/auth/**、/api/devices/**、/api/workorders/**、主数据各资源、/api/inventory/**（预留接口不经网关），移除 /api 前缀。
+- cloud-gateway：显式路由 /api/auth/**、/api/devices/**、/api/workorders/**、主数据各资源、/api/inventory/**（预留接口不经网关）、/api/quality/**，移除 /api 前缀。
 - device-service：设备查询、持久化、Nacos 动态配置示例。
 - workorder-service：工单校验、Feign 调用、持久化与降级。
 - masterdata-service：物料、工作中心/工位、版本化多层 BOM、工艺路线；demo profile 加载 GR-60 演示主数据（端口 8084）。
 - inventory-service：库位、批次、现存量、出入库与物料预留；demo profile 加载期初库存（端口 8085，管理端口 18085，均不对宿主机发布）。预留接口只接受工单服务的服务令牌，冒烟脚本用一次性 curl 容器（`inv_call`，镜像固定在 `scripts/tool-images.env`）在 compose 内网验证预留→释放往返；离线环境先执行 `make prepull`。
+- quality-service（待服务代码合入）：NCR 与不良品处置；数据库 manufacturing_quality、网关路由、Topic mes-quality-event 与告警已就绪，compose 与监控抓取随服务代码 PR 接入（端口 8086，管理端口 18086）。
 - infra：Nacos 配置样例、MySQL 初始化、Sentinel 控制台镜像。
 - scripts：Windows 启停、配置导入、冒烟检查。
 - docs：部署与扩展说明。

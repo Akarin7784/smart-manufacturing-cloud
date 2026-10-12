@@ -11,6 +11,7 @@
 | workorder-service | 8082 | 18082 |
 | auth-service | 8083 | 18083 |
 | masterdata-service | 8084 | 18084 |
+| quality-service | 8086（待服务代码合入后接入 compose） | 18086 |
 | inventory-service | 8085（不发布到宿主机，冒烟经 compose 内网直连） | 18085 |
 
 - 各服务已有 `spring-boot-starter-actuator` 和 `micrometer-registry-prometheus`，暴露 `health,info,prometheus`。
@@ -69,8 +70,12 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | `HighHttp5xxRatio` | 按 application 统计 5 分钟内 5xx 占比 > 5%，且请求量 > 0.1 req/s（避免低流量下误报） | 5m | warning |
 | `JvmHeapUsageHigh` | 已用堆 / 最大堆 > 90%（只统计 max > 0 的内存池） | 5m | warning |
 | `OutboxBacklog` | `max by (application) ({__name__=~"mes_.*_outbox_pending"}) > 100` | 5m | warning |
+| `QualityDisposedReversalConflict` | `sum by (application) (increase(mes_quality_event_consumed_total{result="disposed_reversal_conflict"}[15m])) > 0` | 无（一次即告警） | warning |
+| `QualityReversalOrphan` | `sum by (application) (increase(mes_quality_pending_reversal_expired_total[15m])) > 0` | 无（一次即告警） | warning |
 
 `OutboxBacklog` 依赖第 5 节约定的 `mes_*_outbox_pending` Gauge。**这个指标目前还不存在**，选择器匹配不到任何序列，所以规则已加载但不会触发；工单和库存服务实现该指标后自动生效，不需要再改规则。
+
+两条质检告警同样在质检服务上线前不会触发。`increase()` 计不到序列从无到有的第一次增量，因此质检服务需在启动时把 `result="disposed_reversal_conflict"` 和 `mes_quality_pending_reversal_expired_total` 以 0 预注册。
 
 阈值按演示规模（单实例、低流量）设定，生产环境需要按 SLO 重新评估。
 
@@ -82,13 +87,13 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
   - 业务端口返回 401。
 - `scripts/monitoring-smoke.sh`：只在 monitoring profile 下运行。检查以下各项：
   - Prometheus 的 `spring-boot` targets 全部 up（轮询等待，默认 120 秒）；
-  - 4 条告警规则都已加载；
+  - 6 条告警规则都已加载；
   - 指标带 `application` 标签；
   - Grafana 健康、数据源连通、看板已加载；
   - 网关 8080 的 `/actuator/prometheus` 返回 401。
 - CI：
   - `verify` 校验 app profile 不含监控容器，并校验 monitoring 叠加后的 compose 配置；
-  - `observability-lint` 用 promtool 检查抓取配置和 4 条告警规则，并确认看板 JSON 与生成脚本一致；
+  - `observability-lint` 用 promtool 检查抓取配置和 6 条告警规则，并确认看板 JSON 与生成脚本一致；
   - `demo smoke` 在 `make demo` 之后额外拉起 prometheus 和 grafana，运行 `monitoring-smoke.sh`（约增加 1–2 分钟）。这里不单独开 job，因为单独的 job 需要重新构建并启动整套服务，耗时 10 分钟以上。
 
 ## 5. 业务指标命名约定
@@ -139,4 +144,4 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | `mes_quality_outbox_pending` | Gauge | — | 待投递的 outbox 事件数（自动匹配告警 `OutboxBacklog`） |
 | `mes_quality_ncr_open` | Gauge | — | 未关闭（OPEN/UNDER_REVIEW/DISPOSED）的 NCR 数 |
 
-待质检服务实现后由运维新增告警：`QualityDisposedReversalConflict`（`disposed_reversal_conflict` 增量 > 0 即告警）、`QualityReversalOrphan`（`pending_reversal_expired_total` 增量 > 0）。
+告警已在 `alerts.yml` 落地（见第 3 节）：`QualityDisposedReversalConflict`（`disposed_reversal_conflict` 增量 > 0 即告警）、`QualityReversalOrphan`（`pending_reversal_expired_total` 增量 > 0）。

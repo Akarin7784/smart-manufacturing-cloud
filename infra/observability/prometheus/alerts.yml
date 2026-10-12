@@ -62,3 +62,25 @@ groups:
         annotations:
           summary: "{{ $labels.application }} 的 outbox 积压"
           description: "待投递事件 {{ $value }} 条，已持续 5 分钟超过 100 条。"
+
+  - name: quality
+    rules:
+      # 已处置 NCR 被冲销：处置已执行（返工/报废/让步），工单侧又冲销了对应报工，系统不自动回滚，需人工处理。
+      # 业务上一次即需关注，因此不设 for；窗口 15m 保证告警至少可见一个评估周期以上。
+      # 注意：increase() 对首次出现的序列（从无到 1）计不到增量，质检服务需在启动时以 0 预注册该 result 序列。
+      - alert: QualityDisposedReversalConflict
+        expr: sum by (application) (increase(mes_quality_event_consumed_total{result="disposed_reversal_conflict"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.application }} 出现已处置 NCR 被冲销"
+          description: "最近 15 分钟有 {{ $value }} 次冲销命中已处置的 NCR，请在 /api/quality/conflicts 中核对并人工处理。"
+      # 冲销孤儿：暂存的冲销超过 TTL（默认 24h）仍未找到对应的不良报告，已标记为 EXPIRED。
+      # 同样一次即告警；需按 reversedReportId 去工单侧核对。
+      - alert: QualityReversalOrphan
+        expr: sum by (application) (increase(mes_quality_pending_reversal_expired_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.application }} 出现超时未对冲的冲销"
+          description: "最近 15 分钟有 {{ $value }} 条暂存冲销超过 TTL 未对冲，请在 /api/quality/pending-reversals 中按 reversedReportId 核对工单侧。"

@@ -37,7 +37,7 @@ counts() {
 }
 
 failed=0
-for svc in auth-service device-service workorder-service masterdata-service inventory-service; do
+for svc in auth-service device-service workorder-service masterdata-service inventory-service quality-service; do
   res="$svc/src/main/resources/db"
   [ -d "$root/$res/migration" ] || { echo "跳过 $svc：没有 db/migration"; continue; }
   db="verify_$(printf '%s' "${svc%-service}" | tr '-' '_')"
