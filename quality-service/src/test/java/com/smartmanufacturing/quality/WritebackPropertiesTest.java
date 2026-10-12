@@ -8,7 +8,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** 回写配置的默认值与启动校验：重试窗口必须小于库存幂等保留期 7 天。 */
 class WritebackPropertiesTest {
     private static WritebackProperties withWindow(Duration window) {
-        return new WritebackProperties(window, null, null, null, null, null, null, null, null);
+        return new WritebackProperties(window, null, null, null, null, null, null, null, null, null);
     }
 
     @Test void defaultsMatchDesign() {

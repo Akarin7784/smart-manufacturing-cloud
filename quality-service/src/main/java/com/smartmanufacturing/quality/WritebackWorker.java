@@ -100,9 +100,9 @@ public class WritebackWorker {
     private void apply(Claimed c, Outcome outcome) {
         Timestamp now = Timestamp.from(clock.instant().truncatedTo(ChronoUnit.MILLIS));
         // 栅栏：只有仍是本次领取（状态 RUNNING 且 attempts 未变）才回写，防止租约过期后的旧结果覆盖新一轮执行。
-        List<Integer> current = jdbc.query("select attempts from inventory_writeback where id = ? and status = 'RUNNING' for update",
-            (rs, i) -> rs.getInt(1), c.id());
-        if (current.isEmpty() || current.get(0) != c.claimedAttempts()) {
+        List<int[]> current = jdbc.query("select attempts, unknown_404_count from inventory_writeback where id = ? and status = 'RUNNING' for update",
+            (rs, i) -> new int[] {rs.getInt(1), rs.getInt(2)}, c.id());
+        if (current.isEmpty() || current.get(0)[0] != c.claimedAttempts()) {
             log.warn("回写任务 {} 的执行结果已过期（租约到期后被重新领取或状态已变），丢弃本次结果", c.id());
             return;
         }
@@ -114,6 +114,17 @@ public class WritebackWorker {
                 if (b.contractMismatch()) metrics.inventoryContractMismatch(InventoryQcHoldClient.operation(c.call().action()));
             }
             case Retryable r -> {
+                String op = InventoryQcHoldClient.operation(c.call().action());
+                if (r.reason() == InventoryQcHoldClient.RetryReason.NOT_FOUND_UNKNOWN) {
+                    int n = current.get(0)[1] + 1;
+                    jdbc.update("update inventory_writeback set unknown_404_count = ? where id = ?", n, c.id());
+                    if (n > props.maxUnknown404Retries()) {
+                        // 约定 type 以外的 404 超过上限：多为路由或部署问题，无法判断库存是否记账，置 FAILED（不确定），计契约不一致。
+                        fail(c, WritebackService.UNCERTAIN, "未约定的 404 已重试 " + props.maxUnknown404Retries() + " 次：" + r.error(), now);
+                        metrics.inventoryContractMismatch(op);
+                        return;
+                    }
+                }
                 if (c.claimedAttempts() >= props.maxAttempts()) {
                     fail(c, WritebackService.UNCERTAIN, "重试 " + c.claimedAttempts() + " 次仍失败：" + r.error(), now);
                 } else {
@@ -121,6 +132,7 @@ public class WritebackWorker {
                     jdbc.update("update inventory_writeback set status = 'PENDING', next_attempt_at = ?, last_error = ?, updated_at = ? where id = ?",
                         next, HttpInventoryQcHoldClient.truncate(r.error()), now, c.id());
                     metrics.writeback(QualityMetrics.WRITEBACK_RETRY);
+                    metrics.writebackRetry(op, r.reason().label());
                 }
             }
             case Rejected r -> {

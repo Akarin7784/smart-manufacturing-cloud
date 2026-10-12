@@ -67,6 +67,9 @@ mes.quality.writeback:
   lease: PT60S
   # DONE / CANCELLED / RESOLVED_MANUALLY 保留期，随 03:47 清理任务删除。
   retention: P30D
+  # 库存返回约定 type（location/material/lot-not-found）以外的 404（gateway-not-found、about:blank 等，多为路由或部署问题）时，
+  # 最多退避重试的次数；超限置 FAILED 并计入 mes_quality_inventory_contract_mismatch_total。
+  max-unknown-404-retries: 5
 
 # topic/tag/消费组以 Nacos common.yml 的 manufacturing.mq.* 为准；消费侧默认值与 infra/nacos/common.yml 一致。
 # quality-event 及 Ncr* tag 尚未登记到 common.yml（归运维），此处默认值与契约 x-events 一致，Nacos 登记后以 Nacos 为准。

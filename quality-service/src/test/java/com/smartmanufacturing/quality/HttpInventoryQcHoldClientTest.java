@@ -162,11 +162,19 @@ class HttpInventoryQcHoldClientTest {
 
     @Test void responsesAreClassified() {
         var S = InventoryQcHoldClient.Signal.class;
-        assertThat(classify(503, null)).isInstanceOf(Retryable.class);
-        assertThat(classify(500, null)).isInstanceOf(Retryable.class);
-        assertThat(classify(429, null)).isInstanceOf(Retryable.class);
+        var R = InventoryQcHoldClient.RetryReason.class;
+        assertThat(((Retryable) classify(503, null)).reason()).isEqualTo(InventoryQcHoldClient.RetryReason.SERVER);
+        assertThat(((Retryable) classify(500, null)).reason()).isEqualTo(InventoryQcHoldClient.RetryReason.SERVER);
+        assertThat(((Retryable) classify(429, null)).reason()).isEqualTo(InventoryQcHoldClient.RetryReason.TOO_MANY);
+        assertThat(((Retryable) classify(408, null)).reason()).isEqualTo(InventoryQcHoldClient.RetryReason.NETWORK);
+        // 约定的三种 404：确定未记账，FAILED 不重试，不计任何信号。
+        for (String t : java.util.List.of("location-not-found", "material-not-found", "lot-not-found"))
+            assertThat(classify(404, t)).isEqualTo(new Rejected("HTTP 404 " + t + "：明细", true, InventoryQcHoldClient.Signal.NONE));
+        // 其他 404（无 type / about:blank / gateway-not-found / 未定义 type）：按 not_found_unknown 重试，次数由执行器限制。
+        for (String t : java.util.Arrays.asList(null, "about:blank", "gateway-not-found", "ncr-not-found"))
+            assertThat(((Retryable) classify(404, t)).reason()).isEqualTo(InventoryQcHoldClient.RetryReason.NOT_FOUND_UNKNOWN);
+        assertThat(R).isNotNull();
         assertThat(classify(403, "access-denied")).isEqualTo(new Rejected("HTTP 403 access-denied：明细", true, InventoryQcHoldClient.Signal.AUTH));
-        assertThat(classify(404, null)).isEqualTo(new Rejected("HTTP 404", true, InventoryQcHoldClient.Signal.NONE));
         assertThat(classify(400, "validation-error")).isEqualTo(new Rejected("HTTP 400 validation-error：明细", true, InventoryQcHoldClient.Signal.CONTRACT));
         assertThat(classify(422, "uom-mismatch")).isEqualTo(new Rejected("HTTP 422 uom-mismatch：明细", true, InventoryQcHoldClient.Signal.NONE));
         assertThat(classify(409, "insufficient-stock")).isEqualTo(new Rejected("HTTP 409 insufficient-stock：明细", true, InventoryQcHoldClient.Signal.NONE));

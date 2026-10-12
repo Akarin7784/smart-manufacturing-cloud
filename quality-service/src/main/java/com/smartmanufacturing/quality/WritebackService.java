@@ -152,7 +152,7 @@ public class WritebackService {
                     "NCR " + ncrNo + " 已作废且作废扣回已取消，不能再重试入隔离，请人工结案");
         }
         Timestamp ts = now();
-        jdbc.update("update inventory_writeback set status = 'PENDING', attempts = 0, failure_kind = null, next_attempt_at = ?, updated_at = ?"
+        jdbc.update("update inventory_writeback set status = 'PENDING', attempts = 0, unknown_404_count = 0, failure_kind = null, next_attempt_at = ?, updated_at = ?"
             + " where id = ?", ts, ts, id);
         return get(id);
     }

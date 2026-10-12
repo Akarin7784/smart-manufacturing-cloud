@@ -34,8 +34,23 @@ public interface InventoryQcHoldClient {
     record Booked(Long txnId, boolean replayed, boolean contractMismatch) implements Outcome {
         public Booked(Long txnId, boolean replayed) { this(txnId, replayed, false); }
     }
-    /** 可重试：网络错误、超时、429、5xx、令牌端点 5xx 或不可达，库存是否记账可能不确定，退避后重试。 */
-    record Retryable(String error) implements Outcome {}
+    /**
+     * 重试原因，即 mes_quality_writeback_retry_total 的 reason 标签：
+     * NOT_FOUND_UNKNOWN 为三种约定 type 以外的 404（gateway-not-found、about:blank、未定义 type），次数受 max-unknown-404-retries 限制；
+     * SERVER 为 5xx（含令牌端点 5xx）；TOO_MANY 为 429；NETWORK 为连接失败、超时、408、令牌端点不可达。
+     */
+    enum RetryReason {
+        NOT_FOUND_UNKNOWN("not_found_unknown"), SERVER("5xx"), TOO_MANY("429"), NETWORK("network");
+        private final String label;
+        RetryReason(String label) { this.label = label; }
+        /** 指标标签取值。 */
+        public String label() { return label; }
+    }
+
+    /** 可重试：退避后重试，库存是否记账可能不确定（同一幂等键重放安全）。 */
+    record Retryable(String error, RetryReason reason) implements Outcome {
+        public Retryable(String error) { this(error, RetryReason.NETWORK); }
+    }
     /**
      * 不可重试，任务直接 FAILED：库存拒绝（400、403、404、409、422，401 刷新令牌重试一次后仍 401，令牌端点 4xx 等）。
      * certain=true 表示可确定库存未记账（作废时据此自动取消 VOID）；false 表示拒绝本身不能证明未记账（如 422 idempotency-key-conflict），VOID 保持 PENDING。

@@ -134,6 +134,7 @@ public class StockService {
      * 不锁同物料的普通库位行：隔离量不参与可用量计算，单行锁与其他写路径不会形成环形等待。
      */
     public StockTxn qcHoldIn(String operator, String material, String uom, String lotNo, BigDecimal qty, String ncrNo) {
+        requireQcHoldLocation();
         ensureUom(material, uom);
         ensureLot(material, lotNo);
         LockedRow row = lockOrCreateRow(material, QC_HOLD, lotNo);
@@ -145,6 +146,14 @@ public class StockService {
      * 单位按出库口径校验（未登记单位视为余额 0）。
      */
     public StockTxn qcHoldOut(String operator, String material, String uom, String lotNo, BigDecimal qty, String type, String ncrNo) {
+        requireQcHoldLocation();
+        // 仅质检隔离接口区分“不存在”（404）：物料或批次从未登记说明质检与库存数据不一致且重试无益；
+        // 预留、发料与通用出库仍按可用量 0 返回 409 insufficient-stock，行为不变。
+        if (findUom(material) == null)
+            throw new ProblemException(ProblemType.MATERIAL_NOT_FOUND, "物料 " + material + " 未在库存登记（从未入库）");
+        Integer lots = jdbc.queryForObject("select count(*) from lot where material_code = ? and lot_no = ?", Integer.class, material, lotNo);
+        if (lots == null || lots == 0)
+            throw new ProblemException(ProblemType.LOT_NOT_FOUND, "物料 " + material + " 的批次 " + lotNo + " 不存在");
         String registered = requireUom(material, uom);
         LockedRow row = lockRow(material, QC_HOLD, lotNo);
         BigDecimal held = row == null ? BigDecimal.ZERO : row.qty();
@@ -154,6 +163,12 @@ public class StockService {
                     Quantities.format(held), Quantities.format(qty.subtract(held))))));
         }
         return applyDelta(row, material, registered, qty.negate(), type, "NCR", ncrNo, operator);
+    }
+
+    /** QC-HOLD 系统库位必须存在且启用（迁移 V2 种子），否则 404 location-not-found。 */
+    private void requireQcHoldLocation() {
+        Integer n = jdbc.queryForObject("select count(*) from warehouse_location where code = ? and enabled = TRUE", Integer.class, QC_HOLD);
+        if (n == null || n == 0) throw new ProblemException(ProblemType.LOCATION_NOT_FOUND, "系统库位 " + QC_HOLD + " 不存在或已停用");
     }
 
     /** 锁定单个库位批次行；不存在则以 0 余额新建后再锁定（并发新建由唯一约束裁决，失败方锁定胜者的行）。 */

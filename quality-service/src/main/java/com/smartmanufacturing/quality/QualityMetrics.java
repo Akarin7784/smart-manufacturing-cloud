@@ -38,6 +38,9 @@ public class QualityMetrics {
     public static final java.util.List<String> INVENTORY_AUTH_OPERATIONS = java.util.List.of("hold", "release", "scrap", "token");
     /** 库存契约不一致的 operation 取值。 */
     public static final java.util.List<String> INVENTORY_CONTRACT_OPERATIONS = java.util.List.of("hold", "release", "scrap");
+    /** mes_quality_writeback_retry_total 的 operation 与 reason 取值。 */
+    public static final java.util.List<String> WRITEBACK_RETRY_OPERATIONS = java.util.List.of("hold", "release", "scrap");
+    public static final java.util.List<String> WRITEBACK_RETRY_REASONS = java.util.List.of("not_found_unknown", "5xx", "429", "network");
     private final MeterRegistry registry;
     private final Counter pendingExpired;
 
@@ -69,6 +72,8 @@ public class QualityMetrics {
         // mes_quality_inventory_auth_failure_total{operation} 与 mes_quality_inventory_contract_mismatch_total{operation}：启动预注册为 0。
         for (String op : INVENTORY_AUTH_OPERATIONS) authFailureCounter(op);
         for (String op : INVENTORY_CONTRACT_OPERATIONS) contractMismatchCounter(op);
+        // mes_quality_writeback_retry_total{operation,reason}：3 × 4 个序列启动预注册为 0。
+        for (String op : WRITEBACK_RETRY_OPERATIONS) for (String reason : WRITEBACK_RETRY_REASONS) retryCounter(op, reason);
         // mes_quality_writeback_pending：PENDING（含退避中）与 RUNNING（执行中）的回写任务数，抓取时查询（走 status, next_attempt_at 索引），启动即 0。
         Gauge.builder("mes.quality.writeback.pending", jdbc,
                 j -> count(j, "select count(*) from inventory_writeback where status in ('PENDING', 'RUNNING')"))
@@ -88,6 +93,16 @@ public class QualityMetrics {
     /** 库存返回契约之外或说明请求构造有误的响应（400、422 idempotency-key-conflict、未约定状态、2xx 缺 txnId），提交后计数。 */
     public void inventoryContractMismatch(String operation) {
         afterCommit(() -> contractMismatchCounter(operation).increment());
+    }
+
+    /** 每次进入退避重试计一次（提交后计数），按 operation 与重试原因区分。 */
+    public void writebackRetry(String operation, String reason) {
+        afterCommit(() -> retryCounter(operation, reason).increment());
+    }
+
+    private Counter retryCounter(String op, String reason) {
+        return Counter.builder("mes.quality.writeback.retry").description("库存回写退避重试次数").tag("operation", op).tag("reason", reason)
+            .register(registry);
     }
 
     private Counter authFailureCounter(String op) {

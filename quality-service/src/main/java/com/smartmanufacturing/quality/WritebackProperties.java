@@ -13,11 +13,13 @@ import java.time.Duration;
  *   <li>lease：领取后的执行租约（默认 60s，须大于单次调用超时）；进程在调用中途崩溃时，租约到期后任务可被重新领取。</li>
  *   <li>retention：DONE / CANCELLED / RESOLVED_MANUALLY 任务的保留期（默认 P30D），随 03:47 清理任务删除。</li>
  *   <li>client：调用库存的服务身份与地址，见 {@link Client}。</li>
+ *   <li>maxUnknown404Retries：约定 type 以外的 404（路由 / 部署问题）最多退避重试次数（默认 5），超限 FAILED 并计契约不一致。</li>
  * </ul>
  */
 @ConfigurationProperties(prefix = "mes.quality.writeback")
 public record WritebackProperties(Duration retryWindow, Duration interval, Integer batchSize, Integer maxAttempts,
-                                  Duration initialBackoff, Duration maxBackoff, Duration lease, Duration retention, Client client) {
+                                  Duration initialBackoff, Duration maxBackoff, Duration lease, Duration retention, Client client,
+                                  Integer maxUnknown404Retries) {
     /** 库存服务幂等记录保留期（库存服务固定 7 天，见 inventory IdempotencyRecordCleaner），重试窗口必须严格小于它。 */
     public static final Duration INVENTORY_IDEMPOTENCY_RETENTION = Duration.ofDays(7);
 
@@ -30,6 +32,8 @@ public record WritebackProperties(Duration retryWindow, Duration interval, Integ
         if (maxBackoff == null) maxBackoff = Duration.ofMinutes(5);
         if (lease == null) lease = Duration.ofSeconds(60);
         if (retention == null) retention = Duration.ofDays(30);
+        if (maxUnknown404Retries == null) maxUnknown404Retries = 5;
+        if (maxUnknown404Retries < 0) throw new IllegalArgumentException("mes.quality.writeback.max-unknown-404-retries 不能为负");
         if (client == null) client = new Client(null, null, null, null, null, null, null, null, null, null);
         if (retryWindow.isNegative() || retryWindow.isZero() || retryWindow.compareTo(INVENTORY_IDEMPOTENCY_RETENTION) >= 0)
             throw new IllegalArgumentException("mes.quality.writeback.retry-window=" + retryWindow

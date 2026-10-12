@@ -20,6 +20,8 @@ CREATE TABLE inventory_writeback (
   status VARCHAR(20) NOT NULL,
   -- 本轮尝试次数：调度器领取时先 +1 再调用库存（领取即视为“已尝试”）；人工重试清零。
   attempts INT NOT NULL DEFAULT 0,
+  -- 本轮连续收到“约定 type 以外的 404”的次数，超过 max-unknown-404-retries 即 FAILED；人工重试清零。
+  unknown_404_count INT NOT NULL DEFAULT 0,
   -- 首次被领取执行的时间，人工重试也不清空：作废时据此判断 HOLD 是否“从未尝试过”（attempts 会被人工重试清零，不能单独作依据）。
   first_attempted_at TIMESTAMP(3) NULL,
   -- PENDING 时为下次可执行时间；RUNNING 时为租约到期时间（进程崩溃后到期可被重新领取）；终态与 FAILED 为 NULL。

@@ -31,7 +31,12 @@ class QcHoldTokenProvider {
      */
     static final class TokenException extends RuntimeException {
         final boolean rejected;
-        TokenException(String message, Throwable cause, boolean rejected) { super(message, cause); this.rejected = rejected; }
+        /** 认证服务返回 5xx（重试原因记为 5xx，否则为 network）。 */
+        final boolean server;
+        TokenException(String message, Throwable cause, boolean rejected) { this(message, cause, rejected, false); }
+        TokenException(String message, Throwable cause, boolean rejected, boolean server) {
+            super(message, cause); this.rejected = rejected; this.server = server;
+        }
     }
 
     /** 返回有效令牌；缓存过期时同步刷新（synchronized：并发调用只申请一次）。 */
@@ -55,7 +60,7 @@ class QcHoldTokenProvider {
         } catch (RestClientResponseException e) {
             // 4xx 为凭据或 scope 配置问题（不重试）；5xx 为认证服务不可用（退避重试）。两种情况都没有调用库存，库存确定未记账。
             int s = e.getStatusCode().value();
-            throw new TokenException("申请服务令牌失败（HTTP " + s + "）", e, s >= 400 && s < 500);
+            throw new TokenException("申请服务令牌失败（HTTP " + s + "）", e, s >= 400 && s < 500, s >= 500);
         } catch (RestClientException e) {
             throw new TokenException("认证服务不可达：" + e.getMessage(), e, false);
         }

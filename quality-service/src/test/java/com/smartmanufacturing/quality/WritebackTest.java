@@ -84,6 +84,65 @@ class WritebackTest {
         for (int i = 0; i < 20; i++) { worker.runBatch(); clock.advance(Duration.ofMinutes(5)); }
     }
 
+    private double retries(String op, String reason) {
+        return registry.get("mes.quality.writeback.retry").tag("operation", op).tag("reason", reason).counter().count();
+    }
+    private double mismatch(String op) {
+        return registry.get("mes.quality.inventory.contract.mismatch").tag("operation", op).counter().count();
+    }
+
+    // ---------------- 未约定 404 与重试指标 ----------------
+
+    /** 未约定 404 重试 5 次（默认上限），第 6 次仍 404 → FAILED（UNCERTAIN），计契约不一致；每次重试按原因计数。 */
+    @Test void unknown404RetriesUpToLimitThenFails() {
+        String ncr = open(rid(), "1");
+        String key = "qc:" + ncr + ":hold";
+        double r0 = retries("hold", "not_found_unknown"), m0 = mismatch("hold");
+        for (int i = 0; i < 6; i++) inventory.script(key, new Retryable("HTTP 404 gateway-not-found", InventoryQcHoldClient.RetryReason.NOT_FOUND_UNKNOWN));
+        for (int i = 0; i < 5; i++) {
+            worker.runBatch();
+            assertThat(tasks(ncr).get(0).status()).isEqualTo(WritebackStatus.PENDING);
+            clock.advance(Duration.ofMinutes(5));
+        }
+        assertThat(retries("hold", "not_found_unknown") - r0).isEqualTo(5);
+        assertThat(mismatch("hold") - m0).isZero();
+        worker.runBatch();
+        WritebackTask t = tasks(ncr).get(0);
+        assertThat(t.status()).isEqualTo(WritebackStatus.FAILED);
+        assertThat(t.lastError()).contains("未约定的 404");
+        assertThat(retries("hold", "not_found_unknown") - r0).isEqualTo(5);
+        assertThat(mismatch("hold") - m0).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select unknown_404_count from inventory_writeback where ncr_no = ?", Integer.class, ncr)).isEqualTo(6);
+    }
+
+    /** 约定 404（库位 / 物料 / 批次不存在）直接 FAILED，不重试、不计契约不一致。 */
+    @Test void knownNotFoundFailsWithoutRetry() {
+        String ncr = open(rid(), "1");
+        double r0 = retries("hold", "not_found_unknown"), m0 = mismatch("hold");
+        inventory.script("qc:" + ncr + ":hold", new Rejected("HTTP 404 location-not-found：x", true, InventoryQcHoldClient.Signal.NONE));
+        worker.runBatch();
+        assertThat(tasks(ncr).get(0).status()).isEqualTo(WritebackStatus.FAILED);
+        assertThat(retries("hold", "not_found_unknown") - r0).isZero();
+        assertThat(mismatch("hold") - m0).isZero();
+    }
+
+    /** 5xx / 429 / 网络错误各按原因计一次重试；12 个序列启动即为 0。 */
+    @Test void retryMetricCountsByReason() {
+        for (String op : List.of("hold", "release", "scrap"))
+            for (String reason : List.of("not_found_unknown", "5xx", "429", "network"))
+                assertThat(registry.find("mes.quality.writeback.retry").tag("operation", op).tag("reason", reason).counter()).isNotNull();
+        String ncr = open(rid(), "1");
+        String key = "qc:" + ncr + ":hold";
+        double s = retries("hold", "5xx"), t = retries("hold", "429"), n = retries("hold", "network");
+        inventory.script(key, new Retryable("HTTP 503", InventoryQcHoldClient.RetryReason.SERVER));
+        inventory.script(key, new Retryable("HTTP 429", InventoryQcHoldClient.RetryReason.TOO_MANY));
+        inventory.script(key, new Retryable("timeout", InventoryQcHoldClient.RetryReason.NETWORK));
+        for (int i = 0; i < 3; i++) { worker.runBatch(); clock.advance(Duration.ofMinutes(5)); }
+        assertThat(retries("hold", "5xx") - s).isEqualTo(1);
+        assertThat(retries("hold", "429") - t).isEqualTo(1);
+        assertThat(retries("hold", "network") - n).isEqualTo(1);
+    }
+
     // ---------------- 任务写入 ----------------
 
     @Test void openWritesHoldTaskWithFixedKeyAndPlainQty() {

@@ -28,6 +28,9 @@ class HttpInventoryQcHoldClient implements InventoryQcHoldClient {
         this.inventory = inventory; this.tokens = tokens; this.mapper = mapper; this.props = props;
     }
 
+    /** 库存 qc-hold 接口约定的三种 404 type（库位 / 物料 / 批次不存在），确定未记账、重试无益。 */
+    static final java.util.Set<String> NOT_FOUND_TYPES = java.util.Set.of("location-not-found", "material-not-found", "lot-not-found");
+
     /** 一次 HTTP 交换的原始结果。 */
     record Raw(int status, String body, String replayed) {}
 
@@ -45,10 +48,11 @@ class HttpInventoryQcHoldClient implements InventoryQcHoldClient {
             return classify(raw);
         } catch (QcHoldTokenProvider.TokenException e) {
             // 令牌端点 4xx：凭据配置问题，不重试；未调用库存，确定未记账。5xx / 不可达：退避重试。
-            return e.rejected ? new Rejected(truncate(e.getMessage()), true, Signal.TOKEN_AUTH) : new Retryable(truncate(e.getMessage()));
+            return e.rejected ? new Rejected(truncate(e.getMessage()), true, Signal.TOKEN_AUTH)
+                : new Retryable(truncate(e.getMessage()), e.server ? RetryReason.SERVER : RetryReason.NETWORK);
         } catch (RestClientException e) {
             // 连接失败、读超时等：请求可能已到达库存并记账，结果不确定，按可重试处理（同一幂等键重放安全）。
-            return new Retryable(truncate("调用库存失败：" + e.getMessage()));
+            return new Retryable(truncate("调用库存失败：" + e.getMessage()), RetryReason.NETWORK);
         }
     }
 
@@ -90,7 +94,8 @@ class HttpInventoryQcHoldClient implements InventoryQcHoldClient {
      *   <li>2xx → 已记账，取 txnId；响应头 Idempotent-Replayed=true 为重放；缺 txnId 仍算已记账，另计契约不一致。</li>
      *   <li>429、503 及其他 5xx、408 → 退避重试（网络错误在 {@link #call} 中同样退避）。</li>
      *   <li>401（已刷新令牌重试一次）、403 → FAILED，确定未记账，计鉴权失败。</li>
-     *   <li>404（库位 / 物料不存在）→ FAILED，确定未记账。</li>
+     *   <li>404 location-not-found / material-not-found / lot-not-found → FAILED，确定未记账；其他 404（gateway-not-found、about:blank、
+ *       未定义 type，多为路由或部署问题）→ 退避重试，次数由 max-unknown-404-retries 限制，超限 FAILED 并计契约不一致（执行器处理）。</li>
      *   <li>409 insufficient-stock、422 uom-mismatch → FAILED，确定未记账。</li>
      *   <li>400 validation-error → FAILED，确定未记账；说明请求构造有误，计契约不一致（与 workorder 同名指标口径一致）。</li>
      *   <li>422 idempotency-key-conflict → FAILED，<b>不能</b>证明未记账（首次请求可能已记账，VOID 不自动取消），计契约不一致。</li>
@@ -111,9 +116,11 @@ class HttpInventoryQcHoldClient implements InventoryQcHoldClient {
         }
         String type = problemField(raw.body(), "type");
         String error = truncate("HTTP " + s + (type == null ? "" : " " + type) + optional(problemField(raw.body(), "detail")));
-        if (s == 408 || s == 429 || s >= 500) return new Retryable(error);
+        if (s == 429) return new Retryable(error, RetryReason.TOO_MANY);
+        if (s >= 500) return new Retryable(error, RetryReason.SERVER);
+        if (s == 408) return new Retryable(error, RetryReason.NETWORK);
         if (s == 401 || s == 403) return new Rejected(error, true, Signal.AUTH);
-        if (s == 404) return new Rejected(error, true, Signal.NONE);
+        if (s == 404) return type != null && NOT_FOUND_TYPES.contains(type) ? new Rejected(error, true, Signal.NONE) : new Retryable(error, RetryReason.NOT_FOUND_UNKNOWN);
         if (s == 409 && "insufficient-stock".equals(type)) return new Rejected(error, true, Signal.NONE);
         if (s == 422 && "uom-mismatch".equals(type)) return new Rejected(error, true, Signal.NONE);
         if (s == 400) return new Rejected(error, true, Signal.CONTRACT);

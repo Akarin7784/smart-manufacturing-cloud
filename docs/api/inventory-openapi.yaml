@@ -570,6 +570,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: 隔离接口专用的“不存在”（type=location-not-found），质检回写直接 FAILED 不重试。其他 404（about:blank、gateway-*）不属于本接口契约。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/QcHoldReceiptNotFoundProblem'
         '422':
           $ref: '#/components/responses/MovementUnprocessable'
 
@@ -613,6 +619,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: 隔离接口专用的“不存在”（type=location-not-found、material-not-found、lot-not-found），质检回写直接 FAILED 不重试。其他 404（about:blank、gateway-*）不属于本接口契约。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/QcHoldNotFoundProblem'
         '409':
           description: QC-HOLD 中该（物料、批次）的隔离量不足（type=insufficient-stock），说明质检与库存数据不一致，需人工核对。
           content:
@@ -660,6 +672,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: 隔离接口专用的“不存在”（type=location-not-found、material-not-found、lot-not-found），质检回写直接 FAILED 不重试。其他 404（about:blank、gateway-*）不属于本接口契约。
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/QcHoldNotFoundProblem'
         '409':
           description: QC-HOLD 中该（物料、批次）的隔离量不足（type=insufficient-stock），说明质检与库存数据不一致，需人工核对。
           content:
@@ -1184,6 +1202,9 @@ components:
         - line-closed
         - validation-error
         - uom-mismatch
+        - location-not-found
+        - material-not-found
+        - lot-not-found
       description: |
         固定的错误类型枚举，调用方按此分支处理，不解析 `detail`。
         | type | HTTP 状态 | 含义 |
@@ -1197,7 +1218,36 @@ components:
         | `line-closed` | 409 | 预留行已关闭 |
         | `validation-error` | 400 | 请求参数校验失败（格式、必填、范围等；只对应 400） |
         | `uom-mismatch` | 422 | 请求计量单位与该物料已登记的现存量单位不一致（入库、出库、预留）；物料从未入过库时出库、预留不返回本类型，而是 409 insufficient-stock |
-        401/403/404 由框架统一处理，不在此枚举中，调用方按 HTTP 状态码处理。
+        | `location-not-found` | 404 | 仅 `/inventory/qc-hold/**`：系统库位 `QC-HOLD` 不存在或已停用 |
+        | `material-not-found` | 404 | 仅 qc-hold releases/scraps：物料从未在库存登记（从未入库） |
+        | `lot-not-found` | 404 | 仅 qc-hold releases/scraps：该物料的批次从未登记 |
+        三种 404 只用于质检隔离接口；预留、发料与通用出入库行为不变，物料不存在仍返回 409 `insufficient-stock`（available=0）。
+        401/403 及上述以外的 404 由框架统一处理，不在此枚举中，调用方按 HTTP 状态码处理。
+
+    QcHoldNotFoundProblem:
+      description: 质检隔离出库（releases/scraps）的“不存在”错误，title 为固定中文（库位不存在 / 物料不存在 / 批次不存在）。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type, title, status]
+          properties:
+            type:
+              enum: [location-not-found, material-not-found, lot-not-found]
+            status:
+              const: 404
+    QcHoldReceiptNotFoundProblem:
+      description: 质检入隔离（receipts）的“不存在”错误：物料与批次在入隔离时自动登记，只可能是 QC-HOLD 库位缺失。
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [type, title, status]
+          properties:
+            type:
+              const: location-not-found
+            title:
+              const: 库位不存在
+            status:
+              const: 404
 
     Problem:
       type: object
