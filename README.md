@@ -203,3 +203,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\security-smoke-test.ps1
 ## 接口变更说明
 
 - **破坏性变更（工单幂等，PR #9）**：`POST /api/workorders` 必须携带 `Idempotency-Key` 请求头（1–128 位 `[A-Za-z0-9._:-]`），缺失或格式非法返回 400 `IDEMPOTENCY_KEY_REQUIRED`。首次创建返回 201；同键同内容重放返回 200 及首次结果（响应头 `Idempotent-Replayed: true`）；同键不同内容返回 422 `IDEMPOTENCY_KEY_REUSED`。幂等记录保留 7 天，过期后同键视为新请求。外部调用方升级时请为每个业务请求生成唯一键，重试时复用。
+
+### 工单下达与物料预留（P2）
+
+- `POST /api/workorders/{id}/release`（必须带 `Idempotency-Key`，需 `workorder:write`；令牌透传主数据服务，还需 `masterdata:read`）：
+  CREATED→RELEASED。按工厂时区当天向主数据取已发布生效的 BOM 展开与工艺路线，冻结快照（`wo_bom_snapshot`、`operation_task`，首道工序 READY），
+  叶子物料按编码汇总后整单预留。同键重放返回首次结果（`Idempotent-Replayed: true`），已被其他键下达返回 409，主数据无效 422，依赖不可用 503。
+- `POST /api/workorders/{id}/hold`、`/resume`（body：`{"reason":"MANUAL|LOT_HELD|FAI_FAILED|EQUIPMENT_FAULT|MATERIAL_RESERVATION_EXPIRED","note":"…"}`）：
+  多原因并存，`resume_target` 记录冻结前状态，全部原因解除后恢复；解除 `MATERIAL_RESERVATION_EXPIRED` 时按冻结快照重新预留。
+- `GET /api/workorders/{id}/release`：下达快照、生命周期版本、冻结原因与当前预留。
+- 预留归库存服务所有（TTL 15 分钟）：本服务每 5 分钟批量续约（`manufacturing.workorder.reservation-renew-*`），不自行判定过期；
+  过期由库存的 `ReservationExpired` 事件或续约答复“已失效”驱动（`consumed_event` 去重后冻结工单）。
+  库存服务就绪前使用本地替身适配器 `manufacturing.workorder.material-reservation=local`（总是成功，不检查库存）。
+- 事件：`WorkOrderReleased/Held/Resumed` 与业务变更同事务写入 `outbox_event`；**RocketMQ 中继与 `ReservationExpired` 订阅尚未接入**
+  （等待运维分支 `ops/rocketmq` 的 Nacos 共享配置），当前事件只入库不发布。
+- 新表全部在 `db/migration/V2__workorder_release.sql`（V1 由运维维护）。

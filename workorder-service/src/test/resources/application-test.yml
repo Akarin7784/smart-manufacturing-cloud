@@ -17,3 +17,5 @@ spring:
   # 测试库同样由 Flyway 执行 db/migration 建表；不加载 db/demo 演示数据。
 # 测试中不触发定时清理，避免后台线程与用例并发修改数据；清理逻辑由 IdempotencyRecordCleanerTest 直接调用验证。
 workorder.idempotency.cleanup.enabled: false
+# 关闭续约定时任务，测试中手动调用以获得确定性结果。
+manufacturing.workorder.scheduling-enabled: false
