@@ -8,7 +8,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
 /**
- * 主数据调用降级：保留真实失败语义，任何情况下都不伪造主数据。
+ * 用途：MasterdataClient 的 Feign / Sentinel 降级工厂，把主数据调用失败翻译为下达接口的业务错误。
+ * 保留真实失败语义，任何情况下都不伪造主数据（降级时工单一律不下达）。
  * 404/422（无生效版本、循环 BOM 等）→ 422 RELEASE_MASTERDATA_INVALID，工单不能下达；
  * 401/403 原样映射；超时、5xx、熔断 → 503，提示稍后重试。
  */
@@ -29,7 +30,7 @@ public class MasterdataFallbackFactory implements FallbackFactory<MasterdataClie
             return new BusinessException("AUTHENTICATION_REQUIRED", "主数据服务拒绝当前令牌", HttpStatus.UNAUTHORIZED);
         if (cause instanceof FeignException.Forbidden)
             return new BusinessException("ACCESS_DENIED", "没有读取主数据的权限", HttpStatus.FORBIDDEN);
-        LOG.warn("Masterdata service call failed", cause);
+        LOG.warn("主数据服务调用失败，按 503 返回，工单不下达", cause);
         return new BusinessException("MASTERDATA_SERVICE_UNAVAILABLE", "主数据服务暂时不可用，工单未下达", HttpStatus.SERVICE_UNAVAILABLE);
     }
 }

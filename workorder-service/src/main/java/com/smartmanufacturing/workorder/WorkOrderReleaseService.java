@@ -203,7 +203,7 @@ public class WorkOrderReleaseService {
      */
     private void compensate(String key, String reservationId, RuntimeException cause) {
         try { materials.release(key, reservationId); }
-        catch (RuntimeException e) { cause.addSuppressed(e); LOG.warn("Reservation release failed, inventory TTL will reclaim {}", reservationId, e); }
+        catch (RuntimeException e) { cause.addSuppressed(e); LOG.warn("补偿释放预留失败，将由库存 TTL（15 分钟）回收：{}", reservationId, e); }
     }
 
     // ------------------------------------------------------------------ 冻结 / 恢复
@@ -265,7 +265,7 @@ public class WorkOrderReleaseService {
                 if (reservation != null) compensate(reservationKey, reservation.reservationId(), conflict);
                 throw conflict;
             }
-            LOG.debug("Concurrent resume of {} on {}", reason, orderId);
+            LOG.debug("并发恢复：原因 {} 已由其他请求解除，工单 {}", reason, orderId);
         } catch (RuntimeException e) {
             if (reservation != null) compensate(reservationKey, reservation.reservationId(), e);
             throw e;

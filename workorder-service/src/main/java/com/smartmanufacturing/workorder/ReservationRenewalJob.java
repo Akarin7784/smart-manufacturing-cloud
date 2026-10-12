@@ -42,13 +42,13 @@ public class ReservationRenewalJob {
             batches++;
             for (var c : batch) {
                 try { if (service.renew(c, slot)) renewed++; else failed++; }
-                catch (RuntimeException e) { failed++; LOG.warn("Renewal of reservation {} failed, will retry next round", c.reservationId(), e); }
+                catch (RuntimeException e) { failed++; LOG.warn("预留 {} 续约失败，下一轮重试", c.reservationId(), e); }
             }
             cursor = batch.get(batch.size() - 1).reservationId();
         }
         Duration took = Duration.between(start, clock.instant());
         if (took.compareTo(interval.dividedBy(2)) > 0)
-            LOG.warn("Reservation renewal backlog: {} batches took {} (interval {}), renewed={}, failed={}", batches, took, interval, renewed, failed);
+            LOG.warn("预留续约积压：{} 批耗时 {}（间隔 {}），成功 {}，失败 {}", batches, took, interval, renewed, failed);
         return renewed;
     }
 }

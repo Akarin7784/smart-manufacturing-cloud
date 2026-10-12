@@ -19,7 +19,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * 缺省只模拟契约的成功路径：预留总是成功，预留单号与行号由幂等键确定性派生（同键得同单），到期时间为库存会返回的
  * now + 15 分钟。它不检查库存，也不产生过期事件——过期由库存服务判定，这里没有任何自行计算过期的逻辑。
  * <p>
- * 为验证下达流程的失败分支，替身提供可编程的故障模拟（仅测试 / 演示排障使用，生产适配器没有这些方法）：
+ * <b>预留总是成功，不检查真实库存</b>（cloud / demo 环境同样如此，库存服务接入前不能用于验证缺料）。
+ * 为验证下达流程的失败分支，替身提供可编程的故障模拟，均为包内可见、仅供同包测试调用（生产适配器没有这些方法）：
  * <ul>
  *   <li>{@link #simulateShortage}：下一次起预留返回 409 缺料明细；</li>
  *   <li>{@link #simulateReleaseFailure}：释放抛异常，用于验证“释放失败不掩盖原始错误，依赖 TTL 回收”；</li>
@@ -58,13 +59,13 @@ public class LocalMaterialReservation implements MaterialReservationPort {
     }
 
     /** 模拟库存 409：传 null 恢复正常。 */
-    public void simulateShortage(List<MaterialShortage> shortages) { shortage.set(shortages); }
+    void simulateShortage(List<MaterialShortage> shortages) { shortage.set(shortages); }
     /** 模拟释放失败。 */
-    public void simulateReleaseFailure(boolean fail) { releaseFails = fail; }
+    void simulateReleaseFailure(boolean fail) { releaseFails = fail; }
     /** 已记录的调用，形如 reserve:{key} / release:{key}。 */
-    public List<String> calls() { return List.copyOf(calls); }
+    List<String> calls() { return List.copyOf(calls); }
     /** 清空模拟状态与调用记录。 */
-    public void reset() { shortage.set(null); releaseFails = false; calls.clear(); byKey.clear(); }
+    void reset() { shortage.set(null); releaseFails = false; calls.clear(); byKey.clear(); }
 
     private static String uuid(String s) { return UUID.nameUUIDFromBytes(s.getBytes(StandardCharsets.UTF_8)).toString(); }
 }

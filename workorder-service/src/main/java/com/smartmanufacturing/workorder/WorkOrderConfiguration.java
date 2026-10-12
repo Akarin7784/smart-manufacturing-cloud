@@ -7,7 +7,14 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import java.time.Clock;
 import java.time.ZoneId;
 
-/** 工单服务基础 Bean：业务时钟（下达日期按工厂时区计算，测试可替换）与可开关的定时任务。 */
+/**
+ * 用途：工单服务的基础装配。
+ * <ul>
+ *   <li>业务时钟：下达时“当天生效”的 BOM / 工艺按工厂时区（manufacturing.workorder.zone，默认 Asia/Shanghai）计算，
+ *       测试可替换为固定时钟；</li>
+ *   <li>定时任务开关：manufacturing.workorder.scheduling-enabled 控制预留续约作业，集成测试中关闭以便手动驱动。</li>
+ * </ul>
+ */
 @Configuration
 public class WorkOrderConfiguration {
     /** 工厂时区时钟；BOM / 工艺生效日期按此时区的“当天”判断。 */
