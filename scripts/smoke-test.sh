@@ -180,6 +180,13 @@ op=$(demo_login AUTH_DEMO_OP01_PASSWORD op01); [ -n "$op" ] || fail "op01 登录
 rejected() { case "$1" in 400|404|422) return 0 ;; *) return 1 ;; esac; }
 dispose="$base/api/quality/ncrs/NCR-SMOKE/dispositions"
 c=$(qcode "$op" -X POST -d '{}' "$dispose"); [ "$c" = 403 ] || fail "操作员处置应返回 403，实际 $c"
+# 网关拒绝必须是 RFC 9457 problem+json（type=gateway-access-denied），且不再带旧的 code 字段。
+pj=$(curl -s -m 10 -D - -o /tmp/smoke-403.$$ -X POST -H "Authorization: Bearer $op" -H 'Content-Type: application/json' -d '{}' "$dispose" \
+  | tr -d '\r' | sed -n 's/^[Cc]ontent-[Tt]ype: *//p')
+case "$pj" in application/problem+json*) ;; *) rm -f /tmp/smoke-403.$$; fail "网关 403 的 Content-Type 应为 application/problem+json，实际 $pj" ;; esac
+jq -e '.type=="gateway-access-denied" and .status==403 and (.title|length>0) and (.detail|length>0) and .instance=="/api/quality/ncrs/NCR-SMOKE/dispositions" and (has("code")|not)' /tmp/smoke-403.$$ >/dev/null \
+  || { cat /tmp/smoke-403.$$ >&2; rm -f /tmp/smoke-403.$$; fail "网关 403 响应体不符合 problem+json 约定"; }
+rm -f /tmp/smoke-403.$$
 c=$(qcode "$op" "$base/api/quality/ncrs"); [ "$c" = 200 ] || fail "操作员查询质检应返回 200，实际 $c"
 c=$(qcode "$qc" "$base/api/quality/ncrs"); [ "$c" = 200 ] || fail "qc01 查询质检应返回 200，实际 $c"
 c=$(qcode "$qc" -X POST -d '{}' "$dispose"); rejected "$c" || fail "qc01 处置不存在的 NCR 应由质检服务拒绝（400/404/422），实际 $c"
