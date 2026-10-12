@@ -172,3 +172,17 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 现有启动与冒烟脚本默认使用 admin；如改用其他引导用户名，需相应调整调用凭据。认证服务启动时读取 TTL 与签发参数，修改后应重启认证服务。
 
 上线时为登录和 API 配置 HTTPS，保护 .env 与密钥目录访问权限，设置登录流量限制和审计告警；在多实例部署中使用受控共享签名材料及明确的公钥轮换方案。若需要即时注销、实时撤销权限或租户数据隔离，应进一步增加状态化吊销/版本校验与数据权限设计。本阶段权限控制粒度为接口级。
+
+## 库存服务、质检服务的 401/403（RFC 9457）
+
+inventory-service、quality-service 关闭了 cloud-common 的通用安全链，自行输出 problem+json，type 与 title 和共用安全配置一致。
+覆盖库存服务的全部三条过滤链（用户接口、预留接口 `/inventory/reservations/**`、质检隔离接口 `/inventory/qc-hold/**`）以及方法级 `@PreAuthorize` 拒绝。
+
+| 状态 | type | title（固定） | 说明 |
+| --- | --- | --- | --- |
+| 401 | `authentication-required` | 需要认证 | 无令牌或令牌校验失败（含服务令牌受众不符）；带 `WWW-Authenticate: Bearer` |
+| 403 | `access-denied` | 没有访问权限 | 缺少 permissions 或服务令牌 scope 不符 |
+
+- 字段固定为 `type`、`title`、`status`、`detail`、`instance`，不含旧的 `code`；`instance` 为请求路径（不含查询串），拿不到请求时省略。
+- `title` 对同一 `type` 固定不变，调用方只按 `type` 判断；`detail` 说明具体原因（如“请提供有效的服务身份令牌”）。
+- 示例：`{"type":"authentication-required","title":"需要认证","status":401,"detail":"请提供有效的服务身份令牌","instance":"/inventory/qc-hold/receipts"}`

@@ -159,11 +159,13 @@ public class InventorySecurityConfiguration {
         return decoder;
     }
 
-    /** 过滤器层的错误不经过控制器异常处理，在此输出与业务错误一致的 problem+json。 */
+    /** 过滤器层的错误不经过控制器异常处理，在此输出与业务错误一致的 problem+json；401 按 RFC 6750 附带 Bearer 质询。 */
     private static void write(ObjectMapper mapper, HttpServletRequest req, HttpServletResponse res, int status, String detail) throws IOException {
         res.setStatus(status);
         res.setContentType("application/problem+json;charset=UTF-8");
         if (status == 401) res.setHeader("WWW-Authenticate", "Bearer");
-        mapper.writeValue(res.getWriter(), InventoryProblemHandler.body("about:blank", status == 401 ? "未认证" : "没有访问权限", status, detail, req));
+        // type 与 title 按状态取固定值（authentication-required / access-denied），detail 说明具体原因。
+        SecurityProblemType problem = SecurityProblemType.of(status);
+        mapper.writeValue(res.getWriter(), InventoryProblemHandler.body(problem.value(), problem.title(), status, detail, req));
     }
 }

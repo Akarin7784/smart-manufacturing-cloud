@@ -65,17 +65,19 @@ public class InventoryProblemHandler {
     @ExceptionHandler(org.springframework.security.access.AccessDeniedException.class)
     ResponseEntity<Map<String, Object>> forbidden(Exception e, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).contentType(PROBLEM_JSON)
-            .body(body("about:blank", "没有访问权限", 403, "没有访问权限", request));
+            .body(body(SecurityProblemType.ACCESS_DENIED.value(), SecurityProblemType.ACCESS_DENIED.title(), 403, "没有访问权限", request));
     }
 
-    /** 构造 RFC 7807 基础字段；instance 使用请求路径，便于日志关联。 */
+    /** 构造 RFC 7807 基础字段；instance 使用请求路径（getRequestURI 不含查询串，避免回显令牌等参数），便于日志关联。 */
     static Map<String, Object> body(String type, String title, int status, String detail, HttpServletRequest request) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("type", type);
         body.put("title", title);
         body.put("status", status);
         body.put("detail", detail);
-        if (request != null) body.put("instance", request.getRequestURI());
+        // 拿不到请求或路径时整个省略 instance（RFC 9457 中为可选字段），不输出 null。
+        String uri = request == null ? null : request.getRequestURI();
+        if (uri != null && !uri.isEmpty()) body.put("instance", uri);
         return body;
     }
 }
