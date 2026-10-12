@@ -75,7 +75,7 @@ class MasterdataIntegrationTest {
     @Test void viewerCannotWrite() throws Exception {
         mvc.perform(get("/materials").with(viewer())).andExpect(status().isOk());
         post("/materials", "{\"code\":\"T2-MAT\",\"name\":\"x\",\"type\":\"PART\",\"uom\":\"件\",\"traceMode\":\"LOT\",\"source\":\"MAKE\"}", viewer())
-            .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+            .andExpect(problem(403, "access-denied", "/materials"));
         org.junit.jupiter.api.Assertions.assertEquals(0, jdbc.queryForObject("select count(*) from material where code = 'T2-MAT'", Integer.class));
     }
 
@@ -184,5 +184,18 @@ class MasterdataIntegrationTest {
     /** 未认证请求返回 401，不能用伪造角色头访问。 */
     @Test void anonymousRejected() throws Exception {
         mvc.perform(get("/materials").header("X-Role", "ADMIN")).andExpect(status().isUnauthorized());
+    }
+
+    /** 断言 RFC 9457 problem+json：Content-Type、五个固定字段齐全，且不再输出旧的 code 字段。 */
+    private static org.springframework.test.web.servlet.ResultMatcher problem(int status, String type, String instance) {
+        return org.springframework.test.web.servlet.ResultMatcher.matchAll(
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().is(status),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().contentTypeCompatibleWith("application/problem+json"),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.type").value(type),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.title").isNotEmpty(),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.status").value(status),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.detail").isNotEmpty(),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.instance").value(instance),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").doesNotExist());
     }
 }

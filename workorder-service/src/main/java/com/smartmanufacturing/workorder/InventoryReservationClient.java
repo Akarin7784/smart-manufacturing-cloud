@@ -54,33 +54,66 @@ public class InventoryReservationClient implements MaterialReservationPort {
             line.put("sourceLineId", orderId + ":" + l.materialCode());
             body.add(line);
         }
-        Response r = call(HttpMethod.POST, BASE, key, Map.of("workOrderNo", orderId, "lines", body), "reserve", null);
-        if (r.status() != 201 && r.status() != 200) throw unexpected("reserve", r);
-        return reservation(r.body());
+        return observed("reserve", () -> {
+            Response r = call(HttpMethod.POST, BASE, key, Map.of("workOrderNo", orderId, "lines", body), "reserve", null);
+            if (r.status() != 201 && r.status() != 200) throw unexpected("reserve", r);
+            return reservation(r.body());
+        });
     }
 
     @Override public Instant renew(String key, String reservationId) {
-        Response r = call(HttpMethod.POST, BASE + "/" + reservationId + "/renew", key, null, "renew", reservationId);
-        if (r.status() != 200) throw unexpected("renew", r);
-        // 续约不发事件：以响应中的 expiresAt 为准
-        return Instant.parse(r.body().path("expiresAt").asText());
+        return observed("renew", () -> {
+            Response r = call(HttpMethod.POST, BASE + "/" + reservationId + "/renew", key, null, "renew", reservationId);
+            if (r.status() != 200) throw unexpected("renew", r);
+            if (r.body() == null) throw new InventoryContractException(null, "续约响应缺少响应体");
+            // 续约不发事件：以响应中的 expiresAt 为准
+            return Instant.parse(r.body().path("expiresAt").asText());
+        });
     }
 
     @Override public String release(String key, String reservationId, ReleaseReason reason) {
         // 410（reservation-released / expired）抛 ReservationGoneException，由调用方按终态处理（释放作业记为 reservation_gone）
-        Response r = call(HttpMethod.POST, BASE + "/" + reservationId + "/release", key, Map.of("reason", reason.name()), "release", reservationId);
-        if (r.status() / 100 != 2) throw unexpected("release", r);
-        String status = r.body() == null ? null : r.body().path("status").asText(null);
-        // 释放幂等：RELEASED（本次或之前已释放）与 EXPIRED（占用已由过期归还）都算成功
-        if ("RELEASED".equals(status) || "EXPIRED".equals(status)) return status;
-        throw new InventoryContractException(null, "释放返回 2xx 但预留状态为 " + status);
+        return observed("release", () -> {
+            Response r = call(HttpMethod.POST, BASE + "/" + reservationId + "/release", key, Map.of("reason", reason.name()), "release", reservationId);
+            if (r.status() / 100 != 2) throw unexpected("release", r);
+            String status = r.body() == null ? null : r.body().path("status").asText(null);
+            // 释放幂等：RELEASED（本次或之前已释放）与 EXPIRED（占用已由过期归还）都算成功
+            if ("RELEASED".equals(status) || "EXPIRED".equals(status)) return status;
+            throw new InventoryContractException(null, "释放返回 2xx 但预留状态为 " + status);
+        });
     }
 
     /** 查询预留单（运维排查与测试使用）。 */
     JsonNode get(String reservationId) {
-        Response r = call(HttpMethod.GET, BASE + "/" + reservationId, null, null, "get", reservationId);
-        if (r.status() != 200) throw unexpected("get", r);
-        return r.body();
+        return observed("get", () -> {
+            Response r = call(HttpMethod.GET, BASE + "/" + reservationId, null, null, "get", reservationId);
+            if (r.status() != 200) throw unexpected("get", r);
+            return r.body();
+        });
+    }
+
+    /**
+     * 统一统计契约不一致：库存返回 422 uom-mismatch、本服务不应收到的 Problem type / 状态码（{@link InventoryContractException}），
+     * 或 2xx 响应体结构无法解析（时间、数量格式错误等）时，计入
+     * mes_workorder_inventory_contract_mismatch_total{operation}。解析失败统一转为 InventoryContractException，
+     * 不让 DateTimeParseException 之类的原始异常落入调用方的通用 error 分支。网络错误、5xx、鉴权失败不在此计数。
+     */
+    private <T> T observed(String op, java.util.function.Supplier<T> action) {
+        try {
+            return action.get();
+        } catch (InventoryContractException e) {
+            metrics.contractMismatchObserved(op);
+            throw e;
+        } catch (java.time.DateTimeException | IllegalArgumentException | NullPointerException e) {
+            // 2xx 响应结构不符合契约（字段缺失、格式错误；NumberFormatException 属于 IllegalArgumentException）
+            metrics.contractMismatchObserved(op);
+            LOG.error("库存 {} 响应结构不符合契约：{}", op, e.toString());
+            throw new InventoryContractException(null, op + " 响应结构不符合契约：" + e.getMessage());
+        } catch (com.smartmanufacturing.common.BusinessException e) {
+            // 422 uom-mismatch 对本服务是业务错误（返回调用方 422），但同时说明双方主数据 / 契约不一致，需计数告警
+            if (WorkOrderProblemType.UOM_MISMATCH.code().equals(e.code())) metrics.contractMismatchObserved(op);
+            throw e;
+        }
     }
 
     // ------------------------------------------------------------------ HTTP 与错误映射
@@ -171,6 +204,7 @@ public class InventoryReservationClient implements MaterialReservationPort {
 
     private static Reservation reservation(JsonNode body) {
         if (body == null) throw new InventoryContractException(null, "预留响应缺少响应体");
+        if (body.path("reservationId").asText("").isBlank()) throw new InventoryContractException(null, "预留响应缺少 reservationId");
         List<ReservationLineView> lines = new ArrayList<>();
         for (JsonNode l : body.path("lines"))
             lines.add(new ReservationLineView(l.path("lineId").asText(), l.path("materialCode").asText(),

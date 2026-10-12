@@ -47,13 +47,25 @@ class DeviceIntegrationTest {
     }
     /** 绕过网关直连业务服务也不能匿名读取设备。 */
     @Test void directServiceRequiresAuthentication() throws Exception {
-        mvc.perform(get("/devices")).andExpect(status().isUnauthorized())
-            .andExpect(jsonPath("$.code").value("AUTHENTICATION_REQUIRED"));
+        mvc.perform(get("/devices?token=secret")).andExpect(problem(401, "authentication-required", "/devices"))
+            .andExpect(header().string("WWW-Authenticate", "Bearer"));
     }
 
     /** 设备查询权限不包含配置管理权限，防止查看者读取管理配置。 */
     @Test void readerCannotReadConfiguration() throws Exception {
-        mvc.perform(get("/devices/config").with(reader())).andExpect(status().isForbidden())
-            .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+        mvc.perform(get("/devices/config").with(reader())).andExpect(problem(403, "access-denied", "/devices/config"));
+    }
+
+    /** 断言 RFC 9457 problem+json：Content-Type、五个固定字段齐全，且不再输出旧的 code 字段。 */
+    private static org.springframework.test.web.servlet.ResultMatcher problem(int status, String type, String instance) {
+        return org.springframework.test.web.servlet.ResultMatcher.matchAll(
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().is(status),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().contentTypeCompatibleWith("application/problem+json"),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.type").value(type),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.title").isNotEmpty(),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.status").value(status),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.detail").isNotEmpty(),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.instance").value(instance),
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").doesNotExist());
     }
 }
