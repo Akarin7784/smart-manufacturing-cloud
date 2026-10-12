@@ -35,14 +35,16 @@ public enum SecurityProblem {
     public String type() { return type; }
     public HttpStatus status() { return status; }
 
-    /** 五个固定字段；instance 只取请求路径（getRequestURI 不含查询串），避免回显令牌等查询参数。 */
+    /** 固定字段 type/title/status/detail，外加 instance：只取请求路径（getRequestURI 不含查询串），避免回显令牌等查询参数。 */
     public Map<String, Object> body(HttpServletRequest request) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("type", type);
         body.put("title", title);
         body.put("status", status.value());
         body.put("detail", detail);
-        body.put("instance", request == null ? null : request.getRequestURI());
+        // 拿不到请求或路径时整个省略 instance（RFC 9457 中为可选字段），不输出 null。
+        String uri = request == null ? null : request.getRequestURI();
+        if (uri != null && !uri.isEmpty()) body.put("instance", uri);
         return body;
     }
 
