@@ -21,7 +21,7 @@
 | JDBC + MySQL | 各服务独立数据库与账号 |
 | H2 | 无中间件本地开发，数据保存于 data/ |
 | Actuator + Prometheus | 健康检查与受保护的指标 |
-| Spring Security + RSA JWT | 独立登录、三种角色、网关与服务分别验签 |
+| Spring Security + RSA JWT | 独立登录、四种角色（含质检员）、网关与服务分别验签 |
 
 版本依据：[阿里巴巴官方兼容表](https://sca.aliyun.com/docs/2025.x/overview/version-explain/)。版本集中在根 pom.xml；升级时必须一起核对 Boot / Cloud / Alibaba 兼容性。
 
@@ -68,7 +68,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-local.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
 ```
 
-默认 local profile 使用 H2 文件数据库、固定服务地址，关闭 Nacos 和 Sentinel。首次启动会生成管理员随机密码到被忽略的 .env，管理员用户名为 admin；不会重置已有用户。日志位于 .runtime/。脚本启动后台 Java 进程，停止方式：
+默认 local profile 使用 H2 文件数据库、固定服务地址，关闭 Nacos 和 Sentinel。首次启动会生成管理员随机密码到被忽略的 .env，管理员用户名为 admin；不会重置已有用户。
+
+演示账号（密码均由 init-env 随机生成并写入 .env，认证服务启动时按用户名幂等创建，不重置已有账号）：
+
+| 用户名 | 角色 | 密码变量 | 用途 |
+| --- | --- | --- | --- |
+| admin | ADMIN | `AUTH_BOOTSTRAP_PASSWORD` | 管理员，全部权限 |
+| qc01 | QUALITY_INSPECTOR | `AUTH_DEMO_QC01_PASSWORD` | 质检员：NCR 评审、处置、关闭 |
+| op01 | OPERATOR | `AUTH_DEMO_OP01_PASSWORD` | 操作员：报工、收发料，质检只读 |
+日志位于 .runtime/。脚本启动后台 Java 进程，停止方式：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-local.ps1

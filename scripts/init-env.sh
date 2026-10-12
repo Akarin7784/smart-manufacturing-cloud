@@ -24,6 +24,9 @@ ensure() {
 }
 
 ensure AUTH_BOOTSTRAP_PASSWORD "$(rand_hex 16)"
+# 演示账号 qc01（质检员）、op01（操作员）的登录密码；只在认证服务首次创建账号时使用，已存在不重置。
+ensure AUTH_DEMO_QC01_PASSWORD "$(rand_hex 16)"
+ensure AUTH_DEMO_OP01_PASSWORD "$(rand_hex 16)"
 ensure MYSQL_ROOT_PASSWORD "$(rand_hex 16)"
 ensure MYSQL_APP_PASSWORD "$(rand_hex 16)"
 # Nacos 令牌密钥要求 Base64 且解码后至少 32 字节，这里用 48 个随机 hex 字符编码。

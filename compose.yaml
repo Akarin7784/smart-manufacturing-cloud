@@ -163,6 +163,9 @@ services:
       MYSQL_HOST: mysql
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
       AUTH_BOOTSTRAP_PASSWORD: ${AUTH_BOOTSTRAP_PASSWORD:-}
+      # 演示账号 qc01（质检员）/ op01（操作员）的密码，由 init-env 生成；为空时认证服务跳过创建。
+      AUTH_DEMO_QC01_PASSWORD: ${AUTH_DEMO_QC01_PASSWORD:-}
+      AUTH_DEMO_OP01_PASSWORD: ${AUTH_DEMO_OP01_PASSWORD:-}
       AUTH_PRIVATE_KEY_PATH: /home/app/security/signing-key.json
       # 认证服务只拿工单客户端密钥的 BCrypt 散列，不接触明文；缺失时 compose 直接报错。
       WORKORDER_CLIENT_SECRET_HASH: ${WORKORDER_CLIENT_SECRET_HASH:?请先运行 scripts/init-env.sh 生成 .env}
