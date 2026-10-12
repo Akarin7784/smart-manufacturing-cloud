@@ -6,7 +6,6 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 import java.sql.SQLException;
-import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Locale;
 import java.util.UUID;
@@ -40,7 +39,7 @@ final class CompensationReleaseTasks {
                 "insert into wo_reservation_release_task (task_id, order_id, reservation_id, reason, idempotency_key, status, attempts, created_at)"
                     + " select ?, ?, ?, ?, ?, 'PENDING', 0, ? from dual where not exists (select 1 from wo_reservation_release_task where idempotency_key = ?)",
                 UUID.randomUUID().toString(), orderId, reservationId, MaterialReservationPort.ReleaseReason.COMPENSATION.name(),
-                key, Timestamp.from(now), key));
+                key, DbTimes.ts(now), key)); // 与 V5 的 TIMESTAMP(3) 对齐，截断到毫秒
             if (rows != null && rows == 1) return true;
             LOG.debug("补偿释放任务已存在，跳过写入：{}", key);
             return false;

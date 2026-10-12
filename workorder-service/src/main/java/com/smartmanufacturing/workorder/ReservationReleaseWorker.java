@@ -58,8 +58,8 @@ public class ReservationReleaseWorker {
                     + " where status = 'PENDING' and (next_attempt_at is null or next_attempt_at <= ?) order by created_at, task_id limit " + batchSize
                     + " for update skip locked",
                 (rs, i) -> new Task(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5), rs.getInt(6)),
-                Timestamp.from(clock.instant()));
-            Timestamp leaseUntil = Timestamp.from(clock.instant().plus(lease));
+                DbTimes.ts(clock.instant()));
+            Timestamp leaseUntil = DbTimes.ts(clock.instant().plus(lease));
             for (Task t : tasks) jdbc.update("update wo_reservation_release_task set next_attempt_at = ? where task_id = ?", leaseUntil, t.taskId());
             return tasks;
         });
@@ -138,19 +138,19 @@ public class ReservationReleaseWorker {
     private Boolean retry(Task t, String result, RuntimeException e) {
         Duration backoff = WorkOrderOutboxRelay.backoff(t.attempts() + 1);
         jdbc.update("update wo_reservation_release_task set attempts = attempts + 1, next_attempt_at = ?, last_error = ? where task_id = ? and status = 'PENDING'",
-            Timestamp.from(clock.instant().plus(backoff)), truncate(e.getMessage()), t.taskId());
+            DbTimes.ts(clock.instant().plus(backoff)), truncate(e.getMessage()), t.taskId());
         metrics.releaseResult(result);
         return null;
     }
 
     private void finish(Task t, String status, String resultStatus, String error) {
         jdbc.update("update wo_reservation_release_task set status = ?, result_status = ?, attempts = attempts + 1, last_error = ?, completed_at = ? where task_id = ? and status = 'PENDING'",
-            status, resultStatus, truncate(error), Timestamp.from(clock.instant()), t.taskId());
+            status, resultStatus, truncate(error), DbTimes.ts(clock.instant()), t.taskId());
     }
 
     private void audit(Task t, String event, String detail) {
         jdbc.update("insert into wo_inventory_audit (id, order_id, reservation_id, event, detail, created_at) values (?, ?, ?, ?, ?, ?)",
-            UUID.randomUUID().toString(), t.orderId(), t.reservationId(), event, truncate(detail), Timestamp.from(clock.instant()));
+            UUID.randomUUID().toString(), t.orderId(), t.reservationId(), event, truncate(detail), DbTimes.ts(clock.instant()));
     }
 
     private static String truncate(String s) { return s == null ? null : s.length() > 500 ? s.substring(0, 500) : s; }

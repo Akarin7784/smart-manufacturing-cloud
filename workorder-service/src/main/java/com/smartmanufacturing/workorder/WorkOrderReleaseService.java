@@ -120,7 +120,7 @@ public class WorkOrderReleaseService {
 
     private void persistRelease(Order order, String key, String operator, BomExplosion bom, Routing routing,
                                 MaterialReservationPort.Reservation reservation) {
-        Timestamp now = Timestamp.from(clock.instant());
+        Timestamp now = DbTimes.ts(clock.instant());
         // 先插入生命周期：主键裁决并发下达（失败方在此抛 DuplicateKeyException 并整笔回滚）。
         jdbc.update("insert into work_order_lifecycle (order_id, version, resume_target, product_code, bom_version, routing_version, release_key, released_by, released_at) values (?, 0, null, ?, ?, ?, ?, ?, ?)",
             order.id(), order.product(), bom.bomVersion(), routing.version(), key, operator, now);
@@ -328,7 +328,7 @@ public class WorkOrderReleaseService {
             where r.status = 'ACTIVE' and w.status in ('RELEASED', 'IN_PROGRESS', 'ON_HOLD')
               and (r.last_renewed_at is null or r.last_renewed_at < ?) and r.reservation_id > ?
             order by r.reservation_id limit ?""",
-            (rs, i) -> new RenewalCandidate(rs.getString(1), rs.getString(2)), Timestamp.from(roundStart), afterReservationId, batchSize);
+            (rs, i) -> new RenewalCandidate(rs.getString(1), rs.getString(2)), DbTimes.ts(roundStart), afterReservationId, batchSize);
     }
 
     /**
@@ -340,7 +340,7 @@ public class WorkOrderReleaseService {
         try {
             Instant expiresAt = materials.renew("wo-renew:" + c.reservationId() + ":" + slot, c.reservationId());
             jdbc.update("update wo_material_reservation set expires_at = ?, last_renewed_at = ? where reservation_id = ? and status = 'ACTIVE'",
-                Timestamp.from(expiresAt), Timestamp.from(clock.instant()), c.reservationId());
+                DbTimes.ts(expiresAt), DbTimes.ts(clock.instant()), c.reservationId());
             return true;
         } catch (MaterialReservationPort.ReservationGoneException gone) {
             onReservationExpired(c.reservationId());
@@ -407,7 +407,7 @@ public class WorkOrderReleaseService {
     private void insertReservation(String orderId, int seq, MaterialReservationPort.Reservation r) {
         jdbc.update("update wo_material_reservation set status = 'SUPERSEDED' where order_id = ? and status = 'ACTIVE'", orderId);
         jdbc.update("insert into wo_material_reservation (order_id, seq, reservation_id, status, expires_at) values (?, ?, ?, 'ACTIVE', ?)",
-            orderId, seq, r.reservationId(), Timestamp.from(r.expiresAt()));
+            orderId, seq, r.reservationId(), DbTimes.ts(r.expiresAt()));
         for (ReservationLineView l : r.lines())
             jdbc.update("insert into wo_material_reservation_line (reservation_id, line_id, material_code, quantity, uom) values (?, ?, ?, ?, ?)",
                 r.reservationId(), l.lineId(), l.materialCode(), l.quantity(), l.uom());

@@ -116,9 +116,9 @@ public class OperationReportingService {
         String reportId = UUID.randomUUID().toString();
         var now = clock.instant();
         jdbc.update("insert into wo_operation_report (report_id, order_id, op_no, type, good_qty, defect_qty, scrap_qty, uom, lot_no, note, reversed_report_id, operator, request_id, created_at) values (?, ?, ?, 'REPORT', ?, ?, ?, ?, ?, ?, null, ?, ?, ?)",
-            reportId, order.id(), opNo, good, defect, scrap, req.uom(), req.lotNo(), req.note(), operator, MDC.get("requestId"), Timestamp.from(now));
+            reportId, order.id(), opNo, good, defect, scrap, req.uom(), req.lotNo(), req.note(), operator, MDC.get("requestId"), DbTimes.ts(now));
         jdbc.update("update wo_operation_progress set good_qty = good_qty + ?, defect_qty = defect_qty + ?, scrap_qty = scrap_qty + ?, uom = ?, effective_reports = effective_reports + 1, updated_at = ? where order_id = ? and op_no = ?",
-            good, defect, scrap, req.uom(), Timestamp.from(now), order.id(), opNo);
+            good, defect, scrap, req.uom(), DbTimes.ts(now), order.id(), opNo);
         if (defect.signum() > 0)
             defectEvent(order, opNo, req.uom(), req.lotNo(), defect, reportId, null, "DefectReported", defectReportedTag);
 
@@ -190,9 +190,9 @@ public class OperationReportingService {
         var now = clock.instant();
         jdbc.update("insert into wo_operation_report (report_id, order_id, op_no, type, good_qty, defect_qty, scrap_qty, uom, lot_no, note, reversed_report_id, operator, request_id, created_at) values (?, ?, ?, 'REVERSAL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             reversalId, order.id(), original.opNo(), original.good().negate(), original.defect().negate(), original.scrap().negate(),
-            original.uom(), original.lotNo(), reason, reportId, operator, MDC.get("requestId"), Timestamp.from(now));
+            original.uom(), original.lotNo(), reason, reportId, operator, MDC.get("requestId"), DbTimes.ts(now));
         jdbc.update("update wo_operation_progress set good_qty = good_qty - ?, defect_qty = defect_qty - ?, scrap_qty = scrap_qty - ?, effective_reports = effective_reports - 1, updated_at = ? where order_id = ? and op_no = ?",
-            original.good(), original.defect(), original.scrap(), Timestamp.from(now), order.id(), original.opNo());
+            original.good(), original.defect(), original.scrap(), DbTimes.ts(now), order.id(), original.opNo());
         if (original.defect().signum() > 0)
             defectEvent(order, original.opNo(), original.uom(), original.lotNo(), original.defect(), reversalId, reportId, "DefectReversed", defectReversedTag);
 
@@ -282,7 +282,7 @@ public class OperationReportingService {
                 Object view = work.apply(order);
                 String body = json(ApiResponse.ok(view));
                 jdbc.update("insert into wo_command_request (principal, idempotency_key, command, order_id, request_hash, response_status, response_body, created_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
-                    principal, key, command, orderNo, hash, status, body, Timestamp.from(clock.instant()));
+                    principal, key, command, orderNo, hash, status, body, DbTimes.ts(clock.instant()));
                 return new CommandResult(status, body, false);
             });
         } catch (DuplicateKeyException e) {
@@ -312,7 +312,7 @@ public class OperationReportingService {
         jdbc.update("insert into wo_operation_progress (order_id, op_no, seq, good_qty, defect_qty, scrap_qty, uom, effective_reports, updated_at) "
             + "select t.order_id, t.op_no, t.seq, 0, 0, 0, null, 0, ? from operation_task t where t.order_id = ? "
             + "and not exists (select 1 from wo_operation_progress p where p.order_id = t.order_id and p.op_no = t.op_no)",
-            Timestamp.from(clock.instant()), orderId);
+            DbTimes.ts(clock.instant()), orderId);
         List<Progress> ops = readProgress(orderId);
         if (ops.isEmpty())
             throw WorkOrderProblemType.WORK_ORDER_STATE_CONFLICT.exception("工单 " + orderId + " 没有下达时的工序快照");
