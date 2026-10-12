@@ -57,9 +57,9 @@ public class GatewaySecurityConfiguration {
                 .pathMatchers(HttpMethod.POST, "/api/workorders").hasAuthority("workorder:write")
                 // 工单下达 / 冻结 / 恢复：写权限；下达时令牌透传主数据服务，还需 masterdata:read（由主数据服务校验）。
                 .pathMatchers(HttpMethod.POST, "/api/workorders/*/release", "/api/workorders/*/hold", "/api/workorders/*/resume").hasAuthority("workorder:write")
-                // 工序报工、冲销与手工完工
+                // 工序报工、冲销、手工完工与取消
                 .pathMatchers(HttpMethod.POST, "/api/workorders/*/operations/*/reports", "/api/workorders/*/reports/*/reversal",
-                    "/api/workorders/*/complete").hasAuthority("workorder:write")
+                    "/api/workorders/*/complete", "/api/workorders/*/cancel").hasAuthority("workorder:write")
                 // 主数据：发布单独授权，必须排在通用写规则之前；服务内 @PreAuthorize 再次校验同样的权限。
                 .pathMatchers(HttpMethod.GET, "/api/materials", "/api/materials/**", "/api/workcenters", "/api/workcenters/**",
                     "/api/boms", "/api/boms/**", "/api/routings", "/api/routings/**").hasAuthority("masterdata:read")

@@ -141,11 +141,11 @@ class GatewayRoutingTest {
         client().post().uri("/api/routings/FG-GR60-20/R02/release").headers(h -> h.setBearerAuth(releaser)).exchange().expectStatus().isOk();
     }
 
-    /** 报工、冲销、手工完工需要 workorder:write；只读令牌被拒，进度查询只需 workorder:read。 */
+    /** 报工、冲销、手工完工、取消需要 workorder:write；只读令牌被拒，进度查询只需 workorder:read。 */
     @Test void operationReportingRequiresWritePermission() {
         String reader = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("workorder:read"));
         String writer = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("workorder:read", "workorder:write"));
-        for (String uri : List.of("/api/workorders/WO1/operations/OP10/reports", "/api/workorders/WO1/reports/R1/reversal", "/api/workorders/WO1/complete")) {
+        for (String uri : List.of("/api/workorders/WO1/operations/OP10/reports", "/api/workorders/WO1/reports/R1/reversal", "/api/workorders/WO1/complete", "/api/workorders/WO1/cancel")) {
             client().post().uri(uri).headers(h -> h.setBearerAuth(reader)).exchange().expectStatus().isForbidden();
             client().post().uri(uri).headers(h -> h.setBearerAuth(writer)).exchange().expectStatus().isOk();
         }
