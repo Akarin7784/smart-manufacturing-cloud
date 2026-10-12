@@ -311,8 +311,8 @@ components:
   schemas:
     Quantity:
       type: string
-      pattern: '^\d+(\.\d{1,6})?$'
-      description: 数量，以十进制字符串传输以避免浮点误差，最多 6 位小数。
+      pattern: '^\d{1,12}(\.\d{1,6})?$'
+      description: 数量，以十进制字符串传输以避免浮点误差；对应数据库 DECIMAL(18,6)，即整数部分最多 12 位、小数最多 6 位，单位见所在对象的 uom。
       examples: ['10.5']
 
     ReservationStatus:
@@ -343,11 +343,15 @@ components:
     CreateReservationLine:
       type: object
       description: 单条需求行，来源为工单下达时的 BOM 快照需求行。
-      required: [materialCode, qty, sourceLineId]
+      required: [materialCode, qty, uom, sourceLineId]
       properties:
         materialCode:
           type: string
           description: 物料编码。
+        uom:
+          type: string
+          description: 计量单位编码（如 PCS、KG），必须与物料主数据的基本单位一致，不一致返回 400；数量均以该单位计。
+          examples: ['PCS']
         qty:
           $ref: '#/components/schemas/Quantity'
         sourceLineId:
@@ -380,8 +384,12 @@ components:
     ReservationLine:
       type: object
       description: 预留行。
-      required: [lineId, materialCode, qty, reservedQty, consumedQty, status]
+      required: [lineId, materialCode, uom, qty, reservedQty, consumedQty, status]
       properties:
+        uom:
+          type: string
+          description: 计量单位编码（如 PCS、KG），与物料主数据一致；数量均以该单位计。
+          examples: ['PCS']
         lineId:
           type: string
           description: 预留行 ID，扣减时使用。
@@ -450,8 +458,12 @@ components:
     Shortage:
       type: object
       description: 单个物料的缺口。
-      required: [materialCode, requiredQty, availableQty, shortageQty]
+      required: [materialCode, uom, requiredQty, availableQty, shortageQty]
       properties:
+        uom:
+          type: string
+          description: 计量单位编码（如 PCS、KG），与物料主数据一致；数量均以该单位计。
+          examples: ['PCS']
         materialCode:
           type: string
           description: 物料编码。
