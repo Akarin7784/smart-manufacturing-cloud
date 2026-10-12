@@ -25,7 +25,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 /**
  * 预留接口契约测试（H2）：每个响应（成功与错误）都按 docs/api/inventory-openapi.yaml 校验状态码、媒体类型与响应体 schema，
- * 并断言 8 种 ProblemType 全部被触发且 type 与状态码匹配。工单侧替身应按同一契约生成，两边以本测试为共同基线。
+ * 并断言 9 种 ProblemType 全部被触发且 type 与状态码匹配。工单侧替身应按同一契约生成，两边以本测试为共同基线。
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -92,6 +92,10 @@ class ReservationContractTest {
 
         // validation-error：sourceLineId 重复（400）。
         call(postJson(svc(BASE), key(), createBody("WO-CT-0", line("CT-A", "1", "kg", "S1"), line("CT-A", "1", "kg", "S1"))), BASE, "post", 400);
+        // uom-mismatch：CT-A 已按 kg 登记现存量，用“件”预留返回 422，且不产生预留。
+        JsonNode mismatch = call(postJson(svc(BASE), key(), createBody("WO-CT-U", line("CT-A", "1", "件", "WO-CT-U:10"))), BASE, "post", 422);
+        assertThat(mismatch.get("type").asText()).isEqualTo("uom-mismatch");
+        assertThat(jdbc.queryForObject("select count(*) from reservation where work_order_no = 'WO-CT-U'", Integer.class)).isZero();
         // insufficient-stock：按物料 + 单位汇总，列出全部缺口与 sourceLineIds（409）。
         JsonNode shortage = call(postJson(svc(BASE), key(), createBody("WO-CT-0",
             line("CT-B", "8", "个", "S1"), line("CT-B", "5", "个", "S2"), line("CT-NONE", "1", "kg", "S3"))), BASE, "post", 409);
@@ -151,20 +155,42 @@ class ReservationContractTest {
             "{\"qty\":\"1\",\"lotNo\":\"LA\"}"), consumeTpl, "post", 410);
         call(postJson(svc(BASE) + "/" + id3 + "/renew", key(), null), ONE + "/renew", "post", 410);
 
-        assertThat(covered).isEqualTo(OpenApiContract.problemTypes());
+        // 契约固定 9 种 type，全部被触发且与 ProblemType 枚举一致。
+        assertThat(covered).isEqualTo(OpenApiContract.problemTypes()).hasSize(9);
+        assertThat(covered).containsExactlyInAnyOrderElementsOf(java.util.Arrays.stream(ProblemType.values()).map(ProblemType::value).toList());
 
         // 指标：结果、状态迁移、出入库数量均已计数，且标签不含工单号/物料号。
         assertThat(registry.get("mes.inventory.reservation").tag("result", "ok").counter().count()).isGreaterThanOrEqualTo(3);
         assertThat(registry.get("mes.inventory.reservation").tag("result", "replay").counter().count()).isGreaterThanOrEqualTo(1);
-        for (String result : List.of("insufficient_stock", "validation_error", "idempotency_key_conflict"))
+        for (String result : List.of("insufficient_stock", "validation_error", "idempotency_key_conflict", "uom_mismatch"))
             assertThat(registry.get("mes.inventory.reservation").tag("result", result).counter().count()).as(result).isGreaterThanOrEqualTo(1);
         for (String to : List.of("ACTIVE", "RELEASED", "EXPIRED", "CONSUMED"))
             assertThat(registry.get("mes.inventory.reservation.transition").tag("to", to).counter().count()).as(to).isGreaterThanOrEqualTo(1);
-        assertThat(registry.get("mes.inventory.movement.qty").tag("kind", "consume").tag("uom", "kg").summary().totalAmount()).isGreaterThanOrEqualTo(10.5);
+        assertThat(registry.get("mes.inventory.movement.qty").tag("kind", "consume").tag("uom", "kg").counter().count()).isGreaterThanOrEqualTo(10.5);
         assertThat(registry.get("mes.inventory.outbox.pending").gauge().value()).isGreaterThanOrEqualTo(1);
         assertThat(registry.get("mes.inventory.stock.lock.wait").timer().count()).isPositive();
         registry.getMeters().stream().filter(m -> m.getId().getName().startsWith("mes.inventory"))
             .flatMap(m -> m.getId().getTags().stream())
-            .forEach(t -> assertThat(t.getKey()).isIn("result", "to", "kind", "uom"));
+            // application 为 #21 引入的全局公共标签（取服务名，低基数），其余只允许业务低基数标签。
+            .forEach(t -> assertThat(t.getKey()).isIn("application", "result", "to", "kind", "uom"));
+    }
+
+    /** 用户令牌（aud=manufacturing-api，即使带 inventory 权限）调用预留接口：403，响应符合契约。 */
+    @Test void userTokenIsForbiddenOnReservations() throws Exception {
+        MvcResult r = mvc.perform(postJson(svc(BASE), key(), createBody("WO-SEC-1", line("CT-A", "1", "kg", "WO-SEC-1:10")))
+            .with(jwt().jwt(j -> j.subject("keeper").audience(List.of("manufacturing-api")))
+                .authorities(new SimpleGrantedAuthority("inventory:read"), new SimpleGrantedAuthority("inventory:write")))).andReturn();
+        assertThat(r.getResponse().getStatus()).isEqualTo(403);
+        OpenApiContract.assertConforms(BASE, "post", r);
+    }
+
+    /** 服务令牌受众正确但缺少 inventory:reserve scope：403，且不产生预留。 */
+    @Test void serviceTokenWithoutReserveScopeIsForbidden() throws Exception {
+        MvcResult r = mvc.perform(postJson(svc(BASE), key(), createBody("WO-SEC-2", line("CT-A", "1", "kg", "WO-SEC-2:10")))
+            .with(jwt().jwt(j -> j.subject("other-service").claim("client_id", "other-service").audience(List.of("inventory-service")))
+                .authorities(new SimpleGrantedAuthority("SCOPE_inventory:read")))).andReturn();
+        assertThat(r.getResponse().getStatus()).isEqualTo(403);
+        OpenApiContract.assertConforms(BASE, "post", r);
+        assertThat(jdbc.queryForObject("select count(*) from reservation where work_order_no = 'WO-SEC-2'", Integer.class)).isZero();
     }
 }

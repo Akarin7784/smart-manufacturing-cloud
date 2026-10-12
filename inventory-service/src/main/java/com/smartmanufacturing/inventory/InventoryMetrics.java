@@ -1,7 +1,6 @@
 package com.smartmanufacturing.inventory;
 
 import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -35,9 +34,9 @@ public class InventoryMetrics {
     }
 
     /**
-     * mes_inventory_reservation_total{result}：预留创建结果。取值为 ok、replay、8 种 ProblemType 的下划线写法
+     * mes_inventory_reservation_total{result}：预留创建结果。取值为 ok、replay、9 种 ProblemType 的下划线写法
      * （insufficient_stock、over_consume、idempotency_key_conflict、reservation_expired、reservation_released、
-     * reservation_consumed、line_closed、validation_error）以及兜底 error。
+     * reservation_consumed、line_closed、validation_error、uom_mismatch，共 9 种）以及兜底 error。
      * 请求体 Bean Validation 失败发生在进入控制器之前，不计入本指标。
      */
     public void reservation(String result) {
@@ -54,8 +53,9 @@ public class InventoryMetrics {
     public void movement(String txnType, String uom, BigDecimal qty) {
         double amount = qty.abs().doubleValue();
         String kind = txnType.toLowerCase(java.util.Locale.ROOT);
-        afterCommit(() -> DistributionSummary.builder("mes.inventory.movement.qty").description("出入库数量")
-            .tag("kind", kind).tag("uom", uom).register(registry).record(amount));
+        // 按 observability.md 第 5 节约定为 Counter（导出名 mes_inventory_movement_qty_total），按 uom 分组累计。
+        afterCommit(() -> Counter.builder("mes.inventory.movement.qty").description("出入库数量")
+            .tag("kind", kind).tag("uom", uom).register(registry).increment(amount));
     }
 
     /** 记录获取行锁的耗时。 */

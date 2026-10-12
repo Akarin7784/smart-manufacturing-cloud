@@ -69,7 +69,8 @@ public class ReservationService {
             if (uoms.size() > 1) throw ProblemException.validation("物料 " + material + " 的需求行计量单位不一致：" + uoms);
             String uom = uoms.iterator().next();
             if (registered != null && !registered.equals(uom))
-                throw ProblemException.validation("物料 " + material + " 的计量单位为 " + registered + "，与请求的 " + uom + " 不一致");
+                // 与已登记的现存量单位不一致：请求格式合法但无法处理，返回 422 uom-mismatch（与入库口径一致）。
+                throw ProblemException.uomMismatch(material, registered, uom);
             BigDecimal requested = e.getValue().stream().map(Need::qty).reduce(BigDecimal.ZERO, BigDecimal::add);
             BigDecimal available = BigDecimal.ZERO;
             if (registered != null) {

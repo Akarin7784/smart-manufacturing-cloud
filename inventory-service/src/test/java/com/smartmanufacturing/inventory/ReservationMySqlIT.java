@@ -65,10 +65,25 @@ class ReservationMySqlIT {
     private static CreateLine line(String m, String qty, String uom, String src) { return new CreateLine(m, qty, uom, src); }
     private BigDecimal reserved(String material) { return stock.activeReserved(material); }
 
-    /** 并发不超卖：可用 10，20 个线程各预留 1，恰好 10 张成功，有效预留合计 10。 */
+    /**
+     * 并发不超卖：可用 10，20 个线程各预留 1，恰好 10 张成功，有效预留合计 10。
+     * 同时断言每个预留事务实际运行在 READ COMMITTED 下（读取会话的 @@transaction_isolation），
+     * 确保本用例验证的正是生产路径使用的隔离级别，而不是 MySQL 默认的 REPEATABLE READ。
+     */
     @Test void concurrentReservationsNeverOversell() throws Exception {
         inbound("IT-R-C", "件", "L1", "10");
-        Map<String, Integer> outcome = race(20, i -> reserve(UUID.randomUUID().toString(), order("WO-C-" + i, line("IT-R-C", "1", "件", "WO-C-" + i + ":1"))));
+        Set<String> isolations = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        Map<String, Integer> outcome = race(20, i -> {
+            CreateReservation r = order("WO-C-" + i, line("IT-R-C", "1", "件", "WO-C-" + i + ":1"));
+            String body = LockRetry.run(() -> idempotency.execute("workorder-service", UUID.randomUUID().toString(), "reservation.create", r, 201,
+                () -> {
+                    // 在幂等事务内读取当前会话隔离级别。
+                    isolations.add(jdbc.queryForObject("select @@transaction_isolation", String.class));
+                    return reservations.create("workorder-service", r);
+                })).body();
+            return mapper.readValue(body, Reservation.class);
+        });
+        assertThat(isolations).containsExactly("READ-COMMITTED");
         assertThat(outcome).containsEntry("OK", 10).containsEntry("insufficient-stock", 10);
         assertThat(reserved("IT-R-C")).isEqualByComparingTo("10");
     }
