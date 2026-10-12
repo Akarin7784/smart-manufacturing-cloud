@@ -1,0 +1,41 @@
+{
+  "ADMIN": [
+    "device:read",
+    "workorder:read",
+    "workorder:write",
+    "config:read",
+    "metrics:read",
+    "user:manage",
+    "masterdata:read",
+    "masterdata:write",
+    "masterdata:release",
+    "inventory:read",
+    "inventory:write",
+    "quality:read",
+    "quality:write"
+  ],
+  "OPERATOR": [
+    "device:read",
+    "workorder:read",
+    "workorder:write",
+    "masterdata:read",
+    "inventory:read",
+    "inventory:write",
+    "quality:read"
+  ],
+  "VIEWER": [
+    "device:read",
+    "workorder:read",
+    "masterdata:read",
+    "inventory:read",
+    "quality:read"
+  ],
+  "QUALITY_INSPECTOR": [
+    "device:read",
+    "workorder:read",
+    "masterdata:read",
+    "inventory:read",
+    "quality:read",
+    "quality:write"
+  ]
+}
