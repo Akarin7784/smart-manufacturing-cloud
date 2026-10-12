@@ -169,6 +169,8 @@ services:
       AUTH_PRIVATE_KEY_PATH: /home/app/security/signing-key.json
       # 认证服务只拿工单客户端密钥的 BCrypt 散列，不接触明文；缺失时 compose 直接报错。
       WORKORDER_CLIENT_SECRET_HASH: ${WORKORDER_CLIENT_SECRET_HASH:?请先运行 scripts/init-env.sh 生成 .env}
+      # 质检客户端（inventory:qc-hold）密钥的 BCrypt 散列，同样只给认证服务。
+      QUALITY_CLIENT_SECRET_HASH: ${QUALITY_CLIENT_SECRET_HASH:?请先运行 scripts/init-env.sh 生成 .env}
     volumes:
       - auth-keys:/home/app/security
     # 运行镜像无 curl：用构建阶段编译的 JDK HttpClient 探针检查就绪端点。
@@ -323,6 +325,9 @@ services:
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?请先运行 scripts/init-env.sh 生成 .env}
       # 必须等于 infra/rocketmq/broker.conf 的 fileReservedTime（72 小时），服务据此校验去重记录保留期。
       MES_QUALITY_BROKER_RETENTION: PT72H
+      # 服务身份：回写 QC-HOLD 时用 client_credentials（client_id=quality-service）换取 aud=inventory-service 的服务令牌；
+      # 明文密钥只给质检服务，认证服务只持有散列。
+      QUALITY_CLIENT_SECRET: ${QUALITY_CLIENT_SECRET:?请先运行 scripts/init-env.sh 生成 .env}
     # 业务端口 8086 与管理端口 18086 都不发布到宿主机：业务接口经网关 /api/quality/** 访问，
     # Prometheus 在内网抓取 quality:18086；冒烟脚本用一次性 curl 容器在内网核对告警计数器。
     networks:

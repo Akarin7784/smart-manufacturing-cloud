@@ -40,7 +40,7 @@ Set-IfEmpty 'GRAFANA_ADMIN_USER' ('grafana-' + (New-RandomHex 4))
 Set-IfEmpty 'GRAFANA_ADMIN_PASSWORD' (New-RandomHex 16)
 Set-IfEmpty 'AUTH_ISSUER' 'http://localhost:8080'
 Set-IfEmpty 'AUTH_AUDIENCE' 'manufacturing-api'
-# 工单服务的 client_credentials 密钥：明文只给 workorder-service，认证服务只拿 BCrypt 散列。
+# 服务客户端的 client_credentials 密钥：明文只给调用方服务，认证服务只拿 BCrypt 散列。
 # PowerShell 无内置 BCrypt：优先本机 htpasswd，否则用一次性 httpd 容器（--rm）生成。
 function New-BcryptHash([string]$Secret) {
     $htpasswd = Get-Command htpasswd -ErrorAction SilentlyContinue
@@ -58,15 +58,21 @@ function New-BcryptHash([string]$Secret) {
     if (-not $hash.StartsWith('$2')) { throw 'BCrypt 散列生成失败：请安装 htpasswd 或启动 Docker' }
     $hash
 }
-$secretCreated = -not ($lines | Where-Object { $_ -match '^WORKORDER_CLIENT_SECRET=.+$' })
-Set-IfEmpty 'WORKORDER_CLIENT_SECRET' (New-RandomHex 32)
+# 生成一对“服务客户端明文密钥 + BCrypt 散列”：$Key 为明文键名，散列键名为 ${Key}_HASH。
 # 明文新生成或散列缺失时重算散列，保证二者配对；散列含 $，用单引号写入避免 compose 插值。
-if ($secretCreated -or -not ($lines | Where-Object { $_ -match '^WORKORDER_CLIENT_SECRET_HASH=.+$' })) {
-    $plain = (($lines | Where-Object { $_ -match '^WORKORDER_CLIENT_SECRET=' }) -replace '^WORKORDER_CLIENT_SECRET=', '') | Select-Object -First 1
-    $script:lines = [Collections.Generic.List[string]]@($lines | Where-Object { $_ -notmatch '^WORKORDER_CLIENT_SECRET_HASH=' })
-    $script:lines.Add("WORKORDER_CLIENT_SECRET_HASH='$(New-BcryptHash $plain)'")
-    Write-Host '已生成 WORKORDER_CLIENT_SECRET_HASH'
+function Set-ClientSecret([string]$Key) {
+    $created = -not ($lines | Where-Object { $_ -match "^$Key=.+$" })
+    Set-IfEmpty $Key (New-RandomHex 32)
+    if ($created -or -not ($lines | Where-Object { $_ -match "^${Key}_HASH=.+$" })) {
+        $plain = (($lines | Where-Object { $_ -match "^$Key=" }) -replace "^$Key=", '') | Select-Object -First 1
+        $script:lines = [Collections.Generic.List[string]]@($lines | Where-Object { $_ -notmatch "^${Key}_HASH=" })
+        $script:lines.Add("${Key}_HASH='$(New-BcryptHash $plain)'")
+        Write-Host "已生成 ${Key}_HASH"
+    }
 }
+# 工单服务（inventory:reserve）与质检服务（inventory:qc-hold）各用一把独立密钥。
+Set-ClientSecret 'WORKORDER_CLIENT_SECRET'
+Set-ClientSecret 'QUALITY_CLIENT_SECRET'
 [IO.File]::WriteAllText($envPath, ($lines -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
 # 导入进程环境；已显式设置的环境变量优先，不被 .env 覆盖。
 foreach ($line in $lines) {

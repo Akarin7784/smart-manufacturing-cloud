@@ -41,8 +41,8 @@ ensure AUTH_AUDIENCE "manufacturing-api"
 ensure GRAFANA_ADMIN_USER "grafana-$(rand_hex 4)"
 ensure GRAFANA_ADMIN_PASSWORD "$(rand_hex 16)"
 
-# 服务间调用（OAuth2 client_credentials）的工单客户端密钥：明文只给调用方 workorder-service，
-# 认证服务只拿到 BCrypt 散列（WORKORDER_CLIENT_SECRET_HASH），从不持有明文。
+# 服务间调用（OAuth2 client_credentials）的客户端密钥：明文只给调用方服务（workorder-service、quality-service），
+# 认证服务只拿到 BCrypt 散列（*_CLIENT_SECRET_HASH），从不持有明文。
 # BCrypt cost 固定为 10，须与认证服务 ServiceClientRegistry 的 EXPECTED_COST 一致。htpasswd 使用占位用户名 svc，输出 "svc:散列" 后截取散列。
 # BCrypt 生成顺序：htpasswd（apache2-utils）→ python3 bcrypt 模块 → 一次性 httpd 容器内的 htpasswd（--rm，不残留容器）。
 bcrypt_hash() {
@@ -56,19 +56,25 @@ bcrypt_hash() {
     echo "无法生成 BCrypt 散列：请安装 apache2-utils（htpasswd）、python3-bcrypt 或 Docker" >&2; return 1
   fi
 }
-secret_created=0
-if ! grep -q "^WORKORDER_CLIENT_SECRET=." "$env_file"; then
-  ensure WORKORDER_CLIENT_SECRET "$(rand_hex 32)"; secret_created=1
-fi
+# 生成一对“服务客户端明文密钥 + BCrypt 散列”：$1 为明文键名，散列键名为 $1_HASH。
 # 明文是新生成的、或散列缺失时重新计算散列，保证二者始终配对；已有配对不变，可重复执行。
-if [ "$secret_created" = 1 ] || ! grep -q "^WORKORDER_CLIENT_SECRET_HASH=." "$env_file"; then
-  secret=$(sed -n 's/^WORKORDER_CLIENT_SECRET=//p' "$env_file")
-  hash=$(bcrypt_hash "$secret")
-  case "$hash" in \$2*) ;; *) echo "BCrypt 散列生成失败" >&2; exit 1 ;; esac
-  tmp="$env_file.tmp"
-  grep -v "^WORKORDER_CLIENT_SECRET_HASH=" "$env_file" > "$tmp" || true
-  # 散列含 $，用单引号写入，避免 docker compose 对 .env 值做变量插值。
-  printf "WORKORDER_CLIENT_SECRET_HASH='%s'\n" "$hash" >> "$tmp"
-  mv "$tmp" "$env_file"
-  echo "已生成 WORKORDER_CLIENT_SECRET_HASH"
-fi
+ensure_client_secret() {
+  key=$1; created=0
+  if ! grep -q "^$key=." "$env_file"; then
+    ensure "$key" "$(rand_hex 32)"; created=1
+  fi
+  if [ "$created" = 1 ] || ! grep -q "^${key}_HASH=." "$env_file"; then
+    secret=$(sed -n "s/^$key=//p" "$env_file")
+    hash=$(bcrypt_hash "$secret")
+    case "$hash" in \$2*) ;; *) echo "BCrypt 散列生成失败" >&2; exit 1 ;; esac
+    tmp="$env_file.tmp"
+    grep -v "^${key}_HASH=" "$env_file" > "$tmp" || true
+    # 散列含 $，用单引号写入，避免 docker compose 对 .env 值做变量插值。
+    printf "%s_HASH='%s'\n" "$key" "$hash" >> "$tmp"
+    mv "$tmp" "$env_file"
+    echo "已生成 ${key}_HASH"
+  fi
+}
+# 工单服务（scope inventory:reserve，物料预留）与质检服务（scope inventory:qc-hold，QC-HOLD 回写）各用一把独立密钥。
+ensure_client_secret WORKORDER_CLIENT_SECRET
+ensure_client_secret QUALITY_CLIENT_SECRET

@@ -19,8 +19,8 @@ manufacturing:
     resource-server: false
     issuer: ${AUTH_ISSUER:http://localhost:8080}
     audience: ${AUTH_AUDIENCE:manufacturing-api}
-  # 服务间调用的客户端注册表：只保存 BCrypt 散列，明文密钥仅交给调用方（workorder-service）。
-  # 散列取自 .env 的 WORKORDER_CLIENT_SECRET_HASH（init-env 生成）；local/test 未配置时该客户端被禁用，
+  # 服务间调用的客户端注册表：只保存 BCrypt 散列，明文密钥仅交给各自的调用方服务。
+  # 散列取自 .env 的 WORKORDER_CLIENT_SECRET_HASH / QUALITY_CLIENT_SECRET_HASH（init-env 生成）；local/test 未配置时该客户端被禁用，
   # cloud profile 设置 require-secrets=true，缺失则启动失败。不提供任何默认密钥。
   auth:
     require-secrets: false
@@ -28,6 +28,12 @@ manufacturing:
       - client-id: workorder-service
         secret-hash: ${WORKORDER_CLIENT_SECRET_HASH:}
         scopes: [ "inventory:reserve" ]
+        audience: inventory-service
+      # 质检服务：把不良品数量写入/移出 QC-HOLD 隔离库位（入库、放行、报废），见 docs/quality-inventory-writeback-design.md。
+      # 与 workorder-service 分开注册、各用一把密钥、scope 互不包含，任一服务泄露密钥都不能越权调用对方的接口。
+      - client-id: quality-service
+        secret-hash: ${QUALITY_CLIENT_SECRET_HASH:}
+        scopes: [ "inventory:qc-hold" ]
         audience: inventory-service
 auth:
   private-key-path: ${AUTH_PRIVATE_KEY_PATH:.runtime/auth/signing-key.json}
