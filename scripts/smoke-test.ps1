@@ -82,11 +82,11 @@ Write-Host 'PASS: service identity (client_credentials scope/aud, wrong secret 4
 $InventoryUrl = if ($env:INVENTORY_URL) { $env:INVENTORY_URL } else { 'http://localhost:8085' }
 $svcHeaders = @{ Authorization = "Bearer $($cc.access_token)" }
 $runId = [guid]::NewGuid().ToString('N')
-# TODO(#18 合入后删除)：预留接口与该物料期初库存由 #18 提供；未合入时库存服务按用户令牌链拒绝服务令牌（401），此处跳过而不是失败。
-$probe = 0
-try { Invoke-RestMethod "$InventoryUrl/inventory/reservations/smoke-probe-$runId" -Headers $svcHeaders -TimeoutSec 10 | Out-Null }
+# TODO(#18 合入后删除)：预留接口与该物料期初库存由 #18 提供；未合入时库存服务没有该物料（可用量查询 404），此处跳过而不是失败。
+$probe = 200
+try { Invoke-RestMethod "$BaseUrl/api/inventory/stock/availability?materialCode=RM-20CRMNTI-D30" -Headers $headers -TimeoutSec 10 | Out-Null }
 catch { if (-not $_.Exception.Response) { throw }; $probe = [int]$_.Exception.Response.StatusCode }
-if ($probe -eq 401) {
+if ($probe -eq 404) {
     Write-Host 'SKIP: inventory reservation API not available yet (#18 not merged).'
 } else {
     $availUrl = "$BaseUrl/api/inventory/stock/availability?materialCode=RM-20CRMNTI-D30"

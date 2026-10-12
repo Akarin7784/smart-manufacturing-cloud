@@ -109,12 +109,13 @@ echo "PASS: 服务身份 client_credentials（scope/aud 校验、错误密钥 40
 inv=${INVENTORY_URL:-http://localhost:8085}
 svc="Authorization: Bearer $(printf '%s' "$tok" | jq -r '.access_token')"
 run_id="$(date +%s)-$$-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
-# TODO(#18 合入后删除)：预留接口与该物料期初库存由 #18 提供；未合入时库存服务按用户令牌链拒绝服务令牌（401），此处跳过而不是失败。
-probe=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -H "$svc" "$inv/inventory/reservations/smoke-probe-$run_id")
-if [ "$probe" = 401 ]; then
-  echo "SKIP: 库存预留接口尚未提供（#18 未合入）"
+# TODO(#18 合入后删除)：预留接口与该物料期初库存由 #18 提供；未合入时库存服务没有该物料（可用量查询 404），此处跳过而不是失败。
+probe=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -H "$auth" "$base/api/inventory/stock/availability?materialCode=RM-20CRMNTI-D30")
+if [ "$probe" = 404 ]; then
+  echo "SKIP: 库存预留演示物料尚未提供（#18 未合入）"
 else
   avail() { curl -fsS -m 5 -H "$auth" "$base/api/inventory/stock/availability?materialCode=RM-20CRMNTI-D30" | jq -r '.available'; }
+  [ "$probe" = 200 ] || fail "查询可用量应返回 200，实际 $probe"
   before=$(avail) || fail "查询可用量失败"
   rbody=$(jq -nc --arg wo "SMOKE-$run_id" '{workOrderNo:$wo,lines:[{materialCode:"RM-20CRMNTI-D30",qty:"1",uom:"kg",sourceLineId:"smoke-1"}]}')
   res=$(curl -sS -m 10 -w '\n%{http_code}' -H "$svc" -H 'Content-Type: application/json; charset=utf-8' \
