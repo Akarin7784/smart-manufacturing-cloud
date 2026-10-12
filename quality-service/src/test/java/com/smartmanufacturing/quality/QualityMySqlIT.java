@@ -30,6 +30,9 @@ class QualityMySqlIT {
     @Autowired DefectEventHandler handler;
     @Autowired NcrService ncrs;
     @Autowired IdempotencyService idempotency;
+    @Autowired DedupTableCleaner cleaner;
+    @Autowired MutableClock clock;
+    @Autowired io.micrometer.core.instrument.MeterRegistry registry;
 
     private String openUnderReview(String qty) {
         String reportId = "RPT-MY-" + UUID.randomUUID();
@@ -116,5 +119,59 @@ class QualityMySqlIT {
         List<Object> results = race(6, i -> handler.handle("DefectReported", eventId, DefectEvents.reported(eventId, reportId, "WO-D", "1", "件")));
         assertThat(results).filteredOn(r -> r == DefectEventHandler.Result.OK).hasSize(1);
         assertThat(jdbc.queryForObject("select count(*) from ncr where source_report_id = ?", Integer.class, reportId)).isEqualTo(1);
+    }
+
+    private double cleaned(String table) { return registry.get("mes.quality.cleanup.deleted").tag("table", table).counter().count(); }
+
+    /**
+     * #31：Clock 推进超过保留期（30 天）后清理——过期行删除、未过期行保留、计数按表累加；
+     * 清理后同一事件重投不会产生新 NCR（source_report_id 唯一兜底，结果为 duplicate）。
+     */
+    @Test void cleanupDeletesExpiredKeepsFreshAndRedeliveryStaysDeduplicated() {
+        try {
+            // 先清掉其他用例留下的旧行，保证下面的计数只反映本用例。
+            clock.advance(java.time.Duration.ofDays(31));
+            cleaner.purgeExpired();
+            clock.reset();
+
+            String oldReport = "RPT-OLD-" + UUID.randomUUID(), oldEvent = DefectEvents.id();
+            var oldBody = DefectEvents.reported(oldEvent, oldReport, "WO-CL", "1", "件");
+            assertThat(handler.handle("DefectReported", oldEvent, oldBody)).isEqualTo(DefectEventHandler.Result.OK);
+
+            clock.advance(java.time.Duration.ofDays(29));
+            String freshReport = "RPT-NEW-" + UUID.randomUUID(), freshEvent = DefectEvents.id();
+            handler.handle("DefectReported", freshEvent, DefectEvents.reported(freshEvent, freshReport, "WO-CL", "1", "件"));
+
+            clock.advance(java.time.Duration.ofDays(2));   // 旧行已 31 天，新行 2 天
+            double ce = cleaned("consumed_event"), lock = cleaned("defect_report_lock");
+            assertThat(cleaner.purgeExpired()).isEqualTo(2);
+            assertThat(cleaned("consumed_event")).isEqualTo(ce + 1);
+            assertThat(cleaned("defect_report_lock")).isEqualTo(lock + 1);
+            assertThat(jdbc.queryForObject("select count(*) from consumed_event where event_id = ?", Integer.class, oldEvent)).isZero();
+            assertThat(jdbc.queryForObject("select count(*) from defect_report_lock where report_id = ?", Integer.class, oldReport)).isZero();
+            assertThat(jdbc.queryForObject("select count(*) from consumed_event where event_id = ?", Integer.class, freshEvent)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("select count(*) from defect_report_lock where report_id = ?", Integer.class, freshReport)).isEqualTo(1);
+
+            // 清理后同一事件重投：去重记录已删，但 source_report_id 唯一兜底，不生成第二张 NCR。
+            assertThat(handler.handle("DefectReported", oldEvent, oldBody)).isEqualTo(DefectEventHandler.Result.DUPLICATE);
+            assertThat(jdbc.queryForObject("select count(*) from ncr where source_report_id = ?", Integer.class, oldReport)).isEqualTo(1);
+            assertThat(cleaner.purgeExpired()).isZero();
+        } finally {
+            clock.reset();
+        }
+    }
+
+    /** 每批一个事务：批大小 1000，造 2500 行过期去重记录，一次运行全部删除。 */
+    @Test void cleanupDeletesInBatches() {
+        try {
+            java.sql.Timestamp old = java.sql.Timestamp.from(java.time.Instant.now().minus(java.time.Duration.ofDays(40)));
+            List<Object[]> rows = new ArrayList<>();
+            for (int i = 0; i < 2500; i++) rows.add(new Object[] {"EV-BATCH-" + UUID.randomUUID(), "DefectReported", old});
+            jdbc.batchUpdate("insert into consumed_event (event_id, tag, consumed_at) values (?, ?, ?)", rows);
+            cleaner.purgeExpired();
+            assertThat(jdbc.queryForObject("select count(*) from consumed_event where event_id like 'EV-BATCH-%'", Integer.class)).isZero();
+        } finally {
+            clock.reset();
+        }
     }
 }

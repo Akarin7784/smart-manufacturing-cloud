@@ -33,7 +33,10 @@ public class DefectEventHandler {
         public String metric() { return metric; }
     }
 
-    /** 事件内容不合法（缺字段、数量格式错误、未知 tag）：重试也不会成功，由消费入口计 error 后交给 Broker 重投直至进入死信队列。 */
+    /**
+     * 事件内容不合法（缺 eventId、缺字段、数量格式错误、未知 tag 等）：重试也不会成功（#30），
+     * 消费入口记录到 invalid_event、计 result=invalid 后直接 ACK，不再重投。抛出时所在事务整体回滚（含 consumed_event），不留任何业务写入。
+     */
     public static class InvalidEventException extends RuntimeException {
         public InvalidEventException(String message) { super(message); }
     }
@@ -130,7 +133,7 @@ public class DefectEventHandler {
     /** 报工级串行锁：首次出现时插入锁行（并发插入由主键裁决），随后 SELECT ... FOR UPDATE 持有到事务结束。 */
     private void lockReport(String reportId) {
         try {
-            jdbc.update("insert into defect_report_lock (report_id) values (?)", reportId);
+            jdbc.update("insert into defect_report_lock (report_id, created_at) values (?, ?)", reportId, Timestamp.from(clock.instant()));
         } catch (DuplicateKeyException exists) {
             // 锁行已存在（或另一事务刚插入并提交），直接加锁。
         }

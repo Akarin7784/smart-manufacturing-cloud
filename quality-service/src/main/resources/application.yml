@@ -65,6 +65,15 @@ quality:
     expiry:
       interval: PT1M
       batch-size: 100
+  # 去重表 consumed_event 与报工锁表 defect_report_lock 的保留期（#31），默认 30 天；
+  # 启动校验：必须大于 mes.quality.broker-retention + quality.pending-reversal.ttl，否则启动失败。
+  # 每天 03:47 按创建时间分批清理，每批 1000 行一个事务，受 quality.jobs.enabled 控制。
+  dedup:
+    retention: P30D
+    cleanup:
+      cron: "0 47 3 * * *"
+      batch-size: 1000
+      max-batches: 100
   outbox:
     interval: PT1S
     batch-size: 50
@@ -81,3 +90,8 @@ spring.flyway:
   locations: classpath:db/migration
   baseline-on-migrate: ${FLYWAY_BASELINE_ON_MIGRATE:false}
   baseline-version: "1"
+
+# Broker 消息保留期（#31）：必须等于 RocketMQ Broker 的 fileReservedTime（单位小时），用于启动校验去重表保留期是否足够。
+# 注意：infra/rocketmq/broker.conf 当前 fileReservedTime = 48，与此处默认 72h 不一致（72h 更保守，校验仍安全），
+# 需运维对齐其一；部署环境可用 Nacos 覆盖本值。
+mes.quality.broker-retention: PT72H
