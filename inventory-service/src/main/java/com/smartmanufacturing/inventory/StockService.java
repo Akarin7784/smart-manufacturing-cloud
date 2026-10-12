@@ -32,9 +32,10 @@ public class StockService {
     private final JdbcTemplate jdbc;
     private final LocationService locations;
     private final Clock clock;
+    private final InventoryMetrics metrics;
 
-    public StockService(JdbcTemplate jdbc, LocationService locations, Clock clock) {
-        this.jdbc = jdbc; this.locations = locations; this.clock = clock;
+    public StockService(JdbcTemplate jdbc, LocationService locations, Clock clock, InventoryMetrics metrics) {
+        this.jdbc = jdbc; this.locations = locations; this.clock = clock; this.metrics = metrics;
     }
 
     /** 已加锁的现存量行。 */
@@ -90,10 +91,17 @@ public class StockService {
         if (!existing.equals(uom)) throw ProblemException.uomMismatch(material, existing, uom);
     }
 
-    /** 出库、预留使用：物料必须已登记，单位必须一致；未登记的物料不可能有库存，视为请求错误。 */
+    /**
+     * 出库、预留共用的单位口径（两处必须一致）：
+     * <ul>
+     *   <li>物料从未入过库（未登记单位）：不报单位错误，返回请求单位，由调用方按可用量 0 处理并返回 409 insufficient-stock；</li>
+     *   <li>已有现存量登记且单位不一致：422 uom-mismatch；</li>
+     *   <li>单位一致：返回登记单位。</li>
+     * </ul>
+     */
     String requireUom(String material, String uom) {
         String existing = findUom(material);
-        if (existing == null) throw ProblemException.validation("物料 " + material + " 没有库存记录");
+        if (existing == null) return uom;
         if (!existing.equals(uom)) throw ProblemException.uomMismatch(material, existing, uom);
         return existing;
     }
@@ -128,15 +136,15 @@ public class StockService {
     }
 
     private LockedRow lockRow(String material, String location, String lotNo) {
-        List<LockedRow> rows = jdbc.query("select id, location_code, lot_no, qty, version from stock_on_hand"
-            + " where material_code = ? and location_code = ? and lot_no = ? for update", (rs, n) -> map(rs), material, location, lotNo);
+        List<LockedRow> rows = metrics.timeLock(() -> jdbc.query("select id, location_code, lot_no, qty, version from stock_on_hand"
+            + " where material_code = ? and location_code = ? and lot_no = ? for update", (rs, n) -> map(rs), material, location, lotNo));
         return rows.isEmpty() ? null : rows.get(0);
     }
 
     /** 按 id 升序锁定物料的全部现存量行（固定加锁顺序，见类注释）。 */
     List<LockedRow> lockMaterialRows(String material) {
-        return jdbc.query("select id, location_code, lot_no, qty, version from stock_on_hand where material_code = ? order by id for update",
-            (rs, n) -> map(rs), material);
+        return metrics.timeLock(() -> jdbc.query("select id, location_code, lot_no, qty, version from stock_on_hand where material_code = ? order by id for update",
+            (rs, n) -> map(rs), material));
     }
 
     /** 物料的有效预留量：ACTIVE 预留单中 OPEN 行的未扣减部分之和。 */
@@ -170,6 +178,7 @@ public class StockService {
             ps.setString(9, operator); ps.setTimestamp(10, Timestamp.from(now));
             return ps;
         }, keys);
+        metrics.movement(type, uom, delta);
         return new StockTxn(keys.getKey().longValue(), type, material, uom, row.locationCode(), row.lotNo(),
             Quantities.format(delta), Quantities.format(balance), refType, refNo, operator, now);
     }

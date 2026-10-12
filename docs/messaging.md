@@ -47,6 +47,25 @@
 
 `WorkOrderCompleted` 在末道工序累计合格数达到计划数时自动发出；也支持人工确认完工。人工完工时事件会带上完工方式（自动或人工）以及与计划数的差额，具体字段名由工单服务实现 PR 确定。
 
+## 库存预留事件（`mes-inventory-reservation`）
+
+库存服务在预留单状态变化时经 outbox 发布事件（与业务数据同事务写入）；工单服务按消费组 `CG_WORKORDER_RESERVATION` 订阅。字段定义以 `docs/api/inventory-openapi.yaml` 的 `Reservation*Event` 为准。
+
+| 项 | 值 |
+| --- | --- |
+| Topic | `mes-inventory-reservation` |
+| Tag | `ReservationCreated`、`ReservationReleased`、`ReservationConsumed`、`ReservationExpired`（与 Nacos `manufacturing.mq.tags.*` 一致） |
+| 消息键 | `reservationId` |
+| 幂等 | 消费端按 `eventId` 去重 |
+| 顺序 | 普通 topic，不保证到达顺序；按 `aggregateVersion` 取最新状态 |
+| 续期 | 不发事件；只有持有该预留的调用方能续期，以续期接口返回的 `expiresAt` 为准；未来如需再加 `ReservationRenewed` |
+
+公共字段：`eventId`、`eventType`、`reservationId`、`workOrderNo`、`status`、`aggregateVersion`、`occurredAt`。
+
+- `aggregateVersion`：预留单行的乐观锁版本，按预留单单调递增（续期、部分扣减也会递增，因此可能不连续）。消费端以 `reservationId` 为键，丢弃 `aggregateVersion` 不大于本地已处理版本的事件。
+- `occurredAt`：只用于展示和审计，不用于判断先后。
+- outbox 发布：同一批中第一次发送失败即结束本批，其余事件不发送、`attempts` 不变，留待下一轮，避免 Broker 不可用时领取事务长时间持锁。
+
 ## 工单不良品待质检（`mes-workorder-quality`）
 
 工单服务在工序报工产生不良品、以及冲销带不良数的报工时，经 outbox 向本 Topic 发布事件；质检服务按消费组 `CG_QUALITY_DEFECT` 订阅并建检验单。
