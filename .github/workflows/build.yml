@@ -54,6 +54,27 @@ jobs:
           java-version: '21'
           cache: maven
           cache-dependency-path: '**/pom.xml'
+      # Windows PowerShell 5.1 在中文系统上会把无 BOM 的 UTF-8 脚本按 GBK 误读，导致中文注释破坏语法。
+      # 要求所有经 git 跟踪的 *.ps1 以 UTF-8 BOM（EF BB BF）开头；.editorconfig 已约定 charset = utf-8-bom。
+      - name: Assert PowerShell scripts use UTF-8 BOM
+        run: |
+          # 用 od 读前三字节，避免依赖 python3（Windows runner 上命令名不一致）。
+          failed=0
+          count=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            count=$((count + 1))
+            header=$(od -An -tx1 -N3 "$f" | tr -d ' \n')
+            if [ "$header" != "efbbbf" ]; then
+              echo "::error file=$f::缺少 UTF-8 BOM（当前头部：${header:-空}）"
+              failed=1
+            fi
+          done <<EOF
+          $(git ls-files '*.ps1')
+          EOF
+          if [ "$count" -eq 0 ]; then echo "::error::未找到任何经 git 跟踪的 *.ps1"; exit 1; fi
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+          echo "全部 ${count} 个 .ps1 文件均带 UTF-8 BOM"
       # 使用仓库中的 Wrapper，确保本机与 CI 使用相同的 Maven 版本。
       # Linux 运行器自带 Docker：执行单测（surefire *Test）与 Testcontainers 集成测试（failsafe *IT）。
       - name: Verify all modules (unit + integration)
