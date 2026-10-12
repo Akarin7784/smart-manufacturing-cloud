@@ -69,9 +69,13 @@ class WritebackMySqlIT {
     private WritebackTask task(String ncrNo, Action action) {
         return writebacks.list(ncrNo).stream().filter(t -> t.action() == action).findFirst().orElseThrow();
     }
-    private int lockWaits() {
-        Integer n = jdbc.queryForObject("select count(*) from information_schema.innodb_trx where trx_state = 'LOCK WAIT'", Integer.class);
-        return n == null ? 0 : n;
+    /** 当前处于锁等待的事务数。information_schema.innodb_trx 需要 PROCESS 权限，应用账号没有，改用容器的 root 账号查询。 */
+    private int lockWaits() throws java.sql.SQLException {
+        try (var c = java.sql.DriverManager.getConnection(MYSQL.getJdbcUrl(), "root", MYSQL.getPassword());
+             var rs = c.createStatement().executeQuery("select count(*) from information_schema.innodb_trx where trx_state = 'LOCK WAIT'")) {
+            rs.next();
+            return rs.getInt(1);
+        }
     }
 
     @Test void timeColumnsHaveMillisecondPrecision() {
