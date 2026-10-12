@@ -209,7 +209,13 @@ GitHub Actions 在每次推送、PR 和手动触发时执行 Linux / Windows 的
 gh workflow run repeat-it.yml --ref <branch> -f module=inventory-service -f test=ReservationMySqlIT -f repeat=20
 ```
 
-`test` 也可以写成 `类名#方法名`。这类 Testcontainers IT 只在 CI 上跑，不要在共用电脑上本地连跑。该 workflow 只有 `workflow_dispatch` 触发，不影响 push / PR 的现有检查。
+`test` 也可以写成 `类名#方法名`，或用逗号一次列出多个（同一模块内），例如：
+
+```bash
+gh workflow run repeat-it.yml --ref <branch> -f module=inventory-service -f test=ReservationMySqlIT,InventoryMySqlIT#someMethod -f repeat=20
+```
+
+列出的每个类都必须实际执行过用例且没有跳过，否则该次运行失败。这类 Testcontainers IT 只在 CI 上跑，不要在共用电脑上本地连跑。该 workflow 只有 `workflow_dispatch` 触发，不影响 push / PR 的现有检查。
 
 ## 使用边界
 

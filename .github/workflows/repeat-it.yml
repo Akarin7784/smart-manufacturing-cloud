@@ -79,17 +79,37 @@ jobs:
             -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=false \
             -Dit.test="$TEST" -Dfailsafe.failIfNoSpecifiedTests=false \
             -Djacoco.skip=true
-      # 防止测试名写错导致什么都没跑却显示通过：目标模块必须实际执行过至少一个用例且无跳过。
-      - name: Assert integration test executed
+      # 防止测试名写错导致漏跑却显示通过：test 中列出的每个类（逗号分隔，去掉 #方法 部分）都必须
+      # 产生 failsafe 报告，且 tests>0、skipped=0；含通配符 * 的条目至少匹配到一个这样的报告即可。
+      - name: Assert each listed integration test executed
         env:
           MODULE: ${{ inputs.module }}
+          TEST: ${{ inputs.test }}
         run: |
-          f="$MODULE/target/failsafe-reports/failsafe-summary.xml"
-          if [ ! -f "$f" ]; then echo "::error::未找到 $f，集成测试没有执行"; exit 1; fi
-          c=$(sed -n 's:.*<completed>\([0-9]*\)</completed>.*:\1:p' "$f"); s=$(sed -n 's:.*<skipped>\([0-9]*\)</skipped>.*:\1:p' "$f")
-          echo "第 ${{ matrix.iteration }} 次：执行 ${c:-0} 个用例，跳过 ${s:-0} 个"
-          if [ "${c:-0}" -eq 0 ]; then echo "::error::没有执行任何集成测试，请检查 test 输入"; exit 1; fi
-          if [ "${s:-0}" -ne 0 ]; then echo "::error::有 ${s} 个用例被跳过"; exit 1; fi
+          dir="$MODULE/target/failsafe-reports"
+          if [ ! -d "$dir" ]; then echo "::error::未找到 $dir，集成测试没有执行"; exit 1; fi
+          shopt -s nullglob
+          failed=0
+          IFS=',' read -ra entries <<<"$TEST"
+          for entry in "${entries[@]}"; do
+            # 去掉 #方法 部分，只按类名匹配报告。
+            cls="${entry%%#*}"
+            [ -z "$cls" ] && continue
+            # 带包名的直接匹配全名；只写简单类名时匹配任意包下的同名类。
+            if [[ "$cls" == *.* ]]; then pattern="TEST-$cls.xml"; else pattern="TEST-*.$cls.xml"; fi
+            matched=0
+            for f in "$dir"/$pattern; do
+              # 从 testsuite 根元素读取 tests 与 skipped 属性。
+              head=$(grep -m1 -o '<testsuite[^>]*>' "$f")
+              t=$(sed -n 's/.* tests="\([0-9]*\)".*/\1/p' <<<"$head"); k=$(sed -n 's/.* skipped="\([0-9]*\)".*/\1/p' <<<"$head")
+              echo "$(basename "$f")：tests=${t:-0} skipped=${k:-0}"
+              if [ "${k:-0}" -ne 0 ]; then echo "::error::$(basename "$f") 有 ${k} 个用例被跳过"; failed=1; fi
+              if [ "${t:-0}" -gt 0 ]; then matched=1; fi
+            done
+            if [ "$matched" -eq 0 ]; then echo "::error::$entry 没有执行任何用例（未找到 $pattern 或 tests=0）"; failed=1; fi
+          done
+          echo "第 ${{ matrix.iteration }} 次：检查完成"
+          exit "$failed"
       # 失败时上传报告，便于查看死锁等异常的堆栈。
       - name: Upload test reports
         if: failure()
