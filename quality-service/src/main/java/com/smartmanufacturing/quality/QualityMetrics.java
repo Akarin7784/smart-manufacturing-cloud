@@ -25,6 +25,15 @@ public class QualityMetrics {
     public static final String INVALID = "invalid";
     /** 清理任务涉及的表，作为 mes_quality_cleanup_deleted_total 的 table 标签取值。 */
     public static final java.util.List<String> CLEANUP_TABLES = java.util.List.of("consumed_event", "defect_report_lock");
+    /** mes_quality_writeback_total 的 result 取值（与 observability.md 第 5 节、运维告警一致，不得改名）。 */
+    public static final String WRITEBACK_OK = "ok";
+    public static final String WRITEBACK_REPLAY = "replay";
+    public static final String WRITEBACK_RETRY = "retry";
+    public static final String WRITEBACK_FAILED = "failed";
+    public static final String WRITEBACK_CANCELLED = "cancelled";
+    public static final String WRITEBACK_RESOLVED_MANUALLY = "resolved_manually";
+    public static final java.util.List<String> WRITEBACK_RESULTS = java.util.List.of(WRITEBACK_OK, WRITEBACK_REPLAY, WRITEBACK_RETRY,
+        WRITEBACK_FAILED, WRITEBACK_CANCELLED, WRITEBACK_RESOLVED_MANUALLY);
     private final MeterRegistry registry;
     private final Counter pendingExpired;
 
@@ -51,6 +60,20 @@ public class QualityMetrics {
         Gauge.builder("mes.quality.ncr.open", jdbc,
                 j -> count(j, "select count(*) from ncr where status in ('OPEN', 'UNDER_REVIEW', 'DISPOSED')"))
             .description("未关闭的 NCR 数").register(registry);
+        // mes_quality_writeback_total{result}：6 个结果序列启动预注册为 0，告警（failed、resolved_manually 增量）从 0 开始可判定。
+        for (String result : WRITEBACK_RESULTS) writebackCounter(result);
+        // mes_quality_writeback_pending：PENDING（含退避中、执行中）的回写任务数，抓取时查询（走 status, next_attempt_at 索引），启动即 0。
+        Gauge.builder("mes.quality.writeback.pending", jdbc, j -> count(j, "select count(*) from inventory_writeback where status = 'PENDING'"))
+            .description("待执行的库存回写任务数").register(registry);
+    }
+
+    /** 库存回写结果计数（提交后计数：回写事务回滚不产生虚假计数）。 */
+    public void writeback(String result) {
+        afterCommit(() -> writebackCounter(result).increment());
+    }
+
+    private Counter writebackCounter(String result) {
+        return Counter.builder("mes.quality.writeback").description("库存回写任务执行结果").tag("result", result).register(registry);
     }
 
     private static double count(JdbcTemplate jdbc, String sql) {
@@ -59,7 +82,7 @@ public class QualityMetrics {
     }
 
     /**
-     * mes_quality_api_total{result}：修改类接口结果。取值为 ok、replay、7 种 ProblemType 的下划线写法以及兜底 error。
+     * mes_quality_api_total{result}：修改类接口结果。取值为 ok、replay、8 种 ProblemType 的下划线写法以及兜底 error。
      * 在事务结束后由控制器调用，因此不需要 afterCommit。
      */
     public void api(String result) {

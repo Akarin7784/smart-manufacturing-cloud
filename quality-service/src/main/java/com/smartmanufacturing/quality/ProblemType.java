@@ -3,7 +3,7 @@ import org.springframework.http.HttpStatus;
 import java.util.Locale;
 
 /**
- * 契约中固定的 7 种业务错误类型（OpenAPI components.schemas.ProblemType），每种绑定唯一 HTTP 状态。
+ * 契约中固定的 8 种业务错误类型（OpenAPI components.schemas.ProblemType），每种绑定唯一 HTTP 状态。
  * 调用方按 type 分支，不解析 detail；新增类型必须先修改契约。401/403 不在此列，统一为 about:blank。
  */
 public enum ProblemType {
@@ -14,7 +14,9 @@ public enum ProblemType {
     OVER_DISPOSE("over-dispose", HttpStatus.UNPROCESSABLE_ENTITY, "处置数量超过剩余待处置量"),
     INVALID_STATUS_TRANSITION("invalid-status-transition", HttpStatus.CONFLICT, "当前状态不允许该操作"),
     NCR_VOIDED("ncr-voided", HttpStatus.CONFLICT, "NCR 已作废"),
-    NCR_NOT_FOUND("ncr-not-found", HttpStatus.NOT_FOUND, "NCR 不存在");
+    NCR_NOT_FOUND("ncr-not-found", HttpStatus.NOT_FOUND, "NCR 不存在"),
+    /** 关闭 NCR 时仍有 PENDING 或 FAILED 的库存回写任务。 */
+    WRITEBACK_PENDING("writeback-pending", HttpStatus.CONFLICT, "库存回写未完成");
 
     private final String value;
     private final HttpStatus status;

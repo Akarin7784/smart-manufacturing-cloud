@@ -10,7 +10,7 @@ public final class NcrDtos {
     /** NCR 状态（契约 NcrStatus）。 */
     public enum Status { OPEN, UNDER_REVIEW, DISPOSED, CLOSED, VOIDED }
 
-    /** 处置类型（契约 DispositionType）：本期均只登记记录，不改动库存。 */
+    /** 处置类型（契约 DispositionType）：SCRAP 回写库存报废出库，REWORK / CONCESSION 回写放行出库（见 {@link WritebackService}）。 */
     public enum DispositionType { REWORK, SCRAP, CONCESSION }
 
     /** 作废原因：正常冲销；冲销先于原报工到达后对冲。 */
@@ -46,4 +46,15 @@ public final class NcrDtos {
     /** 冲销冲突（契约 Conflict）。 */
     public record Conflict(String eventId, String type, String ncrNo, String reversedReportId, String reversalId,
                            String disposedQty, Instant recordedAt) {}
+
+    /** 库存回写任务状态（契约 WritebackTask.status）：DONE、CANCELLED、RESOLVED_MANUALLY 为终态。 */
+    public enum WritebackStatus { PENDING, DONE, FAILED, CANCELLED, RESOLVED_MANUALLY }
+
+    /** 库存回写任务（契约 WritebackTask）；dispositionId 为处置行在 NCR 内的编号，HOLD 与 VOID 为 null。 */
+    public record WritebackTask(long id, String ncrNo, InventoryQcHoldClient.Action action, String reason, Long dispositionId,
+                                String idempotencyKey, String qty, String uom, WritebackStatus status, int attempts,
+                                Instant nextAttemptAt, String lastError, Long inventoryTxnId, Instant createdAt, Instant updatedAt) {}
+
+    /** 人工结案请求（契约 ResolveWritebackRequest），reason 在服务层校验，使空白原因同样经过幂等执行器与指标统计。 */
+    public record ResolveWriteback(String reason) {}
 }

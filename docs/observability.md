@@ -140,11 +140,11 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 
 ### 质检服务（quality-service）
 
-契约见 `docs/api/quality-openapi.yaml`，设计见 `docs/quality-design.md`。
+契约见 `docs/api/quality-openapi.yaml`，设计见 `docs/quality-design.md`、`docs/quality-inventory-writeback-design.md`（库存回写）。
 
 | 指标 | 类型 | 标签 | 说明 |
 | --- | --- | --- | --- |
-| `mes_quality_api_total` | Counter | `result` | 修改类接口结果。`result` 的取值是 `ok`、`replay`（幂等重放），8 种 Problem type 的下划线写法（`validation_error`、`idempotency_key_conflict`、`uom_mismatch`、`over_dispose`、`invalid_status_transition`、`ncr_voided`、`ncr_not_found`、`writeback_pending`（关闭 NCR 时仍有 PENDING/FAILED 回写任务，409，待实现），见 `quality-openapi.yaml` 的 `ProblemType`），再加 `error` |
+| `mes_quality_api_total` | Counter | `result` | 修改类接口结果。`result` 的取值是 `ok`、`replay`（幂等重放），8 种 Problem type 的下划线写法（`validation_error`、`idempotency_key_conflict`、`uom_mismatch`、`over_dispose`、`invalid_status_transition`、`ncr_voided`、`ncr_not_found`、`writeback_pending`（关闭 NCR 时仍有 PENDING/FAILED 回写任务，409），见 `quality-openapi.yaml` 的 `ProblemType`），再加 `error` |
 | `mes_quality_ncr_transition_total` | Counter | `from`、`to`（`OPEN`/`UNDER_REVIEW`/`DISPOSED`/`CLOSED`/`VOIDED`；新建 NCR 的 `from` 为 `NONE`） | NCR 状态迁移次数，事务提交后计数；按 `from`→`to` 区分正常作废与冲销对冲等路径 |
 | `mes_quality_disposition_qty_total` | Counter | `type`（`REWORK`/`SCRAP`/`CONCESSION`）、`uom` | 处置数量累计，不同 `uom` 不能相加 |
 | `mes_quality_event_consumed_total` | Counter | `tag`、`result`（`ok`/`duplicate`/`pending`/`matched`/`disposed_reversal_conflict`/`invalid`/`error`） | 消费 `mes-workorder-quality` 的结果；`disposed_reversal_conflict` 即已处置 NCR 被冲销（不对应 HTTP Problem type）；`invalid` 为不可恢复的坏消息（JSON 解析失败、缺 eventId 或必填字段等），已写入 `invalid_event` 表并直接 ACK、不重投；`error` 为可恢复错误（数据库、网络），回滚后由 Broker 重投。启动时预注册为 0 的序列：`{tag="DefectReversed",result="disposed_reversal_conflict"}`，以及 `DefectReported`、`DefectReversed` 两个 tag 的 `result="invalid"` |
@@ -152,7 +152,20 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | `mes_quality_cleanup_deleted_total` | Counter | `table`（`consumed_event`/`defect_report_lock`） | 去重表与报工锁表按保留期（`quality.dedup.retention`，默认 30 天）清理的删除行数，两个 `table` 序列启动预注册为 0 |
 | `mes_quality_outbox_pending` | Gauge | — | 待投递的 outbox 事件数（自动匹配告警 `OutboxBacklog`） |
 | `mes_quality_ncr_open` | Gauge | — | 未关闭（OPEN/UNDER_REVIEW/DISPOSED）的 NCR 数 |
-| `mes_quality_writeback_total` | Counter | `result`（`ok`/`replay`/`retry`/`failed`/`cancelled`/`resolved_manually`） | 库存回写任务（QC-HOLD 入隔离、放行、报废、作废扣回）每次执行的结果：`ok` 库存返回 201；`replay` 库存按原幂等键重放首次结果；`retry` 可重试错误（网络、5xx、429、401 刷新令牌后）进入退避；`failed` 不可重试错误或重试耗尽，任务置 `FAILED`；`cancelled` 任务未执行即取消（NCR 作废时 HOLD 尚未尝试，或 HOLD 被明确拒绝/人工结案后其后的 VOID）；`resolved_manually` FAILED 任务经接口人工结案。启动时 6 个 `result` 序列全部预注册为 0（运维按 `failed` 增量加告警，按 `resolved_manually` 增量加 info 告警 `QualityWritebackResolvedManually` 与看板面板）。**待实现**，见 docs/quality-inventory-writeback-design.md |
-| `mes_quality_writeback_pending` | Gauge | — | `PENDING` 状态的库存回写任务数（含退避中），启动即为 0。**待实现** |
+| `mes_quality_writeback_total` | Counter | `result`（`ok`/`replay`/`retry`/`failed`/`cancelled`/`resolved_manually`） | 库存回写任务（QC-HOLD 入隔离、放行、报废、作废扣回）每次执行的结果：`ok` 库存返回 201；`replay` 库存按原幂等键重放首次结果；`retry` 可重试错误（网络、5xx、429、401 刷新令牌后）进入退避；`failed` 不可重试错误或重试耗尽，任务置 `FAILED`；`cancelled` 任务未执行即取消（NCR 作废时 HOLD 尚未尝试，或 HOLD 被明确拒绝/人工结案后其后的 VOID）；`resolved_manually` FAILED 任务经接口人工结案。启动时 6 个 `result` 序列全部预注册为 0（运维按 `failed` 增量加告警，按 `resolved_manually` 增量加 info 告警 `QualityWritebackResolvedManually` 与看板面板）。一个任务可能产生多次 `retry`，终态只计一次（`ok`/`replay`/`failed`/`cancelled`/`resolved_manually` 之一，`failed` 后人工重试会再计）。均在事务提交后计数 |
+| `mes_quality_writeback_pending` | Gauge | — | `PENDING` 状态的库存回写任务数（含退避中、执行中），抓取时查询，启动即为 0。未配置 `QUALITY_CLIENT_SECRET` 时调度器不调用库存，任务停留在 PENDING，本指标持续 > 0 |
+
+质检修改类接口的 Problem type 与 HTTP 状态（与 `quality-openapi.yaml` 的 `ProblemType` 一致，指标取下划线写法）：
+
+| type | HTTP | 触发 |
+| --- | --- | --- |
+| `validation-error` | 400 | 参数校验失败（含缺少 `Idempotency-Key`、`resolve` 的 `reason` 为空白） |
+| `idempotency-key-conflict` | 422 | 同一调用方的幂等键已用于不同请求 |
+| `uom-mismatch` | 422 | 处置单位与 NCR 单位不一致 |
+| `over-dispose` | 422 | 处置数量超过剩余待处置量 |
+| `invalid-status-transition` | 409 | 状态不允许；回写任务非 `FAILED` 时 `retry`/`resolve`，或超出重试窗口 `mes.quality.writeback.retry-window`（默认 P6D）后 `retry` |
+| `ncr-voided` | 409 | NCR 已作废 |
+| `ncr-not-found` | 404 | NCR 不存在，或回写任务不存在 / 不属于该 NCR |
+| `writeback-pending` | 409 | 关闭 NCR 时仍有 `PENDING` 或 `FAILED` 的回写任务 |
 
 告警已在 `alerts.yml` 落地（见第 3 节）：`QualityDisposedReversalConflict`（`disposed_reversal_conflict` 增量 > 0 即告警）、`QualityReversalOrphan`（`pending_reversal_expired_total` 增量 > 0）、`QualityInvalidEvent`（`result="invalid"` 增量 > 0）。

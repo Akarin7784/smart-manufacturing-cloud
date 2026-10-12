@@ -25,7 +25,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 /**
  * NCR 接口契约测试（H2）：每个响应（成功与错误）都按 docs/api/quality-openapi.yaml 校验状态码、媒体类型与响应体 schema，
- * 断言 7 种 ProblemType 全部被触发且 type 与状态码匹配；同时校验 outbox 事件载荷符合契约中的事件 schema。
+ * 断言 8 种 ProblemType 全部被触发且 type 与状态码匹配；同时校验 outbox 事件载荷符合契约中的事件 schema。
+ * 库存回写接口（writebacks、retry、resolve）同样逐个响应校验，库存为 {@link FakeInventoryQcHold}。
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -40,6 +41,8 @@ class NcrContractTest {
     @Autowired OutboxPublisher publisher;
     @Autowired RecordingEventSender sender;
     @Autowired MeterRegistry registry;
+    @Autowired WritebackWorker worker;
+    @Autowired FakeInventoryQcHold inventory;
 
     /** 已触发的 ProblemType，最终必须覆盖契约中的全部取值。 */
     private final Set<String> covered = new TreeSet<>();
@@ -47,7 +50,11 @@ class NcrContractTest {
     @BeforeEach void clean() {
         publisher.publishBatch();
         sender.clear();
+        inventory.clear();
     }
+
+    /** 跑完所有到期的回写任务（替身默认 201 记账）。 */
+    private void drainWritebacks() { while (worker.runBatch() > 0) { /* drain */ } }
 
     /** 质检员令牌：quality:read + quality:write，sub=qa-user。 */
     private static RequestPostProcessor inspector() {
@@ -168,6 +175,11 @@ class NcrContractTest {
         call(postJson(base + "/dispositions", key(), disposition("SCRAP", "1", "件")), ONE + "/dispositions", "post", 409);
         call(postJson(base + "/review", key(), null), ONE + "/review", "post", 409);
 
+        // writeback-pending：HOLD 与 3 条处置回写仍 PENDING 时关闭 409；全部 DONE 后可关闭。
+        JsonNode pendingClose = call(postJson(base + "/close", key(), null), ONE + "/close", "post", 409);
+        assertThat(pendingClose.get("type").asText()).isEqualTo("writeback-pending");
+        drainWritebacks();
+
         // 关闭：DISPOSED → CLOSED；再次关闭 200（已在目标状态）。
         assertThat(call(postJson(base + "/close", key(), null), ONE + "/close", "post", 200).get("status").asText()).isEqualTo("CLOSED");
         assertThat(call(postJson(base + "/close", key(), null), ONE + "/close", "post", 200).get("status").asText()).isEqualTo("CLOSED");
@@ -206,7 +218,7 @@ class NcrContractTest {
         call(get(svc(NCRS) + "/" + a), jwt().jwt(j -> j.subject("nobody")), ONE, "get", 403);
 
         assertThat(covered).isEqualTo(OpenApiContract.problemTypes());
-        assertThat(covered).hasSize(7);
+        assertThat(covered).hasSize(8);
 
         // outbox 事件全部符合契约中的事件 schema；SCRAP 只登记记录，事件中没有任何库存相关字段。
         publisher.publishBatch();
@@ -225,5 +237,63 @@ class NcrContractTest {
         assertThat(api("ok")).isEqualTo(ok + 1);
         assertThat(api("ncr_not_found")).isEqualTo(notFound + 1);
         assertThat(api("invalid_status_transition")).isEqualTo(invalid + 1);
+    }
+
+    /** 回写任务接口：查询、人工重试（仅 FAILED、同键重放、键冲突 422）、人工结案（reason 校验、409、审计）、404、401/403，每个响应按契约校验。 */
+    @Test void writebackEndpointsConform() throws Exception {
+        String WB = ONE + "/writebacks";
+        String n = openNcr("2");
+        String base = svc(NCRS) + "/" + n + "/writebacks";
+        JsonNode list = call(get(base), reader(), WB, "get", 200);
+        assertThat(list).hasSize(1);
+        long id = list.get(0).get("id").asLong();
+        assertThat(list.get(0).get("idempotencyKey").asText()).isEqualTo("qc:" + n + ":hold");
+        assertThat(list.get(0).get("qty").asText()).isEqualTo("2");
+        call(get(svc(NCRS) + "/NCR-20990101-9999/writebacks"), reader(), WB, "get", 404);
+
+        // PENDING 不能重试 / 结案：409 invalid-status-transition。
+        call(postJson(base + "/" + id + "/retry", key(), null), WB + "/{writebackId}/retry", "post", 409);
+        call(postJson(base + "/" + id + "/resolve", key(), "{\"reason\":\"x\"}"), WB + "/{writebackId}/resolve", "post", 409);
+
+        // 库存明确拒绝 → FAILED，可人工重试；同键重放逐字节一致；同键挪用到结案 422。
+        inventory.script("qc:" + n + ":hold", new InventoryQcHoldClient.Rejected("HTTP 400 validation-error", true));
+        drainWritebacks();
+        JsonNode failed = call(get(base), reader(), WB, "get", 200).get(0);
+        assertThat(failed.get("status").asText()).isEqualTo("FAILED");
+        assertThat(failed.get("lastError").asText()).contains("validation-error");
+        assertThat(failed.get("nextAttemptAt").isNull()).isTrue();
+        call(postJson(base + "/" + id + "/retry", null, null), WB + "/{writebackId}/retry", "post", 400);
+        String k = key();
+        MvcResult first = mvc.perform(postJson(base + "/" + id + "/retry", k, null).with(inspector())).andReturn();
+        JsonNode retried = OpenApiContract.assertConforms(WB + "/{writebackId}/retry", "post", first);
+        assertThat(retried.get("status").asText()).isEqualTo("PENDING");
+        assertThat(retried.get("attempts").asInt()).isZero();
+        MvcResult again = mvc.perform(postJson(base + "/" + id + "/retry", k, null).with(inspector())).andReturn();
+        assertThat(again.getResponse().getStatus()).isEqualTo(200);
+        assertThat(again.getResponse().getContentAsString()).isEqualTo(first.getResponse().getContentAsString());
+        call(postJson(base + "/" + id + "/resolve", k, "{\"reason\":\"x\"}"), WB + "/{writebackId}/resolve", "post", 422);
+
+        // 再次失败后人工结案：空白 reason 400；成功 200 并可重放；结案后再结案 409。
+        inventory.script("qc:" + n + ":hold", new InventoryQcHoldClient.Rejected("HTTP 400 validation-error", true));
+        drainWritebacks();
+        call(postJson(base + "/" + id + "/resolve", key(), "{\"reason\":\"  \"}"), WB + "/{writebackId}/resolve", "post", 400);
+        call(postJson(base + "/" + id + "/resolve", key(), "{}"), WB + "/{writebackId}/resolve", "post", 400);
+        String rk = key();
+        MvcResult resolved = mvc.perform(postJson(base + "/" + id + "/resolve", rk, "{\"reason\":\"已核对，库存未记账\"}").with(inspector())).andReturn();
+        assertThat(OpenApiContract.assertConforms(WB + "/{writebackId}/resolve", "post", resolved).get("status").asText()).isEqualTo("RESOLVED_MANUALLY");
+        MvcResult resolvedReplay = mvc.perform(postJson(base + "/" + id + "/resolve", rk, "{\"reason\":\"已核对，库存未记账\"}").with(inspector())).andReturn();
+        assertThat(resolvedReplay.getResponse().getContentAsString()).isEqualTo(resolved.getResponse().getContentAsString());
+        call(postJson(base + "/" + id + "/resolve", key(), "{\"reason\":\"再次\"}"), WB + "/{writebackId}/resolve", "post", 409);
+        assertThat(jdbc.queryForObject("select resolved_by from inventory_writeback where id = ?", String.class, id)).isEqualTo("qa-user");
+
+        // 任务不属于该 NCR：404；不存在的任务：404。
+        String other = openNcr("1");
+        call(postJson(svc(NCRS) + "/" + other + "/writebacks/" + id + "/retry", key(), null), WB + "/{writebackId}/retry", "post", 404);
+        call(postJson(base + "/999999999/resolve", key(), "{\"reason\":\"x\"}"), WB + "/{writebackId}/resolve", "post", 404);
+
+        // 401 / 403。
+        call(get(base), null, WB, "get", 401);
+        call(postJson(base + "/" + id + "/retry", key(), null), reader(), WB + "/{writebackId}/retry", "post", 403);
+        call(get(base), jwt().jwt(j -> j.subject("nobody")), WB, "get", 403);
     }
 }
