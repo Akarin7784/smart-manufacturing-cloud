@@ -54,6 +54,8 @@ class ReservationMySqlIT {
     }
 
     private void inbound(String material, String uom, String lot, String qty) {
+        // 与控制器一致：主事务前预建现存量行。
+        stock.prepareRows(java.util.List.of(new StockService.RowKey(material, "IT-R-01", lot)));
         tx.executeWithoutResult(s -> stock.inbound("it", new InventoryDtos.Movement(material, uom, "IT-R-01", lot, qty, null)));
     }
     /** 经幂等执行器创建（与 HTTP 入口相同的事务边界与死锁重试）。 */

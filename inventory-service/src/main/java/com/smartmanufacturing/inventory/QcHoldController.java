@@ -31,6 +31,8 @@ public class QcHoldController {
                                           @RequestBody JsonNode body, Authentication auth) {
         QcHoldRequest r = QcHoldRequest.parse(QcHoldRequest.Kind.RECEIPT, body);
         String caller = CallerIdentity.of(auth);
+        // 主事务开始前预建 QC-HOLD 行（独立短事务），主事务内只按主键加锁（#57）。
+        stock.prepareRows(java.util.List.of(new StockService.RowKey(r.materialCode(), StockService.QC_HOLD, r.lotNo())));
         return StockController.respond(LockRetry.run(() -> idempotency.execute(caller, key, "qc-hold.receipt", r, 201,
             () -> stock.qcHoldIn(caller, r.materialCode(), r.uom(), r.lotNo(), r.qty(), r.ncrNo()))));
     }
