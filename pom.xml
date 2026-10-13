@@ -6,11 +6,11 @@
   <name>Smart Manufacturing Cloud</name>
   <modules><module>cloud-common</module><module>cloud-api</module><module>cloud-security</module><module>auth-service</module><module>cloud-gateway</module><module>device-service</module><module>workorder-service</module><module>masterdata-service</module><module>inventory-service</module><module>quality-service</module><module>coverage-report</module></modules>
   <properties><java.version>21</java.version><spring-cloud.version>2025.0.0</spring-cloud.version><spring-cloud-alibaba.version>2025.0.0.0</spring-cloud-alibaba.version>
-    <!-- JaCoCo 版本及覆盖率门禁阈值；当前阶段只报告不阻断构建（haltOnFailure=false），待各模块补齐测试后改为阻断。 -->
+    <!-- JaCoCo 覆盖率门禁：默认行 70% / 分支 60%，未达标即构建失败。workorder-service、cloud-common、cloud-security 在各自 pom 中按现状锁定下限（只许升不许降）。 -->
     <jacoco.version>0.8.12</jacoco.version>
     <jacoco.line.minimum>0.70</jacoco.line.minimum>
     <jacoco.branch.minimum>0.60</jacoco.branch.minimum>
-    <jacoco.haltOnFailure>false</jacoco.haltOnFailure>
+    <jacoco.haltOnFailure>true</jacoco.haltOnFailure>
   </properties>
   <dependencyManagement><dependencies>
     <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-dependencies</artifactId><version>${spring-cloud.version}</version><type>pom</type><scope>import</scope></dependency>
