@@ -73,10 +73,23 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | `QualityDisposedReversalConflict` | `sum by (application) (increase(mes_quality_event_consumed_total{result="disposed_reversal_conflict"}[15m])) > 0` | 无（一次即告警） | warning |
 | `QualityReversalOrphan` | `sum by (application) (increase(mes_quality_pending_reversal_expired_total[15m])) > 0` | 无（一次即告警） | warning |
 | `QualityInvalidEvent` | `sum by (application) (increase(mes_quality_event_consumed_total{result="invalid"}[15m])) > 0` | 无（一次即告警） | warning |
+| `WorkorderReservationReleaseFailed` | `sum by (application, result) (increase(mes_workorder_reservation_release_total{result=~"reservation_consumed\|reservation_not_found\|error"}[15m])) > 0` | 无（一次即告警） | warning |
+| `WorkorderReservationReleaseBacklog` | `max by (application) (mes_workorder_reservation_release_pending) > 0` | 15m | warning |
+| `WorkorderReservationContractMismatch` | `sum by (application, operation) (increase(mes_workorder_inventory_contract_mismatch_total[1h])) > 0` | 无（一次即告警） | warning |
+| `WorkorderInventoryAuthFailure` | `sum by (application, operation) (increase(mes_workorder_inventory_auth_failure_total[5m])) > 0` | 5m | critical |
 
 `OutboxBacklog` 依赖第 5 节约定的 `mes_*_outbox_pending` Gauge。**这个指标目前还不存在**，选择器匹配不到任何序列，所以规则已加载但不会触发；工单和库存服务实现该指标后自动生效，不需要再改规则。
 
 两条质检告警同样在质检服务上线前不会触发。`increase()` 计不到序列从无到有的第一次增量，因此质检服务需在启动时把 `result="disposed_reversal_conflict"` 和 `mes_quality_pending_reversal_expired_total` 以 0 预注册。
+
+### 工单预留告警处置（runbook）
+
+- `WorkorderReservationReleaseFailed`：按 `result` 区分。`reservation_consumed`（预留已被消费）和 `reservation_not_found`（库存没有该预留）的任务已停止（`wo_reservation_release_task.status = STOPPED`），不再重试，需在 `wo_inventory_audit` 中按工单号核对物料去向并人工结案；`error` 为未归类异常，任务仍在退避重试，按工单服务 ERROR 日志定位原因。
+- `WorkorderReservationReleaseBacklog`：查 `wo_reservation_release_task` 中 `PENDING` 任务的 `last_error` 与 `next_attempt_at`；通常是库存服务不可用（`result="unavailable"` 持续增长），库存恢复后任务自动完成。释放结果 `unavailable` 不单独告警，由本条覆盖。
+- `WorkorderInventoryAuthFailure`（持续 5 分钟）：先查两件事：① 客户端密钥是否一致：`init-env` 生成的 `.env` 中 `WORKORDER_CLIENT_SECRET` 与认证服务中 `workorder-service` 客户端保存的密钥哈希是否对应（重新生成 `.env` 后未重建认证数据会失配）；② 认证服务健康（`/actuator/health`、`ServiceDown`）。再按 `operation` 区分：`token` 表示向认证服务申请服务令牌被拒（客户端密钥或 scope），其余表示库存拒绝令牌（aud、scope；续约 403 表示本服务不是持有方）。释放结果 `auth_error` 由本条覆盖。
+- `WorkorderReservationContractMismatch`：库存返回了契约外响应（如 422 `uom-mismatch`、未约定的状态码或 type），按 `operation` 区分是哪类调用。按工单服务 ERROR 日志中的状态码和 type，对照 `docs/api/inventory-openapi.yaml` 与库存实现对账。依赖 `mes_workorder_inventory_contract_mismatch_total`（待业务开发 PR 新增并以 0 预注册），合入前不会触发。
+- **契约不一致的两个指标分工**：`mes_workorder_inventory_contract_mismatch_total{operation}` 覆盖 reserve/renew/release/get 四类调用，**只供告警**；`mes_workorder_reservation_release_total{result="contract_mismatch"}` 是释放任务结果的一个取值，**只供看板“预留释放结果”统计**，不进告警。释放路径上一次契约外响应会同时让两者各加 1，这是有意的：前者按调用类型统计契约问题，后者让释放结果各取值加总等于尝试次数，二者口径不同，不是重复计数。
+- `result="reservation_gone"`（库存对释放返回 410）只计数，在看板“预留释放结果”面板中观察，不告警。
 
 阈值按演示规模（单实例、低流量）设定，生产环境需要按 SLO 重新评估。
 
@@ -88,13 +101,13 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
   - 业务端口返回 401。
 - `scripts/monitoring-smoke.sh`：只在 monitoring profile 下运行。检查以下各项：
   - Prometheus 的 `spring-boot` targets 全部 up（轮询等待，默认 120 秒）；
-  - 7 条告警规则都已加载；
+  - 11 条告警规则都已加载；
   - 指标带 `application` 标签；
   - Grafana 健康、数据源连通、看板已加载；
   - 网关 8080 的 `/actuator/prometheus` 返回 401。
 - CI：
   - `verify` 校验 app profile 不含监控容器，并校验 monitoring 叠加后的 compose 配置；
-  - `observability-lint` 用 promtool 检查抓取配置和 7 条告警规则，并确认看板 JSON 与生成脚本一致；
+  - `observability-lint` 用 promtool 检查抓取配置和 11 条告警规则，并确认看板 JSON 与生成脚本一致；
   - `demo smoke` 在 `make demo` 之后额外拉起 prometheus 和 grafana，运行 `monitoring-smoke.sh`（约增加 1–2 分钟）。这里不单独开 job，因为单独的 job 需要重新构建并启动整套服务，耗时 10 分钟以上。
 
 ## 5. 业务指标命名约定
@@ -120,10 +133,13 @@ sh scripts/monitoring-smoke.sh                              # 可选：检查 ta
 | `mes_workorder_status_transition_total` | Counter | `from`、`to`（源 / 目标状态，如 `CREATED`→`RELEASED`、`RELEASED`→`ON_HOLD`、`ON_HOLD`→`RELEASED`、`RELEASED`→`IN_PROGRESS`、`IN_PROGRESS`→`COMPLETED`、`COMPLETED`→`IN_PROGRESS`、`RELEASED`→`CANCELLED` 等） | 工单状态迁移次数：下达、冻结、恢复、开工、完工、重开、取消均计入，事务提交后计数；状态不变的审计（如追加第二个冻结原因）不计 |
 | `mes_workorder_report_lock_wait` | Timer（导出为 `_seconds`） | — | 报工、冲销、手工完工事务里 `SELECT … FOR UPDATE` 锁工单行的等待时间 |
 | `mes_workorder_outbox_pending` | Gauge | — | 待投递的 outbox 事件数（`status = NEW`；`DISCARDED` 永不投递，不计入），对应告警 `OutboxBacklog` |
-| `mes_workorder_reservation_release_total` | Counter | `result`（`released`、`expired`、`reservation_gone`、`reservation_consumed`、`reservation_not_found`、`auth_error`、`unavailable`、`error`） | 取消工单后释放库存预留的每次尝试结果，启动时全部以 0 预注册。`reservation_consumed` / `reservation_not_found` 表示任务已停止、需人工处理（已写 `wo_inventory_audit`）；`auth_error` 表示服务身份被拒，需告警；`reservation_gone` 表示库存对释放返回了 410（契约外，正常应为 200），任务按终态 DONE 结束，不重试，也不计为失败 |
+| `mes_workorder_reservation_release_total` | Counter | `result`（`released`、`expired`、`reservation_gone`、`reservation_consumed`、`reservation_not_found`、`auth_error`、`unavailable`、`contract_mismatch`、`error`） | 取消工单后释放库存预留的每次尝试结果，启动时全部以 0 预注册。`reservation_consumed` / `reservation_not_found` 表示任务已停止、需人工处理（已写 `wo_inventory_audit`）；`auth_error` 表示服务身份被拒，需告警；`reservation_gone` 表示库存对释放返回了 410（契约外，正常应为 200），任务按终态 DONE 结束，不重试，也不计为失败；`contract_mismatch` 表示库存释放响应不符合契约（如 2xx 但状态不是 RELEASED/EXPIRED），任务退避重试，与网络 / 5xx 的 `unavailable`、兜底 `error` 分开；同时计入 `mes_workorder_inventory_contract_mismatch_total{operation="release"}` |
 | `mes_workorder_reservation_release_pending` | Gauge | — | 待执行（`PENDING`）的预留释放任务数；库存长时间不可用时持续升高。包含取消释放任务与补偿释放失败后写入的任务（两者均使用 Idempotency-Key `cancel-{工单号}-{预留单号}`，至多释放一次；不依赖库存 TTL 回收） |
 | `mes_workorder_reservation_event_total` | Counter | `result`（`applied`、`duplicate`、`stale`、`unknown_reservation`、`invalid`） | 库存预留事件处理结果；`stale` 为 `aggregateVersion` 不大于本地版本而丢弃的事件 |
 | `mes_workorder_inventory_auth_failure_total` | Counter | `operation`（`reserve`、`renew`、`release`、`get`、`token`） | 库存拒绝服务令牌（401/403）的次数；续约 403 表示本服务不是该预留的持有方 |
+| `mes_workorder_inventory_contract_mismatch_total` | Counter | `operation`（`reserve`、`renew`、`release`、`get`） | 库存调用结果不符合契约的次数，启动时四个 `operation` 全部以 0 预注册。计入：库存返回 422 `uom-mismatch`（BOM 单位与库存现存量单位不一致）；返回本服务不应收到的 Problem type（`validation-error`、`idempotency-key-conflict`、`over-consume`、`line-closed`）或未约定的状态码；2xx 响应体缺失或结构无法解析。不计入：网络错误、5xx（`inventory-service-unavailable`）、401/403（见 `auth_failure`）、409 缺料等正常业务结果。告警 `WorkorderReservationContractMismatch` 使用：`sum by (application, operation)(increase(mes_workorder_inventory_contract_mismatch_total[1h])) > 0`（与告警规则一致） |
+
+> 契约不一致的两个指标用途不同：`mes_workorder_inventory_contract_mismatch_total{operation}` 用于告警（`WorkorderReservationContractMismatch`）；`mes_workorder_reservation_release_total{result="contract_mismatch"}` 只用于释放结果统计面板。释放路径两个都计，这是有意为之，不是重复计数，请勿删除其中任何一个。
 
 计数只在事务提交后、且不是幂等重放时累加（重放计为 `result="replay"`）。
 

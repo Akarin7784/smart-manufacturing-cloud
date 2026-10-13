@@ -59,6 +59,9 @@ public class ReservationService {
         Map<String, List<Need>> byMaterial = new TreeMap<>();
         for (Need n : needs) byMaterial.computeIfAbsent(n.line().materialCode(), k -> new ArrayList<>()).add(n);
 
+        // 先把整单涉及物料的现存量行收集齐，一次性按主键 id 升序加锁（#57），再逐物料计算可用量。
+        // 未登记单位的物料没有现存量行，不影响加锁集合。
+        Map<String, List<StockService.LockedRow>> locked = stock.lockMaterialRows(byMaterial.keySet());
         List<Shortage> shortages = new ArrayList<>();
         for (Map.Entry<String, List<Need>> e : byMaterial.entrySet()) {
             String material = e.getKey();
@@ -72,7 +75,7 @@ public class ReservationService {
             BigDecimal requested = e.getValue().stream().map(Need::qty).reduce(BigDecimal.ZERO, BigDecimal::add);
             BigDecimal available = BigDecimal.ZERO;
             if (registered) {
-                List<StockService.LockedRow> rows = stock.lockMaterialRows(material);
+                List<StockService.LockedRow> rows = locked.getOrDefault(material, List.of());
                 available = StockService.sum(rows).subtract(stock.activeReserved(material)).max(BigDecimal.ZERO);
             }
             if (requested.compareTo(available) > 0) {

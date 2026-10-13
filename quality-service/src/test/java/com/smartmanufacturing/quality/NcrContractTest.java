@@ -73,7 +73,7 @@ class NcrContractTest {
         MvcResult r = mvc.perform(req).andReturn();
         assertThat(r.getResponse().getStatus()).as(method + " " + template + "：" + r.getResponse().getContentAsString()).isEqualTo(expected);
         JsonNode body = OpenApiContract.assertConforms(template, method, r);
-        if (expected >= 400 && body.has("type") && !"about:blank".equals(body.get("type").asText())) {
+        if (expected >= 400 && body.has("type") && !java.util.Set.of("about:blank", "authentication-required", "access-denied").contains(body.get("type").asText())) {
             covered.add(body.get("type").asText());
             assertThat(body.get("status").asInt()).isEqualTo(expected);
         }

@@ -93,8 +93,8 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 
 ## 错误及生命周期
 
-- 未登录、篡改、过期、签发者或受众错误：401，`type=gateway-authentication-required`（带 `WWW-Authenticate: Bearer`）。
-- 身份有效但权限不足：403，`type=gateway-access-denied`。
+- 未登录、篡改、过期、签发者或受众错误：401，经网关为 `type=gateway-authentication-required`，直连服务为 `authentication-required`（均带 `WWW-Authenticate: Bearer`）。
+- 身份有效但权限不足：403，经网关为 `type=gateway-access-denied`，直连服务为 `access-denied`。
 
 ### 网关错误格式（RFC 9457）
 
@@ -117,11 +117,59 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 ```
 
 请求通过网关后，由业务服务返回的错误保持各服务契约（见 `docs/api/*-openapi.yaml`）。
+
+### 服务自身的 401/403（RFC 9457）
+
+绕过网关直连服务（服务间调用、内网排障）时，401/403 由服务自己返回，同样是 `application/problem+json`，五个字段 `type`、`title`、`status`、`detail`、`instance`，无 `code` 字段：
+
+| 来源 | 401 type | 403 type |
+| --- | --- | --- |
+| auth-service、cloud-common 共用安全配置（device、workorder、masterdata） | `authentication-required` | `access-denied` |
+| inventory-service、quality-service（各自的安全链，见对应 OpenAPI） | `about:blank` | `about:blank` |
+
+- 401 附带 `WWW-Authenticate: Bearer`；`instance` 为请求路径，不含查询串。
+- 方法级权限拒绝（`@PreAuthorize`）与过滤链拒绝格式相同，由 cloud-common 的 `ApiExceptionHandler` 输出。
+- 示例：`{"type":"access-denied","title":"没有访问权限","status":403,"detail":"当前身份缺少访问该接口所需的权限","instance":"/devices/config"}`
+- 冒烟脚本经 compose 内网直连 `device:8081/devices/config`（op01 无 `config:read`）断言该格式。
 - 账号不存在、密码错误、禁用或锁定：统一 401 / INVALID_CREDENTIALS。
 - 同一账号连续五次错误密码后锁定十五分钟；成功登录或管理员状态更新清除失败计数。
 - 默认访问令牌有效期十五分钟，时间校验允许 Spring Security 默认的六十秒时钟偏差。
 - 角色和权限是签发时快照。禁用用户或调整角色会阻止后续登录或改变新令牌，但已有令牌仍可能使用到过期。
 - 本阶段没有刷新令牌、服务端即时吊销、密码修改、找回密码或 MFA。客户端退出应清除访问令牌；这不等于服务端即时撤销。
+
+### 工单服务 Problem 标题（RFC 9457）
+
+workorder-service 的每个 `type` 对应唯一固定的中文 `title`（`WorkOrderProblemType#title`），具体原因放在 `detail`。401/403 与上表 cloud-common 的 `SecurityProblem` 文案一致。状态码与含义见 `docs/api/workorder-openapi.yaml` 的 `ProblemType`；`WorkOrderProblemTypeTest` 按本表与契约表双向断言，修改时三处同步。
+
+| type | title（固定中文） |
+| --- | --- |
+| `over-report` | 报工数量超限 |
+| `downstream-reported` | 下游工序已报工 |
+| `workorder-closed` | 工单已关闭 |
+| `operations-unreported` | 存在未报工工序 |
+| `report-already-reversed` | 报工已冲销 |
+| `operation-not-found` | 工序不存在 |
+| `report-not-found` | 报工记录不存在 |
+| `uom-mismatch` | 计量单位不一致 |
+| `workorder-cancelled` | 工单已取消 |
+| `inventory-service-unavailable` | 库存服务不可用 |
+| `validation-error` | 请求参数无效 |
+| `idempotency-key-required` | 缺少幂等键 |
+| `idempotency-key-conflict` | 幂等键冲突 |
+| `idempotency-in-progress` | 请求正在处理 |
+| `authentication-required` | 需要认证 |
+| `access-denied` | 没有访问权限 |
+| `workorder-not-found` | 工单不存在 |
+| `workorder-not-released` | 工单未下达 |
+| `workorder-state-conflict` | 工单状态冲突 |
+| `concurrent-modification` | 并发修改冲突 |
+| `device-not-found` | 设备不存在 |
+| `device-offline` | 设备离线 |
+| `device-service-unavailable` | 设备服务不可用 |
+| `masterdata-service-unavailable` | 主数据服务不可用 |
+| `release-masterdata-invalid` | 下达主数据无效 |
+| `material-shortage` | 物料短缺 |
+| `internal-error` | 内部错误 |
 
 ## 安全配置
 
@@ -158,3 +206,17 @@ Invoke-RestMethod http://localhost:8080/api/auth/users -Headers $headers -Method
 现有启动与冒烟脚本默认使用 admin；如改用其他引导用户名，需相应调整调用凭据。认证服务启动时读取 TTL 与签发参数，修改后应重启认证服务。
 
 上线时为登录和 API 配置 HTTPS，保护 .env 与密钥目录访问权限，设置登录流量限制和审计告警；在多实例部署中使用受控共享签名材料及明确的公钥轮换方案。若需要即时注销、实时撤销权限或租户数据隔离，应进一步增加状态化吊销/版本校验与数据权限设计。本阶段权限控制粒度为接口级。
+
+## 库存服务、质检服务的 401/403（RFC 9457）
+
+inventory-service、quality-service 关闭了 cloud-common 的通用安全链，自行输出 problem+json，type 与 title 和共用安全配置一致。
+覆盖库存服务的全部三条过滤链（用户接口、预留接口 `/inventory/reservations/**`、质检隔离接口 `/inventory/qc-hold/**`）以及方法级 `@PreAuthorize` 拒绝。
+
+| 状态 | type | title（固定） | 说明 |
+| --- | --- | --- | --- |
+| 401 | `authentication-required` | 需要认证 | 无令牌或令牌校验失败（含服务令牌受众不符）；带 `WWW-Authenticate: Bearer` |
+| 403 | `access-denied` | 没有访问权限 | 缺少 permissions 或服务令牌 scope 不符 |
+
+- 字段固定为 `type`、`title`、`status`、`detail`、`instance`，不含旧的 `code`；`instance` 为请求路径（不含查询串），拿不到请求时省略。
+- `title` 对同一 `type` 固定不变，调用方只按 `type` 判断；`detail` 说明具体原因（如“请提供有效的服务身份令牌”）。
+- 示例：`{"type":"authentication-required","title":"需要认证","status":401,"detail":"请提供有效的服务身份令牌","instance":"/inventory/qc-hold/receipts"}`

@@ -46,7 +46,7 @@ final class OpenApiContract {
 
     /**
      * 断言响应符合契约。
-     * @param pathTemplate 契约中的路径模板，如 /api/inventory/reservations/{reservationId}
+     * @param pathTemplate 契约中的路径模板，如 /inventory/reservations/{reservationId}（直连路径）
      * @param method       小写 HTTP 方法
      * @return 解析后的响应体，便于调用方继续断言
      */

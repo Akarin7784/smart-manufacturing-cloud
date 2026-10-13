@@ -13,7 +13,7 @@ class InventoryClientMetricsTest {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         when(jdbc.queryForObject(anyString(), eq(Long.class))).thenReturn(0L);
         new InventoryClientMetrics(registry, jdbc);
-        for (String r : java.util.List.of("released", "expired", "reservation_gone", "reservation_consumed", "reservation_not_found", "auth_error", "unavailable", "error"))
+        for (String r : java.util.List.of("released", "expired", "reservation_gone", "reservation_consumed", "reservation_not_found", "auth_error", "unavailable", "contract_mismatch", "error"))
             assertThat(registry.find("mes.workorder.reservation.release").tag("result", r).counter()).as(r).isNotNull()
                 .satisfies(c -> assertThat(c.count()).isZero());
         for (String r : java.util.List.of("applied", "duplicate", "stale", "unknown_reservation", "invalid"))

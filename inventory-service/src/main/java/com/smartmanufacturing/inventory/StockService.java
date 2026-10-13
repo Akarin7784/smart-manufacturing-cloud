@@ -8,7 +8,13 @@ import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import java.util.TreeMap;
 import java.util.Map;
 
 /**
@@ -16,9 +22,11 @@ import java.util.Map;
  * <p>
  * 并发与加锁约定（预留、扣减在后续 PR 中复用同一约定）：
  * <ul>
- *   <li>需要校验“可用量”的写操作（出库、预留）对该物料的<b>全部</b>现存量行执行 {@code SELECT ... FOR UPDATE}，按 id 升序加锁；
- *       涉及多个物料时按物料编码升序逐个加锁。所有写路径遵循同一顺序，避免死锁。</li>
- *   <li>入库只锁定（或新建）单个现存量行；入库只会增加可用量，不需要锁住同物料的其他行。</li>
+ *   <li>所有锁 stock_on_hand 的写路径（入库、出库、预留、扣减、隔离入出）都先不加锁地查出候选 id，
+ *       再统一用 {@code where id in (...) order by id for update} 按主键升序加锁（#57）；涉及多个物料时先收集齐全部 id 再一次性加锁。
+ *       加锁语句不带任何范围条件，避免范围扫描锁住其他物料的行；锁内再校验条件。</li>
+ *   <li>需要新建现存量行的路径（入库新批次、入隔离）由调用方在主事务开始前调用 {@link #prepareRows}，在独立短事务里按唯一键排序
+ *       预建数量 0 的行并提交；主事务内不做插入，只收集 id 后一次性按主键加锁（见 {@link #lockRows}）。</li>
  *   <li>可用量 = 现存量合计 − ACTIVE 预留单中 OPEN 行的未扣减量（reserved_qty − consumed_qty）。</li>
  *   <li>现存量行更新同时带 version 条件并加一：已持有行锁时条件必然成立，作为防御性校验与变更计数。</li>
  *   <li>每次余额变化都追加一条流水（只追加、不修改），流水与余额在同一事务提交，可随时对账。</li>
@@ -37,13 +45,23 @@ public class StockService {
     private final LocationService locations;
     private final Clock clock;
     private final InventoryMetrics metrics;
+    /** 预建现存量行专用的独立短事务：必须在主事务开始前调用（见 {@link #prepareRows}），立即提交。 */
+    private final TransactionTemplate prebuildTx;
 
-    public StockService(JdbcTemplate jdbc, LocationService locations, Clock clock, InventoryMetrics metrics) {
+    public StockService(JdbcTemplate jdbc, LocationService locations, Clock clock, InventoryMetrics metrics, PlatformTransactionManager txManager) {
         this.jdbc = jdbc; this.locations = locations; this.clock = clock; this.metrics = metrics;
+        this.prebuildTx = new TransactionTemplate(txManager);
+    }
+
+    /** 现存量行的唯一键（物料、库位、批次）；按此顺序排序后预建，避免并发预建互相等待。 */
+    record RowKey(String materialCode, String locationCode, String lotNo) implements Comparable<RowKey> {
+        private static final java.util.Comparator<RowKey> ORDER = java.util.Comparator.comparing(RowKey::materialCode)
+            .thenComparing(RowKey::locationCode).thenComparing(RowKey::lotNo);
+        @Override public int compareTo(RowKey o) { return ORDER.compare(this, o); }
     }
 
     /** 已加锁的现存量行。 */
-    record LockedRow(long id, String locationCode, String lotNo, BigDecimal qty, long version) {}
+    record LockedRow(long id, String materialCode, String locationCode, String lotNo, BigDecimal qty, long version) {}
 
     /** 入库：登记/校验物料单位与批次，增加（或新建）对应库位批次的现存量，并写入一条正数流水。 */
     public StockTxn inbound(String operator, Movement r) {
@@ -52,7 +70,8 @@ public class StockService {
         locations.requireGeneral(r.locationCode());
         ensureUom(r.materialCode(), r.uom());
         ensureLot(r.materialCode(), r.lotNo());
-        LockedRow row = lockOrCreateRow(r.materialCode(), r.locationCode(), r.lotNo());
+        RowKey key = new RowKey(r.materialCode(), r.locationCode(), r.lotNo());
+        LockedRow row = requirePrepared(lockRows(List.of(key)), key);
         return applyDelta(row, r.materialCode(), r.uom(), qty, INBOUND, "EXTERNAL", r.refNo(), operator);
     }
 
@@ -137,7 +156,8 @@ public class StockService {
         requireQcHoldLocation();
         ensureUom(material, uom);
         ensureLot(material, lotNo);
-        LockedRow row = lockOrCreateRow(material, QC_HOLD, lotNo);
+        RowKey key = new RowKey(material, QC_HOLD, lotNo);
+        LockedRow row = requirePrepared(lockRows(List.of(key)), key);
         return applyDelta(row, material, uom, qty, QC_HOLD_IN, "NCR", ncrNo, operator);
     }
 
@@ -155,7 +175,9 @@ public class StockService {
         if (lots == null || lots == 0)
             throw new ProblemException(ProblemType.LOT_NOT_FOUND, "物料 " + material + " 的批次 " + lotNo + " 不存在");
         String registered = requireUom(material, uom);
-        LockedRow row = lockRow(material, QC_HOLD, lotNo);
+        RowKey key = new RowKey(material, QC_HOLD, lotNo);
+        // 出隔离不预建：行不存在即隔离量为 0，下面按不足返回 409。
+        LockedRow row = lockRows(List.of(key)).get(key);
         BigDecimal held = row == null ? BigDecimal.ZERO : row.qty();
         if (qty.compareTo(held) > 0) {
             throw new ProblemException(ProblemType.INSUFFICIENT_STOCK, "QC-HOLD 隔离量不足",
@@ -171,33 +193,109 @@ public class StockService {
         if (n == null || n == 0) throw new ProblemException(ProblemType.LOCATION_NOT_FOUND, "系统库位 " + QC_HOLD + " 不存在或已停用");
     }
 
-    /** 锁定单个库位批次行；不存在则以 0 余额新建后再锁定（并发新建由唯一约束裁决，失败方锁定胜者的行）。 */
-    private LockedRow lockOrCreateRow(String material, String location, String lotNo) {
-        LockedRow row = lockRow(material, location, lotNo);
-        if (row != null) return row;
-        try {
-            jdbc.update("insert into stock_on_hand (material_code, location_code, lot_no, qty, version, updated_at) values (?, ?, ?, 0, 0, ?)",
-                material, location, lotNo, Timestamp.from(clock.instant()));
-        } catch (DuplicateKeyException race) {
-            // 并发入库同一新批次：对方已插入，下面直接锁定该行。
-        }
-        return lockRow(material, location, lotNo);
-    }
-
-    private LockedRow lockRow(String material, String location, String lotNo) {
-        List<LockedRow> rows = metrics.timeLock(() -> jdbc.query("select id, location_code, lot_no, qty, version from stock_on_hand"
-            + " where material_code = ? and location_code = ? and lot_no = ? for update", (rs, n) -> map(rs), material, location, lotNo));
-        return rows.isEmpty() ? null : rows.get(0);
+    /**
+     * 主事务开始<b>之前</b>调用（#57）：在独立短事务里按唯一键排序，对缺失的现存量行
+     * {@code INSERT ... ON DUPLICATE KEY UPDATE} 以数量 0 预建并提交。
+     * <p>不能放进主事务（哪怕用 REQUIRES_NEW）：嵌套事务要再占一个连接，并发请求数达到连接池上限时，
+     * 所有请求都持有一个连接等第二个，连接池会互相卡死（CI 中 concurrentSameKeyInboundsOnce 已复现）。
+     * 已存在的行先用不加锁的查询跳过；并发预建同一键时 {@code id = id} 为空更新，不抛异常。数量 0 的行不出现在现存量查询中。
+     * 幂等重放、业务失败都会留下数量 0 的空行，无副作用。</p>
+     */
+    public void prepareRows(Collection<RowKey> keys) {
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("prepareRows 必须在主事务开始前调用");
+        List<RowKey> missing = new java.util.TreeSet<>(keys).stream().filter(k -> findIds(k).isEmpty()).toList();
+        if (missing.isEmpty()) return;
+        prebuildTx.executeWithoutResult(status -> {
+            for (RowKey k : missing) {
+                jdbc.update("insert into stock_on_hand (material_code, location_code, lot_no, qty, version, updated_at) values (?, ?, ?, 0, 0, ?)"
+                    + " on duplicate key update id = id", k.materialCode(), k.locationCode(), k.lotNo(), Timestamp.from(clock.instant()));
+            }
+        });
     }
 
     /**
-     * 按 id 升序锁定物料的全部<b>普通库位</b>现存量行（固定加锁顺序，见类注释）。
-     * 排除 QC-HOLD：隔离量不计入可用量，出库、预留、扣减都不能使用它。
+     * 主事务内按唯一键一次性锁定若干现存量行（可同时包含源库位与目标库位，如普通库位与 QC-HOLD）：
+     * 不加锁地按唯一键收集全部 id → 一次性 {@code WHERE id IN (...) ORDER BY id FOR UPDATE} → 锁内校验键值。
+     * 主事务内不做任何插入；需要新建的行由调用方事先 {@link #prepareRows} 预建。
+     * 不再逐行“查 → 插 → 锁”：逐行加锁时，两个方向相反的操作（A→QC-HOLD 与 QC-HOLD→A）会以相反顺序持锁而死锁。
+     *
+     * @return 唯一键 → 已加锁的行；不存在的键不出现在结果中
      */
-    List<LockedRow> lockMaterialRows(String material) {
-        return metrics.timeLock(() -> jdbc.query("select id, location_code, lot_no, qty, version from stock_on_hand where material_code = ? and location_code <> ? order by id for update",
-            (rs, n) -> map(rs), material, QC_HOLD));
+    Map<RowKey, LockedRow> lockRows(Collection<RowKey> keys) {
+        List<RowKey> sorted = List.copyOf(new java.util.TreeSet<>(keys));
+        List<Long> ids = new ArrayList<>();
+        for (RowKey k : sorted) ids.addAll(findIds(k));
+        Map<RowKey, LockedRow> result = new TreeMap<>();
+        for (LockedRow row : lockByIds(ids)) {
+            RowKey k = new RowKey(row.materialCode(), row.locationCode(), row.lotNo());
+            if (sorted.contains(k)) result.put(k, row);
+        }
+        return result;
     }
+
+    /** 入库类操作要求目标行已预建；缺失说明调用方漏了 prepareRows，属于编程错误。 */
+    private static LockedRow requirePrepared(Map<RowKey, LockedRow> rows, RowKey key) {
+        LockedRow row = rows.get(key);
+        if (row == null) throw new IllegalStateException("现存量行未预建，调用方须在主事务前调用 prepareRows：" + key);
+        return row;
+    }
+
+    /** 按唯一键查 id（不加锁）。 */
+    private List<Long> findIds(RowKey k) {
+        return jdbc.queryForList("select id from stock_on_hand where material_code = ? and location_code = ? and lot_no = ?",
+            Long.class, k.materialCode(), k.locationCode(), k.lotNo());
+    }
+
+    /** 单个物料的普通库位行，见 {@link #lockMaterialRows(Collection)}。 */
+    List<LockedRow> lockMaterialRows(String material) {
+        return lockMaterialRows(List.of(material)).getOrDefault(material, List.of());
+    }
+
+    /**
+     * 一次性锁定多个物料的全部<b>普通库位</b>现存量行，按主键 id 升序加锁（所有写路径同一顺序，#57）。
+     * <ol>
+     *   <li>候选查询（不加锁）：{@code material_code in (...) and location_code <> 'QC-HOLD'} 查出 id。
+     *       排除条件只出现在这一步：此前把 {@code <>} 范围条件直接写进 {@code FOR UPDATE}，MySQL 会按范围扫描并锁住
+     *       扫描到的其他物料行，交叉预留时形成死锁（ReservationMySqlIT.crossMaterialReservationsDoNotDeadlock）。</li>
+     *   <li>加锁：{@code where id in (...) order by id for update}，只按主键逐行加锁，不产生范围锁。</li>
+     *   <li>锁内重新校验：剔除 QC-HOLD 行与不属于请求物料的行；数量是否足够由调用方基于锁内读到的 qty 判断。</li>
+     * </ol>
+     * 用库位编码 {@code location_code <> 'QC-HOLD'} 而不是 join warehouse_location 判断 system_location：
+     * 候选查询只扫 stock_on_hand 的物料索引，不涉及库位表；QC-HOLD 是 V2 种子的唯一系统库位，编码固定不变，
+     * 与隔离接口、可用量查询使用同一常量 {@link #QC_HOLD}。今后若新增其他系统库位，再改为按 system_location 判断。
+     * 候选查询与加锁之间新插入的行（新批次入库）不会被纳入，计算出的可用量只会偏小，不会超卖。
+     *
+     * @return 物料编码 → 该物料已加锁的行（按 id 升序）；没有行的物料不出现在结果中
+     */
+    Map<String, List<LockedRow>> lockMaterialRows(Collection<String> materials) {
+        if (materials.isEmpty()) return Map.of();
+        List<String> list = List.copyOf(new java.util.TreeSet<>(materials));
+        List<Object> args = new ArrayList<>(list);
+        args.add(QC_HOLD);
+        List<Long> ids = jdbc.queryForList("select id from stock_on_hand where material_code in (" + placeholders(list.size()) + ") and location_code <> ?",
+            Long.class, args.toArray());
+        Map<String, List<LockedRow>> result = new TreeMap<>();
+        for (LockedRow row : lockByIds(ids)) {
+            if (QC_HOLD.equals(row.locationCode()) || !list.contains(row.materialCode())) continue;
+            result.computeIfAbsent(row.materialCode(), k -> new ArrayList<>()).add(row);
+        }
+        return result;
+    }
+
+    /** 只按主键加锁的语句；id 升序是全服务统一的加锁顺序。单独成方法以便单元测试断言 SQL 形态。 */
+    static String lockByIdSql(int n) {
+        return "select id, material_code, location_code, lot_no, qty, version from stock_on_hand where id in (" + placeholders(n) + ") order by id for update";
+    }
+
+    /** 按主键升序加锁；ids 为空时不发语句。 */
+    private List<LockedRow> lockByIds(List<Long> ids) {
+        if (ids.isEmpty()) return List.of();
+        List<Long> sorted = ids.stream().distinct().sorted().toList();
+        return metrics.timeLock(() -> jdbc.query(lockByIdSql(sorted.size()), (rs, n) -> map(rs), sorted.toArray()));
+    }
+
+    private static String placeholders(int n) { return String.join(",", Collections.nCopies(n, "?")); }
 
     /** 物料的有效预留量：ACTIVE 预留单中 OPEN 行的未扣减部分之和。 */
     BigDecimal activeReserved(String material) {
@@ -277,6 +375,6 @@ public class StockService {
     }
 
     private static LockedRow map(java.sql.ResultSet rs) throws java.sql.SQLException {
-        return new LockedRow(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getBigDecimal(4), rs.getLong(5));
+        return new LockedRow(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getBigDecimal(5), rs.getLong(6));
     }
 }

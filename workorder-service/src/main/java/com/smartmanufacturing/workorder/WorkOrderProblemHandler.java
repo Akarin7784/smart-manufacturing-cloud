@@ -62,7 +62,8 @@ class WorkOrderProblemHandler {
     static ResponseEntity<ProblemDetail> problem(WorkOrderProblemType t, String detail, Object data) {
         ProblemDetail p = ProblemDetail.forStatusAndDetail(t.status(), detail);
         p.setType(URI.create(t.type()));
-        p.setTitle(t.name());
+        // title 取枚举登记的固定中文简述（同一 type 恒为同一 title），不再输出枚举常量名
+        p.setTitle(t.title());
         p.setProperty("code", t.code());
         if (data != null) p.setProperty("data", data);
         return ResponseEntity.status(t.status()).contentType(PROBLEM).body(p);

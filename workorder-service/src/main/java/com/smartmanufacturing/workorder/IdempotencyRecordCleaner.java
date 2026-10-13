@@ -72,7 +72,7 @@ public class IdempotencyRecordCleaner {
      * @return 本次删除的总行数
      */
     public int purgeExpired() {
-        Timestamp cutoff = Timestamp.from(clock.instant().minus(retention));
+        Timestamp cutoff = DbTimes.ts(clock.instant().minus(retention));
         // LIMIT 使用经过校验的正整数拼接：各数据库对 LIMIT 绑定参数的支持不一致。
         String select = "SELECT principal, idempotency_key FROM work_order_request WHERE created_at < ? ORDER BY created_at LIMIT " + batchSize;
         String delete = "DELETE FROM work_order_request WHERE principal = ? AND idempotency_key = ? AND created_at < ?";
