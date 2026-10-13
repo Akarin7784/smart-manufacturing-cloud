@@ -52,20 +52,20 @@ public class WorkOrderOutboxRelay {
                     + " where status = 'NEW' and topic is not null and (next_attempt_at is null or next_attempt_at <= ?)"
                     + " order by occurred_at, event_id limit " + batchSize + " for update skip locked",
                 (rs, i) -> new Pending(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5), rs.getString(6), rs.getInt(7)),
-                Timestamp.from(now));
+                DbTimes.ts(now));
             int ok = 0;
             for (Pending p : batch) {
                 try {
                     sender.send(p.topic(), p.tag(), p.aggregateId(), p.eventId(), p.payload());
                     jdbc.update("update outbox_event set status = 'SENT', published_at = ?, attempts = attempts + 1, last_error = null where event_id = ?",
-                        Timestamp.from(clock.instant()), p.eventId());
+                        DbTimes.ts(clock.instant()), p.eventId());
                     ok++;
                 } catch (Exception e) {
                     // 只给失败的这一条计数并退避，eventId 不变；随后结束本批，剩余行留待下一轮
                     Duration backoff = backoff(p.attempts() + 1);
                     String error = String.valueOf(e.getMessage());
                     jdbc.update("update outbox_event set attempts = attempts + 1, next_attempt_at = ?, last_error = ? where event_id = ?",
-                        Timestamp.from(clock.instant().plus(backoff)), error.length() > 500 ? error.substring(0, 500) : error, p.eventId());
+                        DbTimes.ts(clock.instant().plus(backoff)), error.length() > 500 ? error.substring(0, 500) : error, p.eventId());
                     LOG.warn("事件投递失败，{} 后重试，本批剩余 {} 条留待下一轮：eventId={} type={} topic={}",
                         backoff, batch.size() - ok - 1, p.eventId(), p.eventType(), p.topic(), e);
                     break;

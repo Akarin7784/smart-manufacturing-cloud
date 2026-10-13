@@ -54,7 +54,7 @@
 | `ncr-voided` | 409 | NCR 已作废，不能再评审、处置或关闭 |
 | `ncr-not-found` | 404 | NCR 编号不存在（契约中所有 NCR 的 404 均用它） |
 
-共 7 种；401/403 用 `about:blank`。
+共 7 种；401/403 不在此列，分别为 `authentication-required`（title“需要认证”）与 `access-denied`（title“没有访问权限”），见 docs/authentication.md 的服务 Problem 表。
 
 ## 4. 与库存的交互
 - **本期不做**：SCRAP 只登记处置记录，不调用库存，也不改动库存（契约中写明）；REWORK 和 CONCESSION 同样只记录。

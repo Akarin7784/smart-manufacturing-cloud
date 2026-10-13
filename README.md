@@ -201,6 +201,22 @@ GitHub Actions 在每次推送、PR 和手动触发时执行 Linux / Windows 的
 
 添加新服务时复制业务服务结构，设置唯一 application.name / 端口 / 数据库，新增网关显式路由与 Nacos Data ID；API 契约放 cloud-api，避免共享各服务数据库。
 
+### 手动重复运行集成测试（CI）
+
+验证并发类修复（如死锁）时，用手动触发的 `.github/workflows/repeat-it.yml` 在 CI 上把同一个 IT 重复运行 N 次（每次一个独立 job，默认 20 次，上限 50），运行摘要中给出通过/失败次数，失败的那次会上传 surefire/failsafe 报告：
+
+```bash
+gh workflow run repeat-it.yml --ref <branch> -f module=inventory-service -f test=ReservationMySqlIT -f repeat=20
+```
+
+`test` 也可以写成 `类名#方法名`，或用逗号一次列出多个（同一模块内），例如：
+
+```bash
+gh workflow run repeat-it.yml --ref <branch> -f module=inventory-service -f test=ReservationMySqlIT,InventoryMySqlIT#someMethod -f repeat=20
+```
+
+列出的每个类都必须实际执行过用例且没有跳过，否则该次运行失败。这类 Testcontainers IT 只在 CI 上跑，不要在共用电脑上本地连跑。该 workflow 只有 `workflow_dispatch` 触发，不影响 push / PR 的现有检查。
+
 ## 使用边界
 
 Compose 使用仅限本机的端口绑定，Nacos 关闭鉴权、MySQL 使用开发密码，业务 API 已实现账号认证和角色权限控制。上线前补充企业身份接入（按需）、租户/数据权限、TLS、密钥轮换、数据库迁移、监控告警、备份以及 Nacos 高可用。详情见 docs/architecture.md。RocketMQ 与 Seata 在扩展说明中给出设计接入位置，当前没有启用这两个组件。
@@ -235,3 +251,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\security-smoke-test.ps1
   `reason=WORK_ORDER_CANCELLED`、`Idempotency-Key: cancel-{工单号}-{预留单号}` 释放；库存不可用时退避重试，恢复后自动完成。重复取消返回 409 `workorder-cancelled`。
 - 事件：生命周期事件与业务变更同事务写入 `outbox_event`，由中继投递到 RocketMQ；订阅库存预留事件（`CG_WORKORDER_RESERVATION`），按 `eventId` 去重、按 `aggregateVersion` 丢弃过时事件。
 - 表结构：`db/migration/V2__workorder_release.sql`、`V3__operation_reporting.sql`、`V4__inventory_client_and_cancel.sql`（V1 由运维维护）。
+
+## 开发组
+
+本项目由 Eva 带领的一组 AI Agent 协作开发，每项工作都开分支、提 PR，评审通过后合入。
+
+| 图标 | 名字 | 职责 |
+|---|---|---|
+| 🐟 | 蓝色大肥鱼 | 架构设计与技术拍板 |
+| ⚙️ | 工单阿匠 | 主数据、生产工单、报工，以及工单侧的物料预留 |
+| 📦 | 质检阿库 | 库存（预留、出入库、QC-HOLD）与质检（缺陷处置、回写库存） |
+| 🔍 | 把关阿审 | 代码评审、合入、集成测试与端到端测试 |
+| 🚀 | 流水线阿运 | 部署、CI、监控告警与网关 |
