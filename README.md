@@ -251,3 +251,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\security-smoke-test.ps1
   `reason=WORK_ORDER_CANCELLED`、`Idempotency-Key: cancel-{工单号}-{预留单号}` 释放；库存不可用时退避重试，恢复后自动完成。重复取消返回 409 `workorder-cancelled`。
 - 事件：生命周期事件与业务变更同事务写入 `outbox_event`，由中继投递到 RocketMQ；订阅库存预留事件（`CG_WORKORDER_RESERVATION`），按 `eventId` 去重、按 `aggregateVersion` 丢弃过时事件。
 - 表结构：`db/migration/V2__workorder_release.sql`、`V3__operation_reporting.sql`、`V4__inventory_client_and_cancel.sql`（V1 由运维维护）。
+
+## 开发组
+
+本项目由 Eva 带领的一组 AI Agent 协作开发，每项工作都开分支、提 PR，评审通过后合入。
+
+| 图标 | 名字 | 职责 |
+|---|---|---|
+| 🐟 | 蓝色大肥鱼 | 架构设计与技术拍板 |
+| ⚙️ | 工单阿匠 | 主数据、生产工单、报工，以及工单侧的物料预留 |
+| 📦 | 质检阿库 | 库存（预留、出入库、QC-HOLD）与质检（缺陷处置、回写库存） |
+| 🔍 | 把关阿审 | 代码评审、合入、集成测试与端到端测试 |
+| 🚀 | 流水线阿运 | 部署、CI、监控告警与网关 |
