@@ -45,7 +45,7 @@ grep -qi '^Idempotent-Replayed: true' "$hdr" || fail "重放响应应带 Idempot
 [ "$(printf '%s' "$replay" | jq -r '.data.id')" = "$id" ] || fail "重放返回的工单号与首次不一致"
 # 缺少幂等键必须在业务处理前返回 400。
 [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -H "$auth" -H 'Content-Type: application/json' -d '{"deviceId":"D001","product":"bearing","quantity":10}' "$base/api/workorders")" = 400 ] || fail "缺少幂等键应返回 400"
-curl -fsS -m 5 -H "$auth" "$base/api/workorders" | jq -e --arg id "$id" '[.data[].id|tostring] | index($id) != null' >/dev/null || fail "新工单未持久化"
+curl -fsS -m 5 -H "$auth" "$base/api/workorders?keyword=$id" | jq -e --arg id "$id" '[.data.items[].id|tostring] | index($id) != null' >/dev/null || fail "新工单未持久化"
 [ "$(status "$base/api/devices/missing")" = 404 ] || fail "不存在设备应返回 404"
 [ "$(status -d '{"deviceId":"missing","product":"bearing","quantity":10}' "$base/api/workorders")" = 404 ] || fail "不存在设备下单应返回 404"
 [ "$(status -d '{"deviceId":"D002","product":"bearing","quantity":10}' "$base/api/workorders")" = 409 ] || fail "非可用设备下单应返回 409"
@@ -197,7 +197,7 @@ grep -qi '^Idempotent-Replayed: true' "$hdr" || fail "同键重放取消缺少 I
 c=$(curl -sS -m 15 -X POST -H "$auth" -H "Idempotency-Key: $gr_cancel_key-other" -w '\n%{http_code}' "$base/api/workorders/$gr/cancel")
 [ "$(printf '%s' "$c" | tail -n1)" = 409 ] && printf '%s' "$c" | sed '$d' | jq -e '.type=="workorder-cancelled"' >/dev/null \
   || fail "换键重复取消应返回 409 workorder-cancelled：$c"
-curl -fsS -m 5 -H "$auth" "$base/api/workorders" | jq -e --arg id "$gr" '[.data[]|select((.id|tostring)==$id)][0].status=="CANCELLED"' >/dev/null \
+curl -fsS -m 5 -H "$auth" "$base/api/workorders?keyword=$gr" | jq -e --arg id "$gr" '[.data.items[]|select((.id|tostring)==$id)][0].status=="CANCELLED"' >/dev/null \
   || fail "工单列表中状态应为 CANCELLED"
 st=""; i=0
 while [ "$i" -lt 30 ]; do

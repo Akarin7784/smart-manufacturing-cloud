@@ -161,6 +161,8 @@ workorder-service 的每个 `type` 对应唯一固定的中文 `title`（`WorkOr
 | `task-state-conflict` | 工序任务状态冲突 |
 | `task-not-dispatched` | 工序未派工 |
 | `station-not-found` | 工位不存在 |
+| `open-ncr-exists` | 存在未结案不合格品 |
+| `quality-service-unavailable` | 质量服务不可用 |
 | `validation-error` | 请求参数无效 |
 | `idempotency-key-required` | 缺少幂等键 |
 | `idempotency-key-conflict` | 幂等键冲突 |

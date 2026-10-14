@@ -83,6 +83,9 @@ public class WorkOrderReleaseService {
             throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单已取消，不能下达");
         Optional<ReleaseResult> replay = replay(orderId, key);
         if (replay.isPresent()) return replay.get();
+        // 已撤回的下达键不能再用：库存按同一预留键会重放到已释放的预留单
+        if (jdbc.queryForObject("select count(*) from wo_release_withdrawal where order_id = ? and release_key = ?", Integer.class, orderId, key) > 0)
+            throw new BusinessException("WORK_ORDER_STATE_CONFLICT", "该 Idempotency-Key 对应的下达已撤回，请使用新的键重新下达", HttpStatus.CONFLICT);
         if (!"CREATED".equals(order.status()))
             throw new BusinessException("WORK_ORDER_STATE_CONFLICT", "只有 CREATED 状态的工单可以下达，当前为 " + order.status(), HttpStatus.CONFLICT);
 
@@ -141,7 +144,8 @@ public class WorkOrderReleaseService {
                 order.id(), op.opNo(), ++opSeq, op.name(), op.workCenterCode(), op.setupMinutes(), op.runSecondsPerUnit(),
                 op.reportPoint(), op.firstArticleRequired(), String.join(",", op.inspectionPointCodes()), opSeq == 1 ? "READY" : "PENDING");
         }
-        insertReservation(order.id(), 1, reservation);
+        // 撤回下达后重新下达时保留旧预留镜像作为历史，序号顺延
+        insertReservation(order.id(), jdbc.queryForObject("select coalesce(max(seq), 0) + 1 from wo_material_reservation where order_id = ?", Integer.class, order.id()), reservation);
         journal.statusChanged(order.id(), "CREATED", "RELEASED", null, null, operator);
         journal.event(order.id(), "WorkOrderReleased", Map.of(
             "productCode", order.product(), "quantity", order.quantity(), "bomVersion", bom.bomVersion(),

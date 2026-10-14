@@ -11,4 +11,20 @@ final class Errors {
     static BusinessException conflict(String code, String message) { return new BusinessException(code, message, HttpStatus.CONFLICT); }
     /** 请求格式正确但违反业务规则（循环 BOM、引用不存在的工序等）：422。 */
     static BusinessException rule(String code, String message) { return new BusinessException(code, message, HttpStatus.UNPROCESSABLE_ENTITY); }
+
+    /**
+     * 主数据仍被引用，不能停用 / 删除：409 MASTERDATA_IN_USE。data 中 type 固定为 masterdata-in-use（与 PM 约定的 Problem type 一致），
+     * referenceType 为 WORK_ORDER / BOM / ROUTING，references 列出前若干个引用方。
+     */
+    static BusinessException inUse(String referenceType, String message, java.util.List<String> references) {
+        var data = new java.util.LinkedHashMap<String, Object>();
+        data.put("type", "masterdata-in-use");
+        data.put("referenceType", referenceType);
+        data.put("references", references);
+        return new BusinessException("MASTERDATA_IN_USE", message, HttpStatus.CONFLICT, data);
+    }
+    /** 引用检查依赖的工单服务不可用：503，不放行停用 / 删除。 */
+    static BusinessException workOrderUnavailable(String message) {
+        return new BusinessException("WORKORDER_SERVICE_UNAVAILABLE", message, HttpStatus.SERVICE_UNAVAILABLE);
+    }
 }

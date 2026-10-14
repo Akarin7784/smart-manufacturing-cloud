@@ -43,15 +43,17 @@ public class OperationReportingService {
     private final Clock clock;
     private final ReportingMetrics metrics;
     private final WorkOrderCancellation cancellation;
+    private final WorkOrderClosure closure;
     private final OperationTaskStates tasks;
     private final String eventTopic, startedTag, completedTag, reopenedTag, qualityTopic, defectReportedTag, defectReversedTag;
 
     public OperationReportingService(JdbcTemplate jdbc, TransactionTemplate tx, WorkOrderJournal journal, ObjectMapper mapper,
-                                     Clock clock, MqProperties mq, ReportingMetrics metrics, WorkOrderCancellation cancellation,
+                                     Clock clock, MqProperties mq, ReportingMetrics metrics, WorkOrderCancellation cancellation, WorkOrderClosure closure,
                                      OperationTaskStates tasks) {
         this.tasks = tasks;
         this.metrics = metrics;
         this.cancellation = cancellation;
+        this.closure = closure;
         this.jdbc = jdbc; this.tx = tx; this.journal = journal; this.mapper = mapper; this.clock = clock;
         // 启动即解析，缺配置直接启动失败，而不是在第一次报工时才发现
         this.eventTopic = mq.topic("workorder-event");
@@ -225,6 +227,11 @@ public class OperationReportingService {
         OperationTaskStates.Task task = tasks.find(order.id(), original.opNo());
         if ("DONE".equals(task.status()) && updated.get(idx).total().compareTo(limit(order, updated, idx)) < 0)
             tasks.transition(task, "PAUSED", "PAUSE", "REPORT_REVERSED", operator);
+        // #69：冲销使下游工序上限回到 0（上道已无合格数流入）且下游没有有效报工时，READY 的下游任务退回 PENDING（不对外发事件）
+        if (idx + 1 < updated.size() && limit(order, updated, idx + 1).signum() <= 0 && updated.get(idx + 1).effective() <= 0) {
+            OperationTaskStates.Task down = tasks.find(order.id(), updated.get(idx + 1).opNo());
+            if ("READY".equals(down.status())) tasks.transition(down, "PENDING", "FLOW_BACK", "REPORT_REVERSED", operator);
+        }
         Progress lastOp = updated.get(updated.size() - 1);
         if ("COMPLETED".equals(status) && lastOp.good().compareTo(order.planned()) < 0) {
             // 冲销导致末道合格数不足计划数：从完工退回生产中并发布 WorkOrderReopened；全部冲销后仍保持 IN_PROGRESS，不回到 RELEASED
@@ -294,6 +301,35 @@ public class OperationReportingService {
     public List<OperationReportView> reports(String orderNo) {
         progressView(orderNo); // 校验工单存在
         return jdbc.query("select * from wo_operation_report where order_id = ? order by created_at, report_id", (rs, i) -> reportView(mapReport(rs)), orderNo);
+    }
+
+    // ------------------------------------------------------------------ 关闭 / 撤回下达（PR2）
+
+    /**
+     * 关闭工单：COMPLETED → CLOSED。先在事务外查询质量服务（不在持有工单行锁时做远程调用），存在未结案 NCR 409 open-ncr-exists，
+     * 质量服务不可用 503 quality-service-unavailable。同键重放直接返回首次结果，不再查询质量服务。
+     * 查询与加锁之间新建的 NCR 不在本次校验范围内（NCR 只能针对已有报工，COMPLETED 之后的新 NCR 由质量流程处理）。
+     */
+    public CommandResult close(String orderNo, CloseWorkOrderRequest req, String key, String operator) {
+        String note = req == null ? null : req.note();
+        String hash = hash("CLOSE", orderNo, note);
+        Optional<CommandResult> prior = replay(operator, key, hash);
+        if (prior.isPresent()) return prior.get();
+        closure.requireNoOpenNcr(orderNo);
+        return idempotent(operator, key, "CLOSE", orderNo, hash, 200, order -> closure.closeInTx(order.id(), order.status(), note, operator));
+    }
+
+    /**
+     * 撤回下达：RELEASED → CREATED（无报工、无开工任务）。锁序与冻结 / 恢复一致：先锁 work_order_lifecycle 行，再锁 work_order 行，
+     * 避免与冻结（先改生命周期再改工单）形成相反锁序而死锁。
+     */
+    public CommandResult withdrawRelease(String orderNo, WithdrawReleaseRequest req, String key, String operator) {
+        String note = req == null ? null : req.note();
+        String hash = hash("WITHDRAW_RELEASE", orderNo, note);
+        return tx.execute(s -> {
+            jdbc.query("select order_id from work_order_lifecycle where order_id = ? for update", (rs, i) -> rs.getString(1), orderNo);
+            return idempotent(operator, key, "WITHDRAW_RELEASE", orderNo, hash, 200, order -> closure.withdrawInTx(order.id(), order.status(), note, operator));
+        });
     }
 
     // ------------------------------------------------------------------ 内部
@@ -392,7 +428,8 @@ public class OperationReportingService {
             OperationTaskStates.Task t = byOp.get(p.opNo());
             views.add(new OperationProgressView(p.opNo(), p.seq(), num(p.good()), num(p.defect()), num(p.scrap()), p.uom(), num(limit), p.effective(),
                 p.labor().toPlainString(), t == null ? null : t.status(), t == null ? null : t.station(), t == null ? null : t.operator(),
-                t == null ? null : t.plannedStart(), t == null ? null : t.plannedEnd(), t == null ? 0 : t.version()));
+                t == null ? null : t.plannedStart(), t == null ? null : t.plannedEnd(), t == null ? 0 : t.version(),
+                t == null ? null : t.name(), t == null ? null : t.workCenter()));
         }
         return new WorkOrderProgressView(orderId, status, num(planned), views);
     }

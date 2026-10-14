@@ -49,7 +49,7 @@ final class ReleaseFixtures {
     }
 
     static void clear(JdbcTemplate jdbc) {
-        for (String t : List.of("wo_reservation_release_task", "wo_inventory_audit", "wo_operation_report", "wo_operation_progress", "wo_command_request", "work_order_lifecycle", "work_order_hold_reason", "wo_bom_snapshot", "operation_task_log", "operation_task", "wo_material_reservation",
+        for (String t : List.of("wo_reservation_release_task", "wo_release_withdrawal", "wo_inventory_audit", "wo_operation_report", "wo_operation_progress", "wo_command_request", "work_order_lifecycle", "work_order_hold_reason", "wo_bom_snapshot", "operation_task_log", "operation_task", "wo_material_reservation",
             "wo_material_reservation_line", "work_order_status_log", "outbox_event", "consumed_event", "work_order_request", "work_order"))
             jdbc.update("delete from " + t);
     }

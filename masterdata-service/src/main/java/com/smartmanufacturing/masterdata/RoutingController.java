@@ -48,4 +48,14 @@ public class RoutingController {
     @PreAuthorize("hasAuthority('masterdata:release')")
     @PostMapping("/{product}/{version}/release")
     public ApiResponse<Routing> release(@PathVariable String product, @PathVariable String version) { return ApiResponse.ok(service.release(product, version)); }
+
+    /** 作废已发布版本（RELEASED → OBSOLETE，PR2）：作废后不再参与生效查询；非已发布 409 ROUTING_NOT_RELEASED。 */
+    @PreAuthorize("hasAuthority('masterdata:release')")
+    @PostMapping("/{product}/{version}/retire")
+    public ApiResponse<Routing> retire(@PathVariable String product, @PathVariable String version) { return ApiResponse.ok(service.retire(product, version)); }
+
+    /** 删除草稿（物理删除，已发布 / 作废版本只读，返回 409 ROUTING_NOT_DRAFT）。 */
+    @PreAuthorize("hasAuthority('masterdata:write')")
+    @DeleteMapping("/{product}/{version}") @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteDraft(@PathVariable String product, @PathVariable String version) { service.deleteDraft(product, version); }
 }

@@ -49,6 +49,14 @@ final class VersionedHeaderDao {
     int release(String product, String version) {
         return jdbc.update("update " + table + " set status = 'RELEASED' where product_code = ? and version = ? and status = 'DRAFT'", product, version);
     }
+    /** 条件更新实现“已发布→作废”（PR2）；返回 0 表示不是已发布状态。作废后 current_flag 为 NULL，不再参与生效查询。 */
+    int retire(String product, String version) {
+        return jdbc.update("update " + table + " set status = 'OBSOLETE' where product_code = ? and version = ? and status = 'RELEASED'", product, version);
+    }
+    /** 删除草稿版本头（调用方先删除明细行）；返回 0 表示已非草稿。 */
+    int deleteDraft(String product, String version) {
+        return jdbc.update("delete from " + table + " where product_code = ? and version = ? and status = 'DRAFT'", product, version);
+    }
     /** 截断上一已发布版本的生效区间，使同一时刻至多一个版本生效。 */
     void truncate(String product, String version, LocalDate to) {
         jdbc.update("update " + table + " set effective_to = ? where product_code = ? and version = ?", to, product, version);

@@ -9,7 +9,8 @@ import java.util.List;
 @Service
 public class MaterialService {
     private final MaterialRepository materials;
-    MaterialService(MaterialRepository materials) { this.materials = materials; }
+    private final MasterdataReferences references;
+    MaterialService(MaterialRepository materials, MasterdataReferences references) { this.materials = materials; this.references = references; }
 
     /** 按编码查询，不存在返回 404。 */
     @Transactional(readOnly = true)
@@ -30,9 +31,13 @@ public class MaterialService {
         return get(request.code());
     }
 
-    /** 更新物料；版本不匹配时区分“不存在”与“并发修改”，便于客户端决定刷新还是报错。 */
+    /**
+     * 更新物料；版本不匹配时区分“不存在”与“并发修改”，便于客户端决定刷新还是报错。
+     * 停用（active 由 true 改为 false，PR2）前检查引用：仍被未作废的 BOM（作为成品或组件）引用返回 409 MASTERDATA_IN_USE。
+     */
     @Transactional
     public Material update(String code, UpdateMaterial request) {
+        if (!request.active() && get(code).active()) references.requireMaterialUnused(code);
         if (materials.update(code, request) == 0) {
             get(code);
             throw Errors.conflict("MATERIAL_VERSION_CONFLICT", "物料已被他人修改，请刷新后重试");
