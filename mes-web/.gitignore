@@ -1,0 +1,8 @@
+# 依赖、构建产物与覆盖率报告不入库
+node_modules/
+dist/
+coverage/
+# 本地环境变量文件不入库，只保留示例
+.env
+.env.*
+!.env.example
