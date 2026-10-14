@@ -32,7 +32,7 @@ class DefectEventHandlerTest {
     @Autowired OutboxPublisher publisher;
     @Autowired RecordingEventSender sender;
 
-    @BeforeEach void setUp() { clock.reset(); publisher.publishBatch(); sender.clear(); }
+    @BeforeEach void setUp() { QualityTestIsolation.reset(jdbc, sender, clock); }
     @AfterEach void tearDown() { clock.reset(); }
 
     private static String rid() { return "RPT-" + UUID.randomUUID(); }
@@ -69,7 +69,8 @@ class DefectEventHandlerTest {
         assertThat(reverse(DefectEvents.id(), r, "REV-1")).isEqualTo(Result.PENDING);
         assertThat(pending(r)).isEqualTo("WAITING");
         clock.advance(Duration.ofHours(23));
-        assertThat(expiry.expireDue()).isZero();
+        expiry.expireDue();
+        assertThat(pending(r)).isEqualTo("WAITING");
         assertThat(report(DefectEvents.id(), r)).isEqualTo(Result.MATCHED);
         assertThat(status(r)).isEqualTo("VOIDED");
         assertThat(jdbc.queryForObject("select void_reason from ncr where source_report_id = ?", String.class, r)).isEqualTo("REVERSED_BEFORE_REPORTED");
@@ -85,10 +86,12 @@ class DefectEventHandlerTest {
         reverse(DefectEvents.id(), r, "REV-2");
         double before = expired();
         clock.advance(Duration.ofHours(24).plusSeconds(1));
-        assertThat(expiry.expireDue()).isEqualTo(1);
+        // expireDue() 与过期计数器都是全局的：只断言本用例自己的暂存行，计数器至少 +1。
+        assertThat(expiry.expireDue()).isGreaterThanOrEqualTo(1);
         assertThat(pending(r)).isEqualTo("EXPIRED");
-        assertThat(expired()).isEqualTo(before + 1);
-        assertThat(expiry.expireDue()).isZero();
+        assertThat(expired()).isGreaterThanOrEqualTo(before + 1);
+        expiry.expireDue();
+        assertThat(pending(r)).isEqualTo("EXPIRED");
         // 过期后原报工才到：建 OPEN 的 NCR，暂存保持 EXPIRED。
         assertThat(report(DefectEvents.id(), r)).isEqualTo(Result.OK);
         assertThat(status(r)).isEqualTo("OPEN");

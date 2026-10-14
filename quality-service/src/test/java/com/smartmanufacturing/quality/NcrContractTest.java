@@ -48,8 +48,7 @@ class NcrContractTest {
     private final Set<String> covered = new TreeSet<>();
 
     @BeforeEach void clean() {
-        publisher.publishBatch();
-        sender.clear();
+        QualityTestIsolation.reset(jdbc, sender, null);
         inventory.clear();
     }
 
