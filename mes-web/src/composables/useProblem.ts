@@ -1,7 +1,7 @@
 import { ref } from 'vue'
 import { HttpError } from '@/api/http'
 import { parseFieldErrors, problemHint } from '@/utils/workorder'
-import { isProblemType } from '@/utils/problem'
+import { formatInUse, isProblemType, parseInUse } from '@/utils/problem'
 
 /**
  * 页面级错误状态：把请求层抛出的 HttpError（problem+json 已解析）转换成可展示文本。
@@ -20,7 +20,11 @@ export function useProblem() {
       }
       forbidden.value = e.status === 403
       const hint = problemHint(e.parsed.problem?.type)
-      error.value = e.status === 403 ? '无权限' : hint ? `${hint}（${e.message}）` : e.message
+      // 主数据被引用：在通用提示后附上引用方类型与引用清单（#83），清单缺失时与其他类型一致
+      const inUse = parseInUse(e.parsed.problem)
+      const refs = inUse ? formatInUse(inUse) : ''
+      const main = refs ? `${hint}，${refs}` : hint
+      error.value = e.status === 403 ? '无权限' : main ? `${main}（${e.message}）` : e.message
     } else {
       error.value = e instanceof Error ? e.message : '操作失败'
     }
