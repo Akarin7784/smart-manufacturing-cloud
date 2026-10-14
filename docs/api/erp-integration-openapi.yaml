@@ -333,6 +333,8 @@ paths:
                     quantity: '12.5'
                     uom: kg
                     lotNo: LOT-A1
+                  operationNo: OP10
+                  reportId: R0001
       responses:
         '201':
           description: 首次受理。
@@ -401,6 +403,12 @@ paths:
                   value:
                     code: 400
                     msg: 'quantity: 最多 6 位小数'
+                    data: null
+                missingTrace:
+                  summary: 缺 operationNo 或 reportId
+                  value:
+                    code: 400
+                    msg: 'operationNo: 不能为空'
                     data: null
         '401':
           description: 缺令牌，或令牌无效。
@@ -1020,6 +1028,8 @@ components:
       - requestNo
       - workOrderNo
       - erpProductionOrderNo
+      - operationNo
+      - reportId
       - warehouseCode
       - occurredAt
       - lines
@@ -1047,12 +1057,21 @@ components:
           minItems: 1
           items:
             $ref: '#/components/schemas/MaterialIssueLine'
-      description: '领料（报工倒冲）回传，字段与必填项完全按 ERP #25；MES 需要但 #25 没有的字段见 OQ-CB-4。'
+        operationNo:
+          type: string
+          maxLength: 16
+          description: 倒冲来源工序。
+        reportId:
+          type: string
+          maxLength: 64
+          description: 倒冲来源报工记录 ID（MES）。
+      description: '领料（报工倒冲）回传，字段与必填项按 ERP #25 + #28。'
     FinishedGoodsReceiptRequest:
       type: object
       required:
       - requestNo
       - workOrderNo
+      - erpProductionOrderNo
       - productCode
       - quantity
       - uom
@@ -1095,6 +1114,7 @@ components:
       required:
       - requestNo
       - workOrderNo
+      - erpProductionOrderNo
       - materialCode
       - quantity
       - uom

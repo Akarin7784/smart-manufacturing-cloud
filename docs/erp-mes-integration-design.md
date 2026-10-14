@@ -73,6 +73,7 @@
 - 库存不足：409 / 40906（领料、报废）
 - 重试：网络 / 5xx / 429 / 40904 退避；40906 不重试；401 刷新令牌后重试一次；400 / 403 / 40902 / 40903 不重试，转人工
 - 成功体为 ERP 的 `R{code:0,msg,data}`，`data = {requestNo, erpDocumentNo, replayed, acceptedAt}`；重放 200 + `Idempotent-Replayed: true` + `replayed=true`，`erpDocumentNo`、`acceptedAt` 与首次相同
+- 三个回调的 `erpProductionOrderNo` 均必填（ERP #25/#28）
 - 原则（PM 拍板）：打到 ERP 的回调以 ERP `docs/integration`（ERP #25）为准，MES 对齐
 
 ## 4. 服务账号与 JWT
@@ -99,8 +100,8 @@
 | OQ-MAP-3 | 仍开 | uom、仓库编码两边主数据映射 |
 | ~~OQ-ERR-2~~ | **已关闭** | 按 ERP PR #25 统一 400 / 400，不新增细分码 |
 | ~~OQ-ALIGN-1~~ | **已关闭** | 回调以 ERP #25 为准：aud 不符 401、scope `erp:integration:*`、成功体 `R{code:0,msg,data}`、领料字段照 #25 |
-| OQ-CB-4 | 仍开（小钱的 ERP 后续文档 PR） | 领料倒冲需要的 `operationNo`、`reportId`（追溯到工序 / 报工）在 ERP #25 中没有，MES 已从请求中去掉；请 ERP 补字段 |
-| OQ-CB-5 | 仍开（小钱） | ERP #25 的 `reasonCode` 仍写死枚举，按 PM 决定由小钱在后续文档 PR 中去掉，改为字典校验 |
+| ~~OQ-CB-4~~ | **已关闭** | ERP #28 补上领料必填 `operationNo`、`reportId`，MES 契约同步 |
+| OQ-CB-5 | 待 ERP #28 合并 | ERP #28 把 `reasonCode` 改为字典校验（去掉枚举） |
 | ~~OQ-DEC-1~~ | **已关闭** | 两个方向统一采用 ERP `Decimal6`：最多 6 位小数，不要求补零 |
 
 ## 6. 测试约定
