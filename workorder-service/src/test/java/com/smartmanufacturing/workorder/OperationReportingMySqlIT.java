@@ -75,6 +75,16 @@ class OperationReportingMySqlIT {
         return call("/workorders/" + id + "/reports/" + reportId + "/reversal", UUID.randomUUID().toString(), "{\"reason\":\"误报\"}");
     }
 
+    /**
+     * M1（PM 2026-10-14）：DONE 的任务冲销后进入 PAUSED，需要显式 resume 才能继续报工；
+     * 这些用例的任务未派工（老数据形态），所以先补派工再恢复。
+     */
+    private void resumeAfterReversal(String id, String op, String station) throws Exception {
+        assertThat(jdbc.queryForObject("select status from operation_task where order_id = ? and op_no = ?", String.class, id, op)).isEqualTo("PAUSED");
+        assertThat(call("/workorders/" + id + "/operations/" + op + "/dispatch", UUID.randomUUID().toString(), "{\"stationCode\":\"" + station + "\"}").getResponse().getStatus()).isEqualTo(200);
+        assertThat(call("/workorders/" + id + "/operations/" + op + "/resume", UUID.randomUUID().toString(), "{}").getResponse().getStatus()).isEqualTo(200);
+    }
+
     private JsonNode json(MvcResult r) throws Exception { return mapper.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8)); }
     private String reportId(MvcResult r) throws Exception { return json(r).at("/data/report/reportId").asText(); }
     private String status(String id) { return jdbc.queryForObject("select status from work_order where id = ?", String.class, id); }
@@ -130,6 +140,7 @@ class OperationReportingMySqlIT {
         assertThat(status(id)).isEqualTo("COMPLETED");
         assertThat(reverse(id, last).getResponse().getStatus()).isEqualTo(201);
         assertThat(status(id)).isEqualTo("IN_PROGRESS");
+        resumeAfterReversal(id, "OP20", "ST-ASM-01");
         report(id, "OP20", "4", "0", "0");
         assertThat(status(id)).isEqualTo("COMPLETED");
 
@@ -286,6 +297,7 @@ class OperationReportingMySqlIT {
         assertThat(defectRev.get(0).has("occurredAt")).isTrue();
         assertThat(jdbc.queryForObject("select topic from outbox_event where event_type = 'DefectReversed' and aggregate_id = ?", String.class, id)).isEqualTo("mes-workorder-quality");
 
+        resumeAfterReversal(id, "OP20", "ST-ASM-01");
         String d = reportId(report(id, "OP20", "10", "0", "0"));
         assertThat(status(id)).isEqualTo("COMPLETED");
         var completed = events(id, "WorkOrderCompleted");
