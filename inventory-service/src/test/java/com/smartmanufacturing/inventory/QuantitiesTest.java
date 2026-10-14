@@ -40,6 +40,10 @@ class QuantitiesTest {
         assertThat(ProblemType.VALIDATION_ERROR.status().value()).isEqualTo(400);
         // uom-mismatch 为 422；契约固定 9 种类型，新增类型必须先改契约再改此处。
         assertThat(ProblemType.UOM_MISMATCH.status().value()).isEqualTo(422);
-        assertThat(ProblemType.values()).hasSize(9);
+        // 质检隔离接口专用的三种 404（#55）。
+        assertThat(ProblemType.LOCATION_NOT_FOUND.status().value()).isEqualTo(404);
+        assertThat(ProblemType.MATERIAL_NOT_FOUND.status().value()).isEqualTo(404);
+        assertThat(ProblemType.LOT_NOT_FOUND.status().value()).isEqualTo(404);
+        assertThat(ProblemType.values()).hasSize(12);
     }
 }

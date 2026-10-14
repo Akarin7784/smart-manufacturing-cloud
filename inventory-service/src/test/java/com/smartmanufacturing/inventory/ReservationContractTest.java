@@ -165,9 +165,19 @@ class ReservationContractTest {
             "{\"qty\":\"1\",\"lotNo\":\"LA\"}"), consumeTpl, "post", 410);
         call(postJson(svc(BASE) + "/" + id3 + "/renew", key(), null), ONE + "/renew", "post", 410);
 
-        // 契约固定 9 种 type，全部被触发且与 ProblemType 枚举一致。
-        assertThat(covered).isEqualTo(OpenApiContract.problemTypes()).hasSize(9);
-        assertThat(covered).containsExactlyInAnyOrderElementsOf(java.util.Arrays.stream(ProblemType.values()).map(ProblemType::value).toList());
+        // 反向断言（#55）：三种 404 只属于 qc-hold 接口，预留遇到从未登记的物料仍返回 409 insufficient-stock（available=0），不是 material-not-found。
+        JsonNode unknown = call(postJson(svc(BASE), key(), createBody("WO-CT-404", line("CT-NEVER-" + java.util.UUID.randomUUID(), "1", "kg", "WO-CT-404:10"))),
+            BASE, "post", 409);
+        assertThat(unknown.get("type").asText()).isEqualTo("insufficient-stock");
+        assertThat(unknown.get("shortages").get(0).get("available").asText()).isEqualTo("0");
+
+        // 预留与扣减覆盖契约中除 qc-hold 专用 404 以外的 9 种 type（三种 404 由 QcHoldApiTest 覆盖）。
+        java.util.Set<String> qcHoldOnly = java.util.Set.of("location-not-found", "material-not-found", "lot-not-found");
+        java.util.Set<String> expected = new java.util.TreeSet<>(OpenApiContract.problemTypes());
+        expected.removeAll(qcHoldOnly);
+        assertThat(covered).isEqualTo(expected).hasSize(9);
+        assertThat(OpenApiContract.problemTypes()).containsExactlyInAnyOrderElementsOf(
+            java.util.Arrays.stream(ProblemType.values()).map(ProblemType::value).toList());
 
         // 指标：结果、状态迁移、出入库数量均已计数，且标签不含工单号/物料号。
         assertThat(registry.get("mes.inventory.reservation").tag("result", "ok").counter().count()).isGreaterThanOrEqualTo(3);

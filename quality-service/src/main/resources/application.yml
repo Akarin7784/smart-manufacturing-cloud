@@ -39,11 +39,37 @@ manufacturing:
 
 # 回写库存 QC-HOLD 的服务身份（OAuth2 client_credentials，见 docs/quality-inventory-writeback-design.md §2）。
 # client-id/scope 等非敏感值也在 Nacos quality-service.yml 中声明；明文密钥只经环境变量 QUALITY_CLIENT_SECRET 注入
-# （init-env 生成，compose 以 ${QUALITY_CLIENT_SECRET:?} 强制要求），不写入仓库或 Nacos。local/test 未配置时为空，回写任务由实现 PR 决定如何降级。
+# （init-env 生成，compose 以 ${QUALITY_CLIENT_SECRET:?} 强制要求），不写入仓库或 Nacos。
+# local/test 未配置密钥时降级：任务照常写入并保持 PENDING，调度器不调用库存（启动后告警一次，可从 mes_quality_writeback_pending 观察）。
+# inventory-url / auth-url 为空表示经 Nacos 服务发现直连 inventory-service / auth-service（不经网关）；非空仅供本地调试。
 mes.quality.writeback.client:
   client-id: quality-service
   client-secret: ${QUALITY_CLIENT_SECRET:}
   scope: inventory:qc-hold
+  inventory-url: ${QUALITY_INVENTORY_URL:}
+  auth-url: ${QUALITY_AUTH_URL:}
+  connect-timeout: PT2S
+  # 单次调用读取超时，必须小于下面的执行租约 lease。
+  read-timeout: PT5S
+  token-refresh-skew: PT60S
+
+# 回写任务调度与重试（设计 §5）。
+mes.quality.writeback:
+  # 人工重试窗口（按任务创建时间）：必须小于库存幂等记录保留期 7 天，否则超期重放可能重复记账；启动时校验，不满足启动失败。
+  retry-window: P6D
+  interval: PT2S
+  batch-size: 50
+  # 可重试错误（网络、5xx、429、401 刷新后）指数退避 2s 起、上限 5min，最多 20 次后置 FAILED。
+  max-attempts: 20
+  initial-backoff: PT2S
+  max-backoff: PT5M
+  # 领取后的执行租约：进程在调用中途崩溃时，到期后任务可被重新领取（同一幂等键重放安全）。
+  lease: PT60S
+  # DONE / CANCELLED / RESOLVED_MANUALLY 保留期，随 03:47 清理任务删除。
+  retention: P30D
+  # 库存返回约定 type（location/material/lot-not-found）以外的 404（gateway-not-found、about:blank 等，多为路由或部署问题）时，
+  # 最多退避重试的次数；超限置 FAILED 并计入 mes_quality_inventory_contract_mismatch_total。
+  max-unknown-404-retries: 5
 
 # topic/tag/消费组以 Nacos common.yml 的 manufacturing.mq.* 为准；消费侧默认值与 infra/nacos/common.yml 一致。
 # quality-event 及 Ncr* tag 尚未登记到 common.yml（归运维），此处默认值与契约 x-events 一致，Nacos 登记后以 Nacos 为准。

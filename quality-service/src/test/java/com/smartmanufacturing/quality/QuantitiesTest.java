@@ -38,7 +38,10 @@ class QuantitiesTest {
         assertThat(ProblemType.NCR_VOIDED.status().value()).isEqualTo(409);
         assertThat(ProblemType.NCR_NOT_FOUND.status().value()).isEqualTo(404);
         assertThat(ProblemType.NCR_NOT_FOUND.metricValue()).isEqualTo("ncr_not_found");
-        // 契约固定 7 种类型，新增类型必须先改契约再改此处。
-        assertThat(ProblemType.values()).hasSize(7);
+        // 关闭时仍有未完成的库存回写任务（#40 契约新增）。
+        assertThat(ProblemType.WRITEBACK_PENDING.status().value()).isEqualTo(409);
+        assertThat(ProblemType.WRITEBACK_PENDING.metricValue()).isEqualTo("writeback_pending");
+        // 契约固定 8 种类型，新增类型必须先改契约再改此处。
+        assertThat(ProblemType.values()).hasSize(8);
     }
 }
