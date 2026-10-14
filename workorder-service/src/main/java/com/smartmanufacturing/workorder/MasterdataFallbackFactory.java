@@ -21,6 +21,8 @@ public class MasterdataFallbackFactory implements FallbackFactory<MasterdataClie
         return new MasterdataClient() {
             @Override public com.smartmanufacturing.api.ApiResponse<com.smartmanufacturing.api.masterdata.BomExplosion> explode(String p, String d, java.math.BigDecimal q) { throw mapped; }
             @Override public com.smartmanufacturing.api.ApiResponse<com.smartmanufacturing.api.masterdata.Routing> effectiveRouting(String p, String d) { throw mapped; }
+            // 派工校验工位：404 由 OperationTaskService 转成 422 station-not-found，其余映射与下达一致
+            @Override public com.smartmanufacturing.api.ApiResponse<com.smartmanufacturing.api.masterdata.WorkCenter> workCenter(String c) { throw mapped; }
         };
     }
     static BusinessException map(Throwable cause) {

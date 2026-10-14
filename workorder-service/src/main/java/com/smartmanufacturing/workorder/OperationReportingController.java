@@ -22,16 +22,19 @@ public class OperationReportingController {
     private final OperationReportingService service;
     public OperationReportingController(OperationReportingService service) { this.service = service; }
 
-    /** 工序报工。超上限 422 over-report；工单关闭 409 workorder-closed。 */
-    @PreAuthorize("hasAuthority('workorder:write')")
+    /**
+     * 工序报工。超上限 422 over-report；工单关闭 409 workorder-closed；任务 PAUSED / CANCELLED 409 task-state-conflict。
+     * M1 起 execution:report 可报工，兼容期 workorder:write 仍可（P2 收紧）。
+     */
+    @PreAuthorize("hasAnyAuthority('execution:report', 'workorder:write')")
     @PostMapping("/operations/{opNo}/reports")
     public ResponseEntity<String> report(@PathVariable String id, @PathVariable String opNo, @Valid @RequestBody ReportOperationRequest request,
                                          @RequestHeader(value = "Idempotency-Key", required = false) String key, Authentication auth) {
         return respond(service.report(id, opNo, request, key(key), auth.getName()));
     }
 
-    /** 整条冲销报工。影响下游 409 downstream-reported；重复冲销 409 report-already-reversed。 */
-    @PreAuthorize("hasAuthority('workorder:write')")
+    /** 整条冲销报工（数量与工时一起反冲）。影响下游 409 downstream-reported；重复冲销 409 report-already-reversed。 */
+    @PreAuthorize("hasAnyAuthority('execution:report', 'workorder:write')")
     @PostMapping("/reports/{reportId}/reversal")
     public ResponseEntity<String> reverse(@PathVariable String id, @PathVariable String reportId, @Valid @RequestBody ReverseReportRequest request,
                                           @RequestHeader(value = "Idempotency-Key", required = false) String key, Authentication auth) {

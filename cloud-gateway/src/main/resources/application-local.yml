@@ -29,7 +29,7 @@ spring:
             - id: workorder-service
               uri: ${WORKORDER_SERVICE_URL:http://localhost:8082}
               predicates:
-                - Path=/api/workorders,/api/workorders/**
+                - Path=/api/workorders,/api/workorders/**,/api/operation-tasks,/api/operation-tasks/**
               filters:
                 - StripPrefix=1
             # 主数据服务：物料、工作中心、BOM、工艺路线四组资源统一路由。
