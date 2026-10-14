@@ -1,7 +1,7 @@
 # ERP ↔ MES 集成契约（M2，仅契约，无实现）。
 # 源码真相：以 Akarin7784/smart-manufacturing-erp 的 docs/integration OpenAPI 为准。
-# 核查日期 2026-10-14（ERP main `29af6c5`）：该目录与任何 MES 集成 OpenAPI **尚不存在**。
-# 本文件是 MES 侧提案，字段/路径/鉴权凡标注「待 ERP 确认」者不得当作已拍板行为实现。
+# 对齐基线：ERP main `1dd73ac`（含 ERP #25、#28）的 docs/integration/openapi.yaml、README.md、error-codes.md。
+# MES→ERP 回调以 ERP 契约为准，本文件与之对齐；ERP→MES 下达由 MES 托管。
 # 修改本文件须先评审；openapi-lint（Spectral）必须通过；实现 PR 在 PM 审查本契约之后另开。
 openapi: 3.1.0
 info:
@@ -16,11 +16,10 @@ info:
     **CONTRACT-ONLY**：本文件与 `docs/erp-mes-integration-design.md` 只定义契约与设计，不含实现代码。
     实现跟在 PM 审查本 PR、且 ERP 侧补齐/确认 `docs/integration` 之后。
 
-    ## ERP 源契约核查结论（必须先读）
-    仓库 `Akarin7784/smart-manufacturing-erp`（main `29af6c5`，2026-10-14）**没有** `docs/`、`docs/integration/`，
-    也没有任何生产订单 / MES 下达 / 领料回调 OpenAPI。ERP 现状是进销存 + 轻财务（采购/销售/库存/审批），
-    错误体为 `{code:number, msg, data}`（`R`），幂等头为 `Idempotency-Key`（与 MES 同名但语义按用户维度）。
-    因此下文路径、字段、scope、回调 URL **全部是 MES 提案**；与 ERP 最终契约冲突时以 ERP `docs/integration` 为准，并在设计文档「待 ERP 确认」表中关闭。
+    ## ERP 源契约（对齐基线）
+    以 `Akarin7784/smart-manufacturing-erp` main `1dd73ac`（ERP #25 + #28 已合并）的 `docs/integration/` 为准：
+    `openapi.yaml`、`README.md`、`error-codes.md`。打到 ERP 的回调（领料 / 完工入库 / 报废）字段、scope、错误码、成功体与之一致；
+    ERP→MES 下达由 MES 托管，以本文件为准。
 
     ## 方向
     1. **ERP → MES**：生产订单下达 → MES 创建工单（本仓库实现，经 Gateway）。

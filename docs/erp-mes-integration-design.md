@@ -4,17 +4,15 @@
 > 契约：`docs/api/erp-integration-openapi.yaml`。
 > 前提：PM 决定不做 ERP-MES 端到端联调（#73 搁置），双方按 API 契约对接。
 
-## 0. ERP 源契约核查（2026-10-14）
+## 0. ERP 源契约（对齐基线）
 | 项 | 结论 |
 | --- | --- |
-| 仓库 | `Akarin7784/smart-manufacturing-erp`（公开），核查时 main `29af6c5` |
-| `docs/integration/` | **不存在**；仓库里也没有 `docs/` 目录，没有任何 OpenAPI 文件 |
-| 生产订单 / MES 接口 | **不存在**。ERP 现有模块：mdm、purchase、sales、inventory、finance、workflow、auth |
-| 错误体 | `R{code:int, msg, data}`，HTTP 状态取 ErrorCode 大类（如 409 / 40902） |
-| 幂等（现状） | 请求头 `Idempotency-Key`；`UNIQUE(user_name, idem_key)`，保留 24h |
-| 认证 | ERP 自签 JWT，**没有** client_credentials / 服务账号 |
+| 仓库 | `Akarin7784/smart-manufacturing-erp`（公开） |
+| 基线 | main **`1dd73ac`**（ERP #25 `c2a0248` + ERP #28 已合并） |
+| 契约文件 | `docs/integration/openapi.yaml`、`README.md`、`error-codes.md` |
+| 已核对一致 | 回调 scope `erp:integration:*`；`Idempotency-Key` = `requestNo`，字符集 `^[A-Za-z0-9._:-]+$`；成功体 `R{code:0,msg,data}`（`replayed`）；aud 不符 401；`Decimal6`；领料必填 `operationNo`/`reportId`；三个回调 `erpProductionOrderNo`、`warehouseCode` 必填；`reasonCode` 字典校验（无枚举）；40906 库存不足（计划新增） |
 
-本 PR 里的路径和字段是 MES 提案；与 ERP 最终契约冲突时以 ERP `docs/integration` 为准。下面「已拍板」条款是 PM 与 ERP 约定的边界，写进契约后两边实现都按它来。
+（历史：首版核查时 ERP main `29af6c5` 尚无 `docs/integration`，本契约先以 MES 提案起草，现已按上述基线对齐。）
 
 ## 1. 已拍板（覆盖此前不一致的说法）
 
@@ -93,7 +91,7 @@
 | ~~OQ-IDEM-1~~ | **已关闭（约定）** | 回调按服务身份去重，TTL ≥ 90 天；ERP 需改实现 |
 | ~~OQ-FLOW-1~~ | **已关闭** | 报工倒冲 / COMPLETED 入库 / 报废即时 / 退料在 CLOSED 前 |
 | ~~OQ-ERR-1（部分）~~ | **已关闭（过渡）** | MES→ERP 保持 R；码表写入契约。ERP 是否最终改 problem+json 另议 |
-| OQ-SRC-1 | 仍开 | ERP 需新建 `docs/integration` 作为唯一事实来源 |
+| ~~OQ-SRC-1~~ | **已关闭** | ERP `docs/integration` 已在 main `1dd73ac` 落地 |
 | OQ-AUTH-1 | 仍开 | ERP→MES 是否接受 MES auth 签发的服务令牌及命名 |
 | ~~OQ-AUTH-2~~ | **已关闭（方案）** | ERP #25 定为 ERP 自有服务账号 `mes-integration`；待 ERP 实现 |
 | OQ-CB-1/2/3 | 仍开 | 三个回调在 ERP 中尚不存在：路径、字段、冲销报工反向领料 |
@@ -101,7 +99,7 @@
 | ~~OQ-ERR-2~~ | **已关闭** | 按 ERP PR #25 统一 400 / 400，不新增细分码 |
 | ~~OQ-ALIGN-1~~ | **已关闭** | 回调以 ERP #25 为准：aud 不符 401、scope `erp:integration:*`、成功体 `R{code:0,msg,data}`、领料字段照 #25 |
 | ~~OQ-CB-4~~ | **已关闭** | ERP #28 补上领料必填 `operationNo`、`reportId`，MES 契约同步 |
-| OQ-CB-5 | 待 ERP #28 合并 | ERP #28 把 `reasonCode` 改为字典校验（去掉枚举） |
+| ~~OQ-CB-5~~ | **已关闭** | ERP #28（`1dd73ac`）已把 `reasonCode` 改为字典校验，去掉枚举 |
 | ~~OQ-DEC-1~~ | **已关闭** | 两个方向统一采用 ERP `Decimal6`：最多 6 位小数，不要求补零 |
 
 ## 6. 测试约定
