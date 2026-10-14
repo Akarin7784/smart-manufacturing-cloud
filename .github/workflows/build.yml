@@ -47,6 +47,9 @@ jobs:
       # 固定官方 Action 的提交版本，避免上游标签变化影响已有构建。
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # diff 覆盖率需要对比 PR 基线分支，拉取完整历史。
+          fetch-depth: 0
       - name: Set up Java 21
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
@@ -108,6 +111,27 @@ jobs:
             echo "::error::app profile 不应包含 prometheus/grafana"; exit 1
           fi
           docker compose --profile app --profile monitoring config --quiet
+      # 新代码 diff 覆盖率：PR 中改动的 Java 行必须 ≥ 80% 被覆盖（以 Linux 含 *IT 的 JaCoCo XML 为准）。
+      # 模块整体门槛由 pom.xml 的 jacoco check 拦截；这里只看本次 PR 新增/修改的行。
+      - name: Set up Python for diff-cover
+        if: github.event_name == 'pull_request' && runner.os == 'Linux'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Diff coverage of changed lines (>= 80%)
+        if: github.event_name == 'pull_request' && runner.os == 'Linux'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          pip install --quiet 'diff-cover==9.*'
+          reports=$(find . -path '*/target/site/jacoco/jacoco.xml' -not -path './coverage-report/*' | sort)
+          if [ -z "$reports" ]; then echo "::error::未找到 JaCoCo XML 报告"; exit 1; fi
+          roots=$(find . -path '*/src/main/java' -type d | sort)
+          # 只统计 Java 源码；PR 未改动 Java 代码时 diff-cover 视为 100% 通过。
+          diff-cover $reports --compare-branch="origin/${BASE_REF}" --src-roots $roots \
+            --include '**/src/main/java/**' --fail-under=80 \
+            --markdown-report diff-coverage.md
+          cat diff-coverage.md >> "$GITHUB_STEP_SUMMARY"
       # 即使测试失败也保留报告，便于查看断言、堆栈和具体失败用例。
       - name: Upload test reports
         if: always()
@@ -146,6 +170,87 @@ jobs:
             inventory-service/target/inventory-service-*.jar
             quality-service/target/quality-service-*.jar
           if-no-files-found: error
+          retention-days: 14
+
+  # 前端（mes-web）：仅在 mes-web/** 有改动时实际执行；job 本身始终运行并上报结果，便于设为必需检查。
+  # 分支上还没有 mes-web 目录时直接跳过（no-op）。
+  frontend:
+    name: frontend (mes-web)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Detect mes-web changes
+        id: filter
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        with:
+          filters: |
+            web:
+              - 'mes-web/**'
+      - name: Decide whether to run
+        id: gate
+        run: |
+          if [ ! -f mes-web/package.json ]; then
+            echo "mes-web 不存在，跳过前端检查"; echo "run=false" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.filter.outputs.web }}" != "true" ] && [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "mes-web 无改动，跳过前端检查"; echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      # mes-web 要求 Node >= 20.19，统一用 Node 22。
+      - name: Set up Node.js 22
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mes-web/package-lock.json
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        working-directory: mes-web
+        run: npm ci
+      - name: Lint
+        if: steps.gate.outputs.run == 'true'
+        working-directory: mes-web
+        run: npm run lint
+      - name: Unit tests with coverage (lcov)
+        if: steps.gate.outputs.run == 'true'
+        working-directory: mes-web
+        run: npm run test:coverage -- --coverage.reporter=lcov --coverage.reporter=text-summary
+      - name: Build
+        if: steps.gate.outputs.run == 'true'
+        working-directory: mes-web
+        run: npm run build
+      - name: Set up Python for diff-cover
+        if: steps.gate.outputs.run == 'true' && github.event_name == 'pull_request'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      # 新代码 diff 覆盖率：PR 中改动的前端源码行必须 ≥ 80% 被覆盖。
+      - name: Diff coverage of changed lines (>= 80%)
+        if: steps.gate.outputs.run == 'true' && github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          pip install --quiet 'diff-cover==9.*'
+          # diff-cover 按扩展名识别 lcov；lcov 中的路径相对 mes-web，用 --src-roots 对齐到仓库路径。
+          diff-cover mes-web/coverage/lcov.info --src-roots mes-web \
+            --compare-branch="origin/${BASE_REF}" --fail-under=80 \
+            --markdown-report diff-coverage-web.md
+          cat diff-coverage-web.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload frontend coverage
+        if: always() && steps.gate.outputs.run == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mes-web-coverage
+          path: mes-web/coverage/**
+          if-no-files-found: warn
           retention-days: 14
 
   # 端到端演示环境：执行 make demo（构建镜像、自动导入 Nacos 配置、RocketMQ 建 Topic、等待全部 healthy、冒烟测试含 RocketMQ 收发回环），对应部署方案 P1 的验收标准。
