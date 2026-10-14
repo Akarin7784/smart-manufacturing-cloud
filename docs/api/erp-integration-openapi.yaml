@@ -60,21 +60,11 @@ paths:
       - erp-to-mes
       operationId: dispatchProductionOrder
       summary: ERP 生产订单下达 → MES 创建工单（提案）
-      description: 'ERP 下达已审批的生产订单，MES 创建工单（CREATED，不自动下达）。
-
-        - 幂等：只用请求头 `Idempotency-Key`。首次 201；同键同请求体重放 200，body 与首次相同，并带 `Idempotent-Replayed: true`。
-
-        - 缺 `Idempotency-Key`：400 `idempotency-key-required`。
-
-        - 同键不同请求体：**409** `idempotency-key-conflict`（与 ERP 回调的 40902 对称。注意：工单服务现有接口返回 422，本集成接口按与 ERP 约定的边界规则改为 409）。
-
-        - `deviceId` 可选，创建时**不**校验设备是否存在 / 在线（PM 拍板）。
-
-        - 数量最多 6 位小数（不要求补零，与 ERP `Decimal6` 一致）；超过 6 位小数直接 400 `validation-error`，**不四舍五入、不截断**。
-
-        - 缺令牌 / 令牌无效 / 过期 / aud 不符：401 `authentication-required`；令牌有效但身份或 scope 不对：403 `access-denied`（与 ERP #25 一致）。
-
-        需要服务令牌 scope `integration:workorder-dispatch`，aud `manufacturing-api`。'
+      description: "ERP 下达已审批的生产订单，MES 创建工单（CREATED，不自动下达）。\n- 幂等：只用请求头 `Idempotency-Key`，且**必须等于**请求体 `erpProductionOrderNo`（以 ERP 为准）；不一致 → 400 `validation-error`。首次 201；同键同请求体重放 200，body 与首次相同，并带 `Idempotent-Replayed:\
+        \ true`。\n- 缺 `Idempotency-Key`：400 `idempotency-key-required`。\n- 同键不同请求体：**409** `idempotency-key-conflict`（与 ERP 回调的 40902 对称。注意：工单服务现有接口返回 422，本集成接口按与 ERP 约定的边界规则改为 409）。\n- `deviceId` 可选，创建时**不**校验设备是否存在\
+        \ / 在线（PM 拍板）。\n- 数量最多 6 位小数（不要求补零，与 ERP `Decimal6` 一致）；超过 6 位小数直接 400 `validation-error`，**不四舍五入、不截断**。\n- 缺令牌 / 令牌无效 / 过期 / aud 不符：401 `authentication-required`；令牌有效但身份或 scope 不对：403 `access-denied`（与\
+        \ ERP #25 一致）。\n需要服务令牌 scope `integration:workorder-dispatch`，aud `manufacturing-api`。\n- ERP 重试规则（与 ERP 契约一致）：网络错误 / 5xx / 429 退避重试；401 刷新令牌后重试一次；**400 / 403 / 409 / 422 不重试**，标记失败转人工。\n  422 `release-masterdata-invalid`\
+        \ 不可重试：人工补齐 MES 主数据后，由 ERP 重新下达。"
       parameters:
       - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -85,7 +75,7 @@ paths:
               $ref: '#/components/schemas/DispatchProductionOrderRequest'
             examples:
               ok:
-                summary: 合法下达
+                summary: '合法下达（请求头 Idempotency-Key: PO-2026-1001）'
                 value:
                   erpProductionOrderNo: PO-2026-1001
                   productCode: FG-PUMP-01
@@ -96,7 +86,7 @@ paths:
                   warehouseCode: W01
                   remark: 一车间紧急单
               withDevice:
-                summary: 带可选 deviceId（不校验在线）
+                summary: '带可选 deviceId，不校验在线（请求头 Idempotency-Key: PO-2026-1002）'
                 value:
                   erpProductionOrderNo: PO-2026-1002
                   productCode: FG-PUMP-01
@@ -186,6 +176,15 @@ paths:
                     detail: 'quantity: 最多 6 位小数（如 100、100.5），不允许 100.0000001'
                     instance: /api/integration/erp/work-orders/dispatch
                     code: INVALID_ARGUMENT
+                keyMismatch:
+                  summary: Idempotency-Key 不等于 erpProductionOrderNo
+                  value:
+                    type: validation-error
+                    title: 请求参数无效
+                    status: 400
+                    detail: Idempotency-Key 必须等于 erpProductionOrderNo
+                    instance: /api/integration/erp/work-orders/dispatch
+                    code: INVALID_ARGUMENT
         '401':
           description: 缺令牌，或令牌无效 / 过期。
           content:
@@ -269,7 +268,7 @@ paths:
                       erpProductionOrderNo: PO-2026-1001
                       existingWorkOrderNo: WO-20261013-0009
         '422':
-          description: 产品在 MES 没有可用主数据。
+          description: 产品在 MES 没有可用主数据。不可重试：人工补齐主数据后由 ERP 重新下达。
           content:
             application/problem+json:
               schema:
@@ -870,7 +869,7 @@ paths:
                   summary: '库存不足（ERP #25 计划新增 40906）'
                   value:
                     code: 40906
-                    msg: 仓库 W01 物料 RM-STEEL-01 可用量不足
+                    msg: 仓库 W01 物料 FG-PUMP-01 可用量不足
                     data:
                       materialCode: FG-PUMP-01
                       warehouseCode: W01
@@ -893,7 +892,7 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: 幂等键，1–128 字符；同调用方同键同请求体 → 200 重放；同键不同请求体 → 409 `idempotency-key-conflict`。
+      description: ERP→MES 下达的幂等键，**必须等于**请求体 `erpProductionOrderNo`（以 ERP 为准），1–128 字符；不一致 → 400 `validation-error`；同键同请求体 → 200 重放；同键不同请求体 → 409 `idempotency-key-conflict`。
       schema:
         type: string
         minLength: 1

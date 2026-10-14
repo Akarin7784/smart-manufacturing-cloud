@@ -25,7 +25,7 @@
 ### 1.2 幂等
 | 方向 | 规则 |
 | --- | --- |
-| ERP→MES 下达 | 只用请求头 `Idempotency-Key`。同键不同请求体 → **409** `idempotency-key-conflict`（与 ERP 回调的 40902 对称；工单服务既有接口仍是 422，本集成接口单独按此约定）。 |
+| ERP→MES 下达 | 只用请求头 `Idempotency-Key`，且**必须等于** `erpProductionOrderNo`（以 ERP 为准），不一致 → 400。同键不同请求体 → **409** `idempotency-key-conflict`（与 ERP 回调的 40902 对称；工单服务既有接口仍是 422，本集成接口单独按此约定）。 |
 | MES→ERP 回调 | 请求头 `Idempotency-Key` **必须等于**请求体 `requestNo`。ERP 按**请求头**去重，按**服务身份**隔离，记录保留 **≥ 90 天**（不是用户维度 24h）。缺头、缺 `requestNo` 或两者不一致 → 400 / 400（与 ERP PR #25 一致）；同键不同参数 → 409 / 40902；处理中 → 409 / 40904。 |
 
 ### 1.3 业务时机
@@ -47,6 +47,7 @@
 ## 2. ERP → MES：生产订单下达 → 创建工单
 - `POST /api/integration/erp/work-orders/dispatch`
 - 首次成功 201；同键同请求体重放 200 + `Idempotent-Replayed: true`，body 与首次相同
+- `Idempotency-Key` 必须等于 `erpProductionOrderNo`（以 ERP 为准）；不一致 → 400 `validation-error`
 - `erpProductionOrderNo` 在 MES 侧唯一；已绑定其他工单且幂等键不同 → 409 `erp-production-order-conflict`
 
 ### 字段映射
@@ -58,6 +59,15 @@
 | `uom` | 无 | 无 | 新增或校验，见 OQ-MAP-3 |
 | `warehouseCode` | 无 | ERP 有仓库 | 完工入库默认仓 |
 | `deviceId`（可选） | 可选写入 | 无设备概念 | **已拍板**：可选，不校验在线 |
+
+### 下达方向重试规则（ERP 调用 MES，与 ERP 契约一致）
+| MES 响应 | ERP 处理 |
+| --- | --- |
+| 201 / 200（重放） | 成功；200 视为已创建 |
+| 网络错误 / 超时 / 5xx / 429 | 用**同一** `Idempotency-Key` 退避重试 |
+| 401 | 刷新令牌后重试一次 |
+| 400 / 403 / 409 | **不重试**，标记失败转人工 |
+| 422 `release-masterdata-invalid` | **不重试**，转人工：先在 MES 补齐主数据，再由 ERP **重新下达**（同一生产订单号，即同一幂等键、同一请求体） |
 
 ## 3. MES → ERP 回调
 | 动作 | 提案路径 | 触发 | 幂等请求号建议 |
