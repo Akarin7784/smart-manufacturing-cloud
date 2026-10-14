@@ -49,7 +49,7 @@ info:
     所有错误响应的 Content-Type 为 `application/problem+json`，字段写法与工单服务（docs/api/workorder-openapi.yaml）完全一致：
     `type`（kebab-case 相对 URI，见 ProblemType）、`title`（每个 type 固定的中文简述）、`status`、`detail`（中文说明，不用于程序分支）、
     `instance`（请求路径），扩展字段 `code`（历史业务码，兼容保留）与 `data`（结构化明细，如引用检查的 referenceType / references）。
-    参数校验失败（请求体字段、JSON 格式、查询参数）统一为 400 `validation-error`（`code = INVALID_ARGUMENT`）；401 / 403 为 `authentication-required` / `access-denied`。
+    参数校验失败（请求体字段、JSON 格式、查询参数）统一为 400 `validation-error`（`code = INVALID_ARGUMENT`）；框架层 4xx（404 无路由、405 方法不支持、415 媒体类型不支持等）同样为 `validation-error`，保留原 HTTP 状态；401 / 403 为 `authentication-required` / `access-denied`。
     HTTP 状态以各接口说明为准（同一 type 在不同接口可能不同，如 `workcenter-not-found` 单查为 404、发布工艺路线时为 422）。
 servers:
   - url: http://localhost:8080

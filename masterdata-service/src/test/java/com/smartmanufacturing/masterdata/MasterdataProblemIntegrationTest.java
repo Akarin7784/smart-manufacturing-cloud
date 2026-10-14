@@ -65,8 +65,11 @@ class MasterdataProblemIntegrationTest {
             .andExpect(jsonPath("$.type").value("access-denied"));
     }
 
-    @Test void unknownRouteKeepsStatusAsProblem() throws Exception {
-        mvc.perform(get("/no-such-endpoint").with(admin())).andExpect(status().isNotFound())
-            .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
+    /** 框架 4xx（404 无路由 / 405 / 415）统一为 validation-error，保留原 HTTP 状态，不出现 about:blank。 */
+    @Test void framework4xxAreValidationErrorWithOriginalStatus() throws Exception {
+        mvc.perform(get("/no-such-endpoint").with(admin())).andExpect(problem(404, "validation-error", "INVALID_ARGUMENT", "/no-such-endpoint"));
+        mvc.perform(patch("/materials").with(admin())).andExpect(problem(405, "validation-error", "INVALID_ARGUMENT", "/materials"));
+        mvc.perform(post("/materials").with(admin()).contentType(MediaType.TEXT_PLAIN).content("x"))
+            .andExpect(problem(415, "validation-error", "INVALID_ARGUMENT", "/materials"));
     }
 }

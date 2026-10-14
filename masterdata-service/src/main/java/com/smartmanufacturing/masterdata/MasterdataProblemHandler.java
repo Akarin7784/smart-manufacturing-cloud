@@ -76,13 +76,15 @@ class MasterdataProblemHandler {
         return SecurityProblem.ACCESS_DENIED.response(req);
     }
 
-    /** 其余异常：Spring MVC 自带状态的（404 无路由、405 等）保留状态，其他按 500 internal-error，不泄露内部信息。 */
+    /**
+     * 其余异常：Spring MVC 自带 4xx 状态的（404 无路由、405 方法不支持、415 媒体类型不支持、406 等）统一为 validation-error，
+     * 保留原 HTTP 状态，不输出 about:blank；其他按 500 internal-error，不泄露内部信息。
+     */
     @ExceptionHandler(Exception.class)
     ResponseEntity<ProblemDetail> unexpected(Exception e, HttpServletRequest req) {
         if (e instanceof ErrorResponse er && er.getStatusCode().is4xxClientError()) {
-            HttpStatusCode s = er.getStatusCode();
-            ProblemDetail p = ProblemDetail.forStatusAndDetail(s, er.getBody().getDetail());
-            return ResponseEntity.status(s).contentType(PROBLEM).body(p);
+            String detail = er.getBody().getDetail();
+            return problem(MasterdataProblemType.VALIDATION_ERROR, er.getStatusCode(), detail == null || detail.isBlank() ? "请求不被接受" : detail, null, req);
         }
         LOG.error("Unhandled request failure", e);
         return problem(MasterdataProblemType.INTERNAL_ERROR, HttpStatus.INTERNAL_SERVER_ERROR, "服务暂时不可用", null, req);

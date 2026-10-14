@@ -75,4 +75,12 @@ class MasterdataProblemTypeTest {
         @SuppressWarnings("unchecked") Map<String, Object> data = (Map<String, Object>) r.getBody().getProperties().get("data");
         assertThat(data).containsEntry("referenceType", "BOM").containsEntry("references", List.of("A/B")).doesNotContainKey("type");
     }
+
+    @Test void framework4xxWithoutDetailGetsDefaultDetail() {
+        var ex = new org.springframework.web.ErrorResponseException(HttpStatus.NOT_ACCEPTABLE);
+        var r = new MasterdataProblemHandler().unexpected(ex, new MockHttpServletRequest());
+        assertThat(r.getStatusCode().value()).isEqualTo(406);
+        assertThat(r.getBody().getType().toString()).isEqualTo("validation-error");
+        assertThat(r.getBody().getDetail()).isEqualTo("请求不被接受");
+    }
 }
