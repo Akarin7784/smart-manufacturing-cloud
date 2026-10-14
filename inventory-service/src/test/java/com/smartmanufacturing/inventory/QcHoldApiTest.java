@@ -96,6 +96,19 @@ class QcHoldApiTest {
         }
     }
 
+    /** QC-HOLD 停用时入隔离先校验再预建：返回 404 location-not-found，且不建出数量 0 的空行。 */
+    @Test void missingQcHoldReturns404WithoutPrebuildingRow() throws Exception {
+        String material = "QH-NOROW-" + UUID.randomUUID().toString().substring(0, 8);
+        jdbc.update("update warehouse_location set enabled = FALSE where code = 'QC-HOLD'");
+        try {
+            assertProblem(call("receipts", key(), "{" + base(material, "1") + "}", quality(), 404), "location-not-found", "库位不存在");
+        } finally {
+            jdbc.update("update warehouse_location set enabled = TRUE where code = 'QC-HOLD'");
+        }
+        assertThat(jdbc.queryForObject("select count(*) from stock_on_hand where material_code = ?", Integer.class, material)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from inventory_material where material_code = ?", Integer.class, material)).isZero();
+    }
+
     private static void assertProblem(MvcResult r, String type, String title) throws Exception {
         var body = new com.fasterxml.jackson.databind.ObjectMapper().readTree(r.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
         assertThat(body.get("type").asText()).isEqualTo(type);

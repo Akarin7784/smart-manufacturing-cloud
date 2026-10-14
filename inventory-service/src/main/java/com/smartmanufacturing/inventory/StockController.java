@@ -61,6 +61,8 @@ public class StockController {
                                           @Valid @RequestBody Movement request, Authentication auth) {
         Movement normalized = normalize(request);
         String caller = CallerIdentity.of(auth);
+        // 先校验库位与单位（#58 评审意见），再预建，避免为非法请求建出空行或触发外键错误。
+        stock.precheckInbound(normalized);
         // 主事务开始前预建目标现存量行（独立短事务），主事务内只按主键加锁（#57）。
         stock.prepareRows(java.util.List.of(new StockService.RowKey(normalized.materialCode(), normalized.locationCode(), normalized.lotNo())));
         return respond(LockRetry.run(() -> idempotency.execute(caller, key, "inbound", normalized, 201,

@@ -139,6 +139,15 @@ class StockApiIntegrationTest {
             .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.type").value("uom-mismatch"));
     }
 
+    /** 入库先校验库位再预建：库位不存在返回 400 validation-error（契约口径），不建空行、不触发外键 500。 */
+    @Test void unknownLocationDoesNotPrebuildRow() throws Exception {
+        String material = "M-NOROW-" + key().substring(0, 8);
+        send("/inventory/inbound", key(), movement(material, "kg", "NO-SUCH-LOC", "L1", "1"), keeper())
+            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.type").value("validation-error"));
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject(
+            "select count(*) from stock_on_hand where material_code = ?", Integer.class, material)).isZero();
+    }
+
     /** 不存在或停用的库位、非法数量、缺字段都是 400 validation-error（validation-error 只对应 400）。 */
     @Test void validationErrors() throws Exception {
         location("T-VAL-01");

@@ -69,7 +69,7 @@ class DefectEventHandlerTest {
         assertThat(reverse(DefectEvents.id(), r, "REV-1")).isEqualTo(Result.PENDING);
         assertThat(pending(r)).isEqualTo("WAITING");
         clock.advance(Duration.ofHours(23));
-        expiry.expireDue();
+        assertThat(expiry.expireDue()).isZero();
         assertThat(pending(r)).isEqualTo("WAITING");
         assertThat(report(DefectEvents.id(), r)).isEqualTo(Result.MATCHED);
         assertThat(status(r)).isEqualTo("VOIDED");
@@ -86,11 +86,11 @@ class DefectEventHandlerTest {
         reverse(DefectEvents.id(), r, "REV-2");
         double before = expired();
         clock.advance(Duration.ofHours(24).plusSeconds(1));
-        // expireDue() 与过期计数器都是全局的：只断言本用例自己的暂存行，计数器至少 +1。
-        assertThat(expiry.expireDue()).isGreaterThanOrEqualTo(1);
+        // @BeforeEach 已清空 pending_reversal，本用例是唯一的暂存行：精确断言过期 1 条，再次执行幂等返回 0。
+        assertThat(expiry.expireDue()).isEqualTo(1);
         assertThat(pending(r)).isEqualTo("EXPIRED");
-        assertThat(expired()).isGreaterThanOrEqualTo(before + 1);
-        expiry.expireDue();
+        assertThat(expired()).isEqualTo(before + 1);
+        assertThat(expiry.expireDue()).isZero();
         assertThat(pending(r)).isEqualTo("EXPIRED");
         // 过期后原报工才到：建 OPEN 的 NCR，暂存保持 EXPIRED。
         assertThat(report(DefectEvents.id(), r)).isEqualTo(Result.OK);

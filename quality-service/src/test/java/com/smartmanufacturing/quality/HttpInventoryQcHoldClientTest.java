@@ -194,4 +194,41 @@ class HttpInventoryQcHoldClientTest {
         String body = type == null ? "" : "{\"type\":\"" + type + "\",\"detail\":\"明细\"}";
         return client.classify(new HttpInventoryQcHoldClient.Raw(status, body, null));
     }
+
+    /** ready() 按是否配置密钥判断；未配置时令牌提供者直接明确拒绝（TOKEN_AUTH），不访问认证服务。 */
+    @Test void readyFollowsSecretAndUnconfiguredTokenIsRejected() {
+        assertThat(client.ready()).isTrue();
+        WritebackProperties.Client none = new WritebackProperties.Client(null, null, null, "http://inventory", "http://auth",
+            null, null, null, null, null);
+        RestClient.Builder auth = RestClient.builder().baseUrl("http://auth");
+        RestClient.Builder inv = RestClient.builder().baseUrl("http://inventory");
+        MockRestServiceServer a = MockRestServiceServer.bindTo(auth).build();
+        var unconfigured = new HttpInventoryQcHoldClient(inv.build(), new QcHoldTokenProvider(auth.build(), none, clock), mapper, none);
+        assertThat(unconfigured.ready()).isFalse();
+        assertThat(unconfigured.call(call(Action.HOLD, null, null)))
+            .isInstanceOfSatisfying(Rejected.class, r -> {
+                assertThat(r.certain()).isTrue();
+                assertThat(r.signal()).isEqualTo(InventoryQcHoldClient.Signal.TOKEN_AUTH);
+            });
+        a.verify();
+    }
+
+    /** 认证服务不可达（连接失败）：令牌异常按 NETWORK 退避重试，未调用库存。 */
+    @Test void unreachableAuthServiceIsRetryableNetwork() {
+        authServer.expect(once(), requestTo("http://auth/auth/oauth2/token"))
+            .andRespond(withException(new java.io.IOException("connection refused")));
+        assertThat(client.call(call(Action.HOLD, null, null)))
+            .isInstanceOfSatisfying(Retryable.class, r -> assertThat(r.reason()).isEqualTo(InventoryQcHoldClient.RetryReason.NETWORK));
+        authServer.verify();
+        inventoryServer.verify();
+    }
+
+    /** 错误响应体不是合法 JSON：取不到 type，按状态码分类（400 → 明确拒绝并计契约不一致）。 */
+    @Test void nonJsonProblemBodyIsClassifiedByStatus() {
+        expectToken("t1");
+        inventoryServer.expect(requestTo("http://inventory/inventory/qc-hold/receipts"))
+            .andRespond(withStatus(HttpStatus.BAD_REQUEST).contentType(MediaType.parseMediaType(PROBLEM)).body("<html>bad</html>"));
+        assertThat(client.call(call(Action.HOLD, null, null)))
+            .isInstanceOfSatisfying(Rejected.class, r -> assertThat(r.signal()).isEqualTo(InventoryQcHoldClient.Signal.CONTRACT));
+    }
 }
