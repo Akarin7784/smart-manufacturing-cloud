@@ -208,20 +208,33 @@ function parseQuery(q: LocationQuery) {
   }
 }
 
-/** 写入 URL（replace，不产生历史堆积）；空值不出现在 URL 中。由 URL 变化触发加载。 */
+/** URL 页码存在但不是正整数（如 ?page=abc、?page=0）。 */
+function hasInvalidPage(q: LocationQuery) {
+  if (q.page === undefined) return false
+  const p = Number(str(q.page))
+  return !(Number.isInteger(p) && p >= 1)
+}
+
+/**
+ * 写入 URL（replace，不产生历史堆积）；空值不出现在 URL 中。由 URL 变化触发加载。
+ * 条件与当前 URL 完全相同时 router.replace 不会触发 watch，此时直接 load()，保证“查询”按钮总能刷新。
+ */
 function pushQuery(next: { page: number; status: string; keyword: string }) {
   const query: Record<string, string> = {}
   if (next.page > 1) query.page = String(next.page)
   if (next.status) query.status = next.status
   if (next.keyword) query.keyword = next.keyword
-  return router.replace({ query })
+  const cur = route.query
+  const same = Object.keys(cur).length === Object.keys(query).length && Object.entries(query).every(([k, v]) => cur[k] === v)
+  return same ? load() : router.replace({ query })
 }
 
 function applyKeyword() {
   return pushQuery({ page: 1, status: status.value, keyword: keyword.value.trim() })
 }
 function applyStatus() {
-  return pushQuery({ page: 1, status: status.value ?? '', keyword: parseQuery(route.query).keyword })
+  // 用输入框里当前的关键字（即使尚未回车提交），与用户看到的条件一致
+  return pushQuery({ page: 1, status: status.value ?? '', keyword: keyword.value.trim() })
 }
 function goPage(p: number) {
   const q = parseQuery(route.query)
@@ -230,6 +243,11 @@ function goPage(p: number) {
 
 let seq = 0
 async function load() {
+  // 非法页码：把地址栏改写为 ?page=1（保留其他条件），改写后由 watch 重新加载
+  if (hasInvalidPage(route.query)) {
+    await router.replace({ query: { ...route.query, page: '1' } })
+    return
+  }
   const q = parseQuery(route.query)
   keyword.value = q.keyword; status.value = q.status; page.value = q.page
   const my = ++seq
