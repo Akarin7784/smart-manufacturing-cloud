@@ -143,7 +143,7 @@ paths:
                     status: CREATED
                     createdAt: '2026-10-14T14:30:00+08:00'
         '400':
-          description: 缺幂等键或参数非法（含数量超过 6 位小数）。
+          description: 缺幂等键或参数非法（含数量超过 6 位小数）。**不可重试**：ERP 标记失败、转人工处理。
           content:
             application/problem+json:
               schema:
@@ -217,7 +217,7 @@ paths:
                     detail: 令牌受众不符
                     instance: /api/integration/erp/work-orders/dispatch
         '403':
-          description: 令牌有效，但身份或 scope 不对。
+          description: 令牌有效，但身份或 scope 不对。**不可重试**：ERP 标记失败、转人工处理。
           content:
             application/problem+json:
               schema:
@@ -240,7 +240,7 @@ paths:
                     detail: 该接口只接受 erp-integration 服务身份
                     instance: /api/integration/erp/work-orders/dispatch
         '409':
-          description: 幂等键冲突，或生产订单已绑定其他工单。
+          description: 幂等键冲突，或生产订单已绑定其他工单。**不可重试**：ERP 标记失败、转人工处理。
           content:
             application/problem+json:
               schema:
@@ -268,7 +268,7 @@ paths:
                       erpProductionOrderNo: PO-2026-1001
                       existingWorkOrderNo: WO-20261013-0009
         '422':
-          description: 产品在 MES 没有可用主数据。不可重试：人工补齐主数据后由 ERP 重新下达。
+          description: 产品在 MES 没有可用主数据。**不可重试**：ERP 标记失败、转人工；人工在 MES 补齐主数据后，由 ERP 重新下达。
           content:
             application/problem+json:
               schema:
