@@ -60,7 +60,7 @@
 | `WorkOrderReopened` | `eventId`、`workOrderNo`、`occurredAt`、`reversedReportId`（被冲销的原报工）、`completedQty`（冲销后）、`uom`、`aggregateVersion` |
 | `WorkOrderReleased` / `WorkOrderHeld` / `WorkOrderResumed` / `WorkOrderHoldReasonCleared` | `eventId`、`orderId`（兼容 V2，同 `workOrderNo`）、`workOrderNo`、业务字段（下达：`productCode`、`quantity`、`bomVersion`、`routingVersion`、`reservationId`；冻结：`reason`、`resumeTarget`；恢复 / 解除原因：`reason`、`status`）、`occurredAt`、`aggregateVersion` |
 | `WorkOrderCancelled` | `eventId`、`orderId`、`workOrderNo`、`previousStatus`（取消前状态）、`reservationId`（取消时需释放的预留单，无则为 null）、`occurredAt`、`aggregateVersion` |
-| `WorkOrderClosed` | `eventId`、`orderId`、`workOrderNo`、`previousStatus`（恒为 `COMPLETED`）、`note`（可为 null）、`occurredAt`、`aggregateVersion` |
+| `WorkOrderClosed` | `eventId`、`orderId`、`workOrderNo`、`previousStatus`（恒为 `COMPLETED`）、`note`（可为 null）、`reservationIds`（关闭时转入 `RELEASING` 的预留单号，可为空数组，#72）、`releaseEnqueued`（是否登记了释放任务）、`occurredAt`、`aggregateVersion` |
 | `WorkOrderReleaseWithdrawn` | `eventId`、`orderId`、`workOrderNo`、`previousStatus`（恒为 `RELEASED`）、`reservationId`（撤回时需释放的预留单，无则为 null；释放 reason=`CALLER_REQUEST`）、`note`、`occurredAt`、`aggregateVersion` |
 
 `WorkOrderHoldReasonCleared`（多个冻结原因中解除一个，工单仍为 ON_HOLD）不改变状态，携带的是当前版本，按版本去重的消费者会将其丢弃，这是预期行为。V3 之前写入、经回填补发的生命周期事件不含 `aggregateVersion`，消费端按版本 0 处理。
@@ -159,3 +159,10 @@ V2 写入的 outbox 行没有投递目标。V3 迁移按事件类型回填：
 
 - `POST /workorders/{id}/cancel` 在同一事务内把工单置 `CANCELLED`、写 `WorkOrderCancelled` 事件，并为 ACTIVE 预留写入释放任务 `wo_reservation_release_task`（相当于面向库存 HTTP 接口的 outbox）。
 - `ReservationReleaseWorker` 以 `reason=WORK_ORDER_CANCELLED`、`Idempotency-Key: cancel-{工单号}-{预留单号}` 调用库存释放：2xx 且状态 `RELEASED`/`EXPIRED` 为成功；`409 reservation-consumed` 与 `404` 停止任务、写 `wo_inventory_audit` 并告警；5xx/网络错误退避重试；401/403 退避重试并告警。
+
+## 工单关闭与预留释放（#72）
+
+- `POST /workorders/{id}/close` 在同一事务内把工单置 `CLOSED`，并为**每一张** ACTIVE 预留镜像置 `RELEASING`、登记释放任务（`reason=WORK_ORDER_CLOSED`，`Idempotency-Key: close-{工单号}-{预留单号}`）；`CONSUMED`/`RELEASING`/`RELEASED`/`EXPIRED` 不登记。关闭不等待库存结果。
+- 任务由同一个 `ReservationReleaseWorker` 执行，结果处理与取消相同（2xx `RELEASED`/`EXPIRED` 成功；`409 reservation-consumed`/`404` 停止 + 审计 + 告警；5xx/网络/401/403 退避重试），指标 `mes_workorder_reservation_release_total` 同样计数。
+- 库存 `ReservationReleased.reason` 原样带出 `WORK_ORDER_CLOSED`；工单侧消费该事件时不解析 `reason`，新值不影响镜像推进。
+- 线边已领未耗退料与 ERP 退料（M2-B）不在本次范围，见 `docs/workorder-close-reservation-release-design.md` §6。

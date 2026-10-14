@@ -140,6 +140,45 @@ class WorkOrderCloseWithdrawIntegrationTest {
         assertProblem(call("/workorders/" + id + "/cancel", null), 409, "workorder-closed");
     }
 
+    /**
+     * #72：关闭时只为 ACTIVE 预留登记释放任务（reason=WORK_ORDER_CLOSED，键 close-{工单号}-{预留单号}），镜像置 RELEASING；
+     * CONSUMED 预留不登记；事件带 reservationIds / releaseEnqueued；同键重放不二次登记。
+     */
+    @Test void closeEnqueuesReleaseForActiveReservationsOnly() throws Exception {
+        String id = completed(4);
+        String active = jdbc.queryForObject("select reservation_id from wo_material_reservation where order_id = ? and status = 'ACTIVE'", String.class, id);
+        // 再造一张已整单扣减的预留镜像（完工吃光），关闭时不得登记
+        String consumed = active + "-C";
+        jdbc.update("insert into wo_material_reservation (reservation_id, order_id, seq, status, expires_at) select ?, order_id, seq + 1, 'CONSUMED', expires_at from wo_material_reservation where reservation_id = ?",
+            consumed, active);
+        String key = "close-rel-" + id;
+        assertOk(call(writer(), "/workorders/" + id + "/close", null, key), 200);
+        assertThat(jdbc.queryForObject("select status from wo_material_reservation where reservation_id = ?", String.class, active)).isEqualTo("RELEASING");
+        assertThat(jdbc.queryForObject("select status from wo_material_reservation where reservation_id = ?", String.class, consumed)).isEqualTo("CONSUMED");
+        var tasks = jdbc.queryForList("select reservation_id, reason, idempotency_key, status from wo_reservation_release_task where order_id = ?", id);
+        assertThat(tasks).hasSize(1);
+        assertThat(tasks.get(0)).containsEntry("RESERVATION_ID", active).containsEntry("REASON", "WORK_ORDER_CLOSED")
+            .containsEntry("IDEMPOTENCY_KEY", WorkOrderClosure.closeKey(id, active)).containsEntry("STATUS", "PENDING");
+        JsonNode event = mapper.readTree(jdbc.queryForObject("select payload from outbox_event where aggregate_id = ? and event_type = 'WorkOrderClosed'", String.class, id));
+        assertThat(event.get("releaseEnqueued").asBoolean()).isTrue();
+        assertThat(event.get("reservationIds")).hasSize(1);
+        assertThat(event.get("reservationIds").get(0).asText()).isEqualTo(active);
+        // 同键重放：不再登记任务
+        assertOk(call(writer(), "/workorders/" + id + "/close", null, key), 200);
+        assertThat(jdbc.queryForObject("select count(*) from wo_reservation_release_task where order_id = ?", Integer.class, id)).isEqualTo(1);
+    }
+
+    /** #72：没有 ACTIVE 预留时关闭不登记任务，事件 reservationIds=[]、releaseEnqueued=false。 */
+    @Test void closeWithoutActiveReservationEnqueuesNothing() throws Exception {
+        String id = completed(2);
+        jdbc.update("update wo_material_reservation set status = 'CONSUMED' where order_id = ?", id);
+        assertOk(call("/workorders/" + id + "/close", null), 200);
+        assertThat(jdbc.queryForObject("select count(*) from wo_reservation_release_task where order_id = ?", Integer.class, id)).isZero();
+        JsonNode event = mapper.readTree(jdbc.queryForObject("select payload from outbox_event where aggregate_id = ? and event_type = 'WorkOrderClosed'", String.class, id));
+        assertThat(event.get("releaseEnqueued").asBoolean()).isFalse();
+        assertThat(event.get("reservationIds")).isEmpty();
+    }
+
     /** 存在未结案 NCR：409 open-ncr-exists，data.openNcrCount 为各状态之和，工单仍为 COMPLETED。 */
     @Test void closeRefusedWithOpenNcr() throws Exception {
         String id = completed(5);

@@ -28,8 +28,8 @@ public interface MaterialReservationPort {
      */
     Instant renew(String idempotencyKey, String reservationId);
 
-    /** 释放原因，与库存契约 ReleaseReason 一致。 */
-    enum ReleaseReason { CALLER_REQUEST, WORK_ORDER_CANCELLED, COMPENSATION }
+    /** 释放原因，与库存契约 ReleaseReason 一致（同名同序）；WORK_ORDER_CLOSED 为工单关闭释放剩余预留（#72）。 */
+    enum ReleaseReason { CALLER_REQUEST, WORK_ORDER_CANCELLED, COMPENSATION, WORK_ORDER_CLOSED }
 
     /**
      * 释放整张预留单，返回库存答复的预留单状态（RELEASED 或 EXPIRED，二者都视为成功）。必须幂等：同一幂等键重放返回首次结果。

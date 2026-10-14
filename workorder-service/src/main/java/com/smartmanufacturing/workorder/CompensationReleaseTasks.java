@@ -11,7 +11,7 @@ import java.util.Locale;
 import java.util.UUID;
 
 /**
- * 补偿释放失败后写入释放任务（短事务）。任务以 idempotency_key（cancel-{工单号}-{预留单号}）唯一约束去重：
+ * 写入库存预留释放任务（补偿释放走独立短事务，工单关闭走调用方事务）。任务以 idempotency_key 唯一约束去重：
  * <ul>
  *   <li>insert … where not exists 挡住大多数重复写入；</li>
  *   <li>两个请求并发写同一个键时，后提交者仍会撞唯一键。此时任务其实已经存在，结果与期望一致，
@@ -28,27 +28,46 @@ final class CompensationReleaseTasks {
 
     private CompensationReleaseTasks() {}
 
+    /** 补偿释放（reason=COMPENSATION）：在独立短事务中写入任务，见 {@link #insert(JdbcTemplate, TransactionTemplate, String, String, MaterialReservationPort.ReleaseReason, String, Instant)}。 */
+    static boolean insert(JdbcTemplate jdbc, TransactionTemplate tx, String orderId, String reservationId, String key, Instant now) {
+        return insert(jdbc, tx, orderId, reservationId, MaterialReservationPort.ReleaseReason.COMPENSATION, key, now);
+    }
+
     /**
-     * 写入一条 PENDING 释放任务。
+     * 在独立短事务（tx）中写入一条 PENDING 释放任务，并发撞唯一键按“已存在”处理。
      *
      * @return true = 本次新写入；false = 同一幂等键的任务已存在（含并发撞唯一键的情况）
      */
-    static boolean insert(JdbcTemplate jdbc, TransactionTemplate tx, String orderId, String reservationId, String key, Instant now) {
+    static boolean insert(JdbcTemplate jdbc, TransactionTemplate tx, String orderId, String reservationId,
+                          MaterialReservationPort.ReleaseReason reason, String key, Instant now) {
         try {
-            Integer rows = tx.execute(s -> jdbc.update(
-                "insert into wo_reservation_release_task (task_id, order_id, reservation_id, reason, idempotency_key, status, attempts, created_at)"
-                    + " select ?, ?, ?, ?, ?, 'PENDING', 0, ? from dual where not exists (select 1 from wo_reservation_release_task where idempotency_key = ?)",
-                UUID.randomUUID().toString(), orderId, reservationId, MaterialReservationPort.ReleaseReason.COMPENSATION.name(),
-                key, DbTimes.ts(now), key)); // 与 V5 的 TIMESTAMP(3) 对齐，截断到毫秒
-            if (rows != null && rows == 1) return true;
-            LOG.debug("补偿释放任务已存在，跳过写入：{}", key);
-            return false;
+            Boolean created = tx.execute(s -> insertInCurrentTx(jdbc, orderId, reservationId, reason, key, now));
+            return Boolean.TRUE.equals(created);
         } catch (DataIntegrityViolationException e) {
             if (!isTaskKeyDuplicate(e)) throw e;
             // 并发写同一个键：另一请求已写入任务，本次视为成功
-            LOG.debug("补偿释放任务已由并发请求写入（唯一键冲突），视为已存在：{}", key);
+            LOG.debug("释放任务已由并发请求写入（唯一键冲突），视为已存在：{}", key);
             return false;
         }
+    }
+
+    /**
+     * 在调用方当前事务内写入一条 PENDING 释放任务（如工单关闭 closeInTx，需与状态变更同一事务提交）。
+     * 只用 insert … where not exists 去重；调用方须已持有工单行锁，同一工单的并发写入已被串行化。
+     * 这里不捕获唯一键冲突：在外层事务中吞掉异常会让事务处于不确定状态，冲突时直接抛出、整体回滚更安全。
+     *
+     * @return true = 本次新写入；false = 同一幂等键的任务已存在
+     */
+    static boolean insertInCurrentTx(JdbcTemplate jdbc, String orderId, String reservationId,
+                                     MaterialReservationPort.ReleaseReason reason, String key, Instant now) {
+        int rows = jdbc.update(
+            "insert into wo_reservation_release_task (task_id, order_id, reservation_id, reason, idempotency_key, status, attempts, created_at)"
+                + " select ?, ?, ?, ?, ?, 'PENDING', 0, ? from dual where not exists (select 1 from wo_reservation_release_task where idempotency_key = ?)",
+            UUID.randomUUID().toString(), orderId, reservationId, reason.name(),
+            key, DbTimes.ts(now), key); // 与 V5 的 TIMESTAMP(3) 对齐，截断到毫秒
+        if (rows == 1) return true;
+        LOG.debug("释放任务已存在，跳过写入：{}", key);
+        return false;
     }
 
     /**

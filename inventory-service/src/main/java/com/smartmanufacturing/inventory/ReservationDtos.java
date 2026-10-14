@@ -19,7 +19,8 @@ public final class ReservationDtos {
     public enum Status { ACTIVE, RELEASED, EXPIRED, CONSUMED }
 
     /** 释放原因，缺省 CALLER_REQUEST。 */
-    public enum ReleaseReason { CALLER_REQUEST, WORK_ORDER_CANCELLED, COMPENSATION }
+    /** 释放原因；WORK_ORDER_CLOSED：工单关闭时释放剩余预留（#72），追加在末尾，与工单侧枚举同名同序。 */
+    public enum ReleaseReason { CALLER_REQUEST, WORK_ORDER_CANCELLED, COMPENSATION, WORK_ORDER_CLOSED }
 
     /** 整单预留请求：一条 BOM 快照行一行，同一物料可以多行。 */
     public record CreateReservation(
