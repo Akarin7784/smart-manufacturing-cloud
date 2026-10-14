@@ -30,6 +30,7 @@ describe('problem+json 解析', () => {
     const parsed = parseError(409, 'application/problem+json', body)
     expect(parsed).toMatchObject({ status: 409, message: body.detail })
     expect(isProblemType(parsed.problem, 'masterdata-in-use')).toBe(true)
+    expect(parsed.problem?.data).toEqual({ referenceType: 'ROUTING', references: ['FG/R01'] })
     expect(isProblemType({ type: 'https://x/problems/masterdata-in-use' }, 'masterdata-in-use')).toBe(true)
     expect(isProblemType(parsed.problem, 'validation-error')).toBe(false)
     expect(isProblemType(undefined, 'masterdata-in-use')).toBe(false)
