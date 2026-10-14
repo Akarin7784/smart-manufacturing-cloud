@@ -22,7 +22,7 @@
 | 项 | 决定 |
 | --- | --- |
 | `deviceId` | 可选。创建时**不**校验设备是否存在或在线。 |
-| 数量 | 一律固定 **6 位小数**的字符串（如 `"100.000000"`）。超过 6 位小数或格式不符直接 **400**，不四舍五入、不截断。 |
+| 数量 | 与 ERP `Decimal6` 一致：十进制字符串，**最多 6 位小数**，不要求补零（`"10"`、`"10.5"` 合法）。超过 6 位 → **400**，不四舍五入、不截断。两个方向相同。 |
 
 ### 1.2 幂等
 | 方向 | 规则 |
@@ -56,7 +56,7 @@
 | --- | --- | --- | --- |
 | `erpProductionOrderNo` | 新增 `erp_order_no`（实现 PR 加 Flyway） | 无，待 ERP 定义 | 业务主键 |
 | `productCode` | `product` | 无 | 须存在于 MES 主数据，否则 422 |
-| `quantity`（固定 6 位小数字符串） | `quantity`（目前整数） | 无 | **已拍板**：契约与实现统一 6 位小数；实现 PR 改类型 |
+| `quantity`（最多 6 位小数字符串） | `quantity`（目前整数） | ERP `Decimal6` | **已拍板**：最多 6 位小数；实现 PR 改类型 |
 | `uom` | 无 | 无 | 新增或校验，见 OQ-MAP-3 |
 | `warehouseCode` | 无 | ERP 有仓库 | 完工入库默认仓 |
 | `deviceId`（可选） | 可选写入 | 无设备概念 | **已拍板**：可选，不校验在线 |
@@ -69,7 +69,9 @@
 | 报废 | `POST /api/integration/mes/scraps` | 报废产生即回传 | `SCR-{工单}-{工序}-{报工或NCR}` |
 
 - 请求头 `Idempotency-Key` = 请求体 `requestNo`
-- 重试：网络 / 5xx / 429 / 40904 退避；401 刷新令牌后重试一次；400 / 403 / 40902 / 40903 不重试，转人工
+- `requestNo` / `Idempotency-Key` 字符集与 ERP #25 一致：`^[A-Za-z0-9._:-]+$`，最长 64
+- 库存不足：409 / 40906（领料、报废）
+- 重试：网络 / 5xx / 429 / 40904 退避；40906 不重试；401 刷新令牌后重试一次；400 / 403 / 40902 / 40903 不重试，转人工
 - 成功体为 ERP 的 `R{code:0,msg,data}`，`data = {requestNo, erpDocumentNo, replayed, acceptedAt}`；重放 200 + `Idempotent-Replayed: true` + `replayed=true`，`erpDocumentNo`、`acceptedAt` 与首次相同
 - 原则（PM 拍板）：打到 ERP 的回调以 ERP `docs/integration`（ERP #25）为准，MES 对齐
 
@@ -99,7 +101,7 @@
 | ~~OQ-ALIGN-1~~ | **已关闭** | 回调以 ERP #25 为准：aud 不符 401、scope `erp:integration:*`、成功体 `R{code:0,msg,data}`、领料字段照 #25 |
 | OQ-CB-4 | 仍开（小钱的 ERP 后续文档 PR） | 领料倒冲需要的 `operationNo`、`reportId`（追溯到工序 / 报工）在 ERP #25 中没有，MES 已从请求中去掉；请 ERP 补字段 |
 | OQ-CB-5 | 仍开（小钱） | ERP #25 的 `reasonCode` 仍写死枚举，按 PM 决定由小钱在后续文档 PR 中去掉，改为字典校验 |
-| OQ-DEC-1 | 仍开（备注） | ERP #25 `Decimal6` 接受 1–6 位小数（`1.5` 等于 `1.500000`）；MES 回调统一发 6 位，兼容。ERP→MES 下达仍要求固定 6 位 |
+| ~~OQ-DEC-1~~ | **已关闭** | 两个方向统一采用 ERP `Decimal6`：最多 6 位小数，不要求补零 |
 
 ## 6. 测试约定
 OpenAPI 每个操作都有完整 examples：成功、幂等重放、401、403、400（含幂等键缺失 / 不一致、超 6 位小数、报废原因不在字典）、409（含 40902 / 40903 / 40904）。

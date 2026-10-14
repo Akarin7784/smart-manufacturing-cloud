@@ -71,7 +71,7 @@ paths:
 
         - `deviceId` 可选，创建时**不**校验设备是否存在 / 在线（PM 拍板）。
 
-        - 数量为固定 6 位小数字符串；超过 6 位小数或格式不符直接 400 `validation-error`，**不四舍五入、不截断**。
+        - 数量最多 6 位小数（不要求补零，与 ERP `Decimal6` 一致）；超过 6 位小数直接 400 `validation-error`，**不四舍五入、不截断**。
 
         - 缺令牌 / 令牌无效 / 过期 / aud 不符：401 `authentication-required`；令牌有效但身份或 scope 不对：403 `access-denied`（与 ERP #25 一致）。
 
@@ -90,7 +90,7 @@ paths:
                 value:
                   erpProductionOrderNo: PO-2026-1001
                   productCode: FG-PUMP-01
-                  quantity: '100.000000'
+                  quantity: '100'
                   uom: 件
                   plannedStartDate: '2026-10-20'
                   plannedFinishDate: '2026-10-25'
@@ -184,7 +184,7 @@ paths:
                     type: validation-error
                     title: 请求参数无效
                     status: 400
-                    detail: 'quantity: 必须为固定 6 位小数的十进制字符串（如 100.000000），不允许 100.0000001'
+                    detail: 'quantity: 最多 6 位小数（如 100、100.5），不允许 100.0000001'
                     instance: /api/integration/erp/work-orders/dispatch
                     code: INVALID_ARGUMENT
         '401':
@@ -307,7 +307,9 @@ paths:
 
         - 错误体沿用 ERP 现有的 `R{code,msg,data}`（application/json），**不是** problem+json；码表见 `ErpErrorR`。
 
-        - 路径与字段以 ERP `docs/integration` 定稿为准（OQ-CB）。'
+        - 路径与字段以 ERP `docs/integration` 定稿为准（OQ-CB）。
+
+        - 库存不足：409 / 40906（不重试，转人工）。'
       parameters:
       - $ref: '#/components/parameters/CallbackIdempotencyKey'
       requestBody:
@@ -328,7 +330,7 @@ paths:
                   lines:
                   - lineNo: 1
                     materialCode: RM-STEEL-01
-                    quantity: '12.500000'
+                    quantity: '12.5'
                     uom: kg
                     lotNo: LOT-A1
       responses:
@@ -398,7 +400,7 @@ paths:
                   summary: 数量超过 6 位小数
                   value:
                     code: 400
-                    msg: quantity 最多 6 位小数
+                    msg: 'quantity: 最多 6 位小数'
                     data: null
         '401':
           description: 缺令牌，或令牌无效。
@@ -469,6 +471,15 @@ paths:
                     code: 40903
                     msg: 单据状态已变更，请刷新后重试
                     data: null
+                shortage:
+                  summary: '库存不足（ERP #25 计划新增 40906）'
+                  value:
+                    code: 40906
+                    msg: 仓库 W01 物料 RM-STEEL-01 可用量不足
+                    data:
+                      materialCode: RM-STEEL-01
+                      warehouseCode: W01
+                      available: '10.000000'
       security:
       - erpServiceBearer: []
   /api/integration/mes/finished-goods-receipts:
@@ -582,7 +593,7 @@ paths:
                   summary: 数量超过 6 位小数
                   value:
                     code: 400
-                    msg: quantity 最多 6 位小数
+                    msg: 'quantity: 最多 6 位小数'
                     data: null
         '401':
           description: 缺令牌，或令牌无效。
@@ -679,7 +690,9 @@ paths:
 
         - 路径与字段以 ERP `docs/integration` 定稿为准（OQ-CB）。
 
-        - `warehouseCode` 必填；`reasonCode` 由 ERP 按报废原因字典校验，不在字典内 → 400 / 400（不在契约中写死枚举）。'
+        - `warehouseCode` 必填；`reasonCode` 由 ERP 按报废原因字典校验，不在字典内 → 400 / 400（不在契约中写死枚举）。
+
+        - 库存不足：409 / 40906（不重试，转人工）。'
       parameters:
       - $ref: '#/components/parameters/CallbackIdempotencyKey'
       requestBody:
@@ -696,7 +709,7 @@ paths:
                   workOrderNo: WO-20261014-0001
                   erpProductionOrderNo: PO-2026-1001
                   materialCode: FG-PUMP-01
-                  quantity: '2.000000'
+                  quantity: '2'
                   uom: 件
                   reasonCode: PROCESS_DEFECT
                   operationNo: OP20
@@ -769,7 +782,7 @@ paths:
                   summary: 数量超过 6 位小数
                   value:
                     code: 400
-                    msg: quantity 最多 6 位小数
+                    msg: 'quantity: 最多 6 位小数'
                     data: null
                 unknownReason:
                   summary: reasonCode 不在 ERP 报废原因字典内
@@ -846,6 +859,15 @@ paths:
                     code: 40903
                     msg: 单据状态已变更，请刷新后重试
                     data: null
+                shortage:
+                  summary: '库存不足（ERP #25 计划新增 40906）'
+                  value:
+                    code: 40906
+                    msg: 仓库 W01 物料 RM-STEEL-01 可用量不足
+                    data:
+                      materialCode: FG-PUMP-01
+                      warehouseCode: W01
+                      available: '10.000000'
       security:
       - erpServiceBearer: []
 components:
@@ -864,7 +886,7 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: 幂等键，1–128 字符；同调用方同键同体重放，同键异体 422。
+      description: 幂等键，1–128 字符；同调用方同键同请求体 → 200 重放；同键不同请求体 → 409 `idempotency-key-conflict`。
       schema:
         type: string
         minLength: 1
@@ -874,11 +896,12 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: MES→ERP 回调的幂等键，必须等于请求体 requestNo；缺失或不一致均返回 400 / 400。
+      description: 'MES→ERP 回调的幂等键，必须等于请求体 requestNo；缺失或不一致均返回 400 / 400。字符集与 ERP #25 一致：`^[A-Za-z0-9._:-]+$`。'
       schema:
         type: string
         minLength: 1
         maxLength: 64
+        pattern: ^[A-Za-z0-9._:-]+$
       example: MI-WO-20261014-0001-OP10-R0001
   headers:
     IdempotentReplayed:
@@ -890,9 +913,9 @@ components:
   schemas:
     Decimal:
       type: string
-      pattern: ^\d{1,12}\.\d{6}$
-      description: 数量：固定 6 位小数的十进制字符串（如 "100.000000"）。超过 6 位小数或格式不符一律 400，不四舍五入、不截断。
-      example: '100.000000'
+      pattern: ^\d{1,12}(\.\d{1,6})?$
+      description: '数量（与 ERP #25 `Decimal6` 语义一致）：十进制字符串，**最多** 6 位小数，不要求补零（"10"、"10.5"、"10.500000" 均合法且等值）。超过 6 位小数 → 400，不四舍五入、不截断。两个方向相同。'
+      example: '10.5'
     DispatchProductionOrderRequest:
       type: object
       description: ERP→MES 下达请求（字段名待 ERP 契约对齐）。
@@ -1005,6 +1028,8 @@ components:
           type: string
           maxLength: 64
           description: 幂等请求号，必须等于请求头 Idempotency-Key。
+          minLength: 1
+          pattern: ^[A-Za-z0-9._:-]+$
         workOrderNo:
           type: string
           maxLength: 64
@@ -1038,6 +1063,8 @@ components:
           type: string
           maxLength: 64
           description: 幂等请求号，必须等于请求头 Idempotency-Key。
+          minLength: 1
+          pattern: ^[A-Za-z0-9._:-]+$
         workOrderNo:
           type: string
           maxLength: 64
@@ -1079,6 +1106,8 @@ components:
           type: string
           maxLength: 64
           description: 幂等请求号，必须等于请求头 Idempotency-Key。
+          minLength: 1
+          pattern: ^[A-Za-z0-9._:-]+$
         workOrderNo:
           type: string
           maxLength: 64
