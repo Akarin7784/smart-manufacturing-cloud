@@ -10,7 +10,7 @@ import java.time.Clock;
 import java.time.Instant;
 
 /**
- * 服务身份令牌（OAuth2 client_credentials，scope=inventory:reserve）：向 auth-service 的 /auth/oauth2/token 申请并缓存。
+ * 服务身份令牌（OAuth2 client_credentials，默认 scope=inventory:reserve；关闭工单查 NCR 用 scope=quality:read，见 {@link QualityServiceToken}）：向 auth-service 的 /auth/oauth2/token 申请并缓存。
  * 按契约必须缓存令牌、临近过期（默认提前 60 秒）才刷新，不得每次请求都重新申请；库存返回 401 时调用 {@link #invalidate} 强制下次刷新。
  * 续约作业、取消释放等无用户上下文的系统调用都使用该身份，不透传终端用户令牌。
  */
@@ -19,11 +19,15 @@ class ServiceTokenProvider {
     private final RestClient auth;
     private final InventoryClientProperties props;
     private final Clock clock;
+    private final String scope;
     private String token;
     private Instant refreshAt = Instant.EPOCH;
 
-    ServiceTokenProvider(RestClient auth, InventoryClientProperties props, Clock clock) {
-        this.auth = auth; this.props = props; this.clock = clock;
+    ServiceTokenProvider(RestClient auth, InventoryClientProperties props, Clock clock) { this(auth, props, clock, SCOPE); }
+
+    /** 指定 scope：认证服务按 scope 决定令牌受众（inventory:reserve → inventory-service，quality:read → quality-service）。 */
+    ServiceTokenProvider(RestClient auth, InventoryClientProperties props, Clock clock, String scope) {
+        this.auth = auth; this.props = props; this.clock = clock; this.scope = scope;
     }
 
     /** 返回有效令牌；缓存过期时同步刷新（synchronized：并发调用只申请一次）。 */
@@ -33,7 +37,7 @@ class ServiceTokenProvider {
             throw new InventoryAuthException(401, "未配置 manufacturing.workorder.inventory.client-secret（WORKORDER_CLIENT_SECRET）");
         var form = new LinkedMultiValueMap<String, String>();
         form.add("grant_type", "client_credentials");
-        form.add("scope", SCOPE);
+        form.add("scope", scope);
         try {
             JsonNode body = auth.post().uri("/auth/oauth2/token")
                 .headers(h -> h.setBasicAuth(props.clientId(), props.clientSecret()))

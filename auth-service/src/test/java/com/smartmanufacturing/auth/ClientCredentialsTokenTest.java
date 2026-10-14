@@ -132,6 +132,21 @@ class ClientCredentialsTokenTest {
             .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_scope"));
     }
 
+    /** #74：quality:read 映射到 quality-service 受众；与 inventory:reserve 混合申请 invalid_scope；不带 scope 只签发默认受众的 scope。 */
+    @Test void scopeAudienceMapping() throws Exception {
+        String body = request(basic("workorder-service", SECRET), "grant_type=client_credentials&scope=quality%3Aread")
+            .andExpect(status().isOk()).andExpect(jsonPath("$.scope").value("quality:read"))
+            .andReturn().getResponse().getContentAsString();
+        Jwt jwt = verifyWithJwks(mapper.readTree(body).path("access_token").asText());
+        assertEquals(List.of("quality-service"), jwt.getAudience());
+        assertEquals("service", jwt.getClaimAsString("token_type"));
+        request(basic("workorder-service", SECRET), "grant_type=client_credentials&scope=inventory%3Areserve%20quality%3Aread")
+            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_scope"));
+        // 质检服务客户端未被授予 quality:read
+        request(basic("quality-service", QUALITY_SECRET), "grant_type=client_credentials&scope=quality%3Aread")
+            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error").value("invalid_scope"));
+    }
+
     /** 服务令牌受众不是 manufacturing-api，访问面向用户的 /auth/me 必须被拒绝。 */
     @Test void serviceTokenCannotActAsUser() throws Exception {
         String body = request(basic("workorder-service", SECRET), "grant_type=client_credentials")
@@ -191,9 +206,11 @@ class ClientCredentialsTokenTest {
             .filter(c -> "quality-service".equals(c.getClientId())).findFirst().orElseThrow();
         assertEquals(List.of("inventory:qc-hold"), quality.getScopes());
         assertEquals("inventory-service", quality.getAudience());
-        // 工单客户端不得因本次新增而获得隔离 scope。
+        // 工单客户端不得因本次新增而获得隔离 scope；#74 新增 quality:read（受众 quality-service）。
         ServiceClientProperties.Client workorder = clientProperties.getClients().stream()
             .filter(c -> "workorder-service".equals(c.getClientId())).findFirst().orElseThrow();
-        assertEquals(List.of("inventory:reserve"), workorder.getScopes());
+        assertEquals(List.of("inventory:reserve", "quality:read"), workorder.getScopes());
+        assertEquals("quality-service", workorder.audienceOf("quality:read"));
+        assertEquals("inventory-service", workorder.audienceOf("inventory:reserve"));
     }
 }

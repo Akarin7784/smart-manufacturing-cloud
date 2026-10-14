@@ -62,17 +62,22 @@ public class ClientCredentialsController {
         String requested = single(form, "scope");
         List<String> scopes;
         if (requested == null || requested.isBlank()) {
-            scopes = List.copyOf(client.getScopes());
+            // 未带 scope：只签发默认受众的 scope（按 scope 指定了其他受众的需显式申请）
+            scopes = client.getScopes().stream().filter(s -> client.audienceOf(s).equals(client.getAudience())).toList();
         } else {
             scopes = Arrays.stream(requested.trim().split(" +")).distinct().toList();
             if (!client.getScopes().containsAll(scopes))
                 return error(HttpStatus.BAD_REQUEST, "invalid_scope", "请求的 scope 超出客户端允许范围");
         }
         String scope = String.join(" ", scopes);
+        // 一个令牌只有一个受众：所申请的 scope 必须映射到同一资源服务（#74）
+        List<String> audiences = scopes.stream().map(client::audienceOf).distinct().toList();
+        if (audiences.size() != 1)
+            return error(HttpStatus.BAD_REQUEST, "invalid_scope", "一次只能申请同一资源服务（受众）的 scope");
 
         Instant now = Instant.now();
         JwtClaimsSet claims = JwtClaimsSet.builder().issuer(issuer).subject(client.getClientId())
-            .audience(List.of(client.getAudience())).issuedAt(now).notBefore(now).expiresAt(now.plusSeconds(ttl))
+            .audience(audiences).issuedAt(now).notBefore(now).expiresAt(now.plusSeconds(ttl))
             .id(UUID.randomUUID().toString()).claim("client_id", client.getClientId()).claim("scope", scope)
             .claim(TOKEN_TYPE_CLAIM, SERVICE_TOKEN_TYPE).build();
         String token = encoder.encode(JwtEncoderParameters.from(

@@ -27,15 +27,19 @@ class MasterdataReferences {
 
     MasterdataReferences(JdbcTemplate jdbc, WorkOrderReferenceClient workOrders) { this.jdbc = jdbc; this.workOrders = workOrders; }
 
-    void requireWorkCenterUnused(String code) {
+    /** 本地检查：工作中心被未作废的工艺路线引用 409（ROUTING）。只查本库，可在持锁事务内调用。 */
+    void requireNoRoutingUsing(String code) {
         List<String> routings = jdbc.queryForList("select distinct concat(o.product_code, '/', o.version) from routing_operation o join routing_header h"
             + " on h.product_code = o.product_code and h.version = o.version where o.work_center_code = ? and h.status <> 'OBSOLETE'"
             + " order by 1", String.class, code);
         if (!routings.isEmpty())
             throw Errors.inUse("ROUTING", "工作中心 " + code + " 仍被 " + routings.size() + " 个未作废的工艺路线引用", head(routings));
-        requireNoWorkOrder(code, null, "工作中心 " + code);
     }
 
+    /** 远程检查：工作中心被执行中的工单引用 409（WORK_ORDER），工单服务不可用 503。调用 Feign，不要在持有行锁的事务内调用。 */
+    void requireNoWorkOrderUsingWorkCenter(String code) { requireNoWorkOrder(code, null, "工作中心 " + code); }
+
+    /** 远程检查：工位被执行中的工单引用 409（WORK_ORDER）。调用 Feign，不要在持有行锁的事务内调用。 */
     void requireStationUnused(String code) { requireNoWorkOrder(null, code, "工位 " + code); }
 
     void requireMaterialUnused(String code) {

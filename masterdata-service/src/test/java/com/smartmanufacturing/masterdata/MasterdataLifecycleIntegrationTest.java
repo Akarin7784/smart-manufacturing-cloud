@@ -296,4 +296,80 @@ class MasterdataLifecycleIntegrationTest {
         del("/routings/L7-FG/R02", writer()).andExpect(status().isNotFound());
         post("/routings/L7-NOPE/R01/retire", "", admin()).andExpect(status().isNotFound());
     }
+
+    // ------------------------------------------------------------------ #74 锁与跨服务检查
+
+    private static boolean inTx() { return org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive(); }
+
+    /** 删除工作中心：Feign 检查在事务外（不持锁）；检查期间被并发删除 → 404；检查期间新增未作废工艺路线 → 加锁复核 409 ROUTING。 */
+    @Test void workCenterDeleteChecksWorkOrdersOutsideLock() throws Exception {
+        workCenter("WC-L10", "ST-L10-01");
+        boolean[] seen = new boolean[1];
+        when(workOrders.references("WC-L10", null)).thenAnswer(i -> {
+            seen[0] = inTx();
+            return ApiResponse.ok(new WorkOrderReferenceView(0, List.of()));
+        });
+        del("/workcenters/WC-L10", writer()).andExpect(status().isNoContent());
+        org.assertj.core.api.Assertions.assertThat(seen[0]).as("Feign 调用时不应处于事务中").isFalse();
+        assertDeleted("work_center", "WC-L10");
+
+        workCenter("WC-L11");
+        when(workOrders.references("WC-L11", null)).thenAnswer(i -> {
+            jdbc.update("update work_center set deleted = true where code = 'WC-L11'");
+            return ApiResponse.ok(new WorkOrderReferenceView(0, List.of()));
+        });
+        del("/workcenters/WC-L11", writer()).andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("WORK_CENTER_NOT_FOUND"));
+
+        workCenter("WC-L12");
+        material("L12-FG", "FG", "MAKE");
+        when(workOrders.references("WC-L12", null)).thenAnswer(i -> {
+            post("/routings", routingBody("L12-FG", "R01", "2026-10-01", "WC-L12", "装配"), admin()).andExpect(status().isCreated());
+            return ApiResponse.ok(new WorkOrderReferenceView(0, List.of()));
+        });
+        del("/workcenters/WC-L12", writer()).andExpect(status().isConflict()).andExpect(jsonPath("$.data.referenceType").value("ROUTING"));
+        mvc.perform(get("/workcenters/WC-L12").with(viewer())).andExpect(status().isOk());
+    }
+
+    /** 删除工位：Feign 检查在事务外；检查期间被并发删除 → 加锁复核 404。 */
+    @Test void stationDeleteChecksWorkOrdersOutsideLock() throws Exception {
+        workCenter("WC-L13", "ST-L13-01", "ST-L13-02");
+        boolean[] seen = new boolean[1];
+        when(workOrders.references(null, "ST-L13-01")).thenAnswer(i -> {
+            seen[0] = inTx();
+            return ApiResponse.ok(new WorkOrderReferenceView(0, List.of()));
+        });
+        del("/workcenters/WC-L13/stations/ST-L13-01", writer()).andExpect(status().isNoContent());
+        org.assertj.core.api.Assertions.assertThat(seen[0]).isFalse();
+        when(workOrders.references(null, "ST-L13-02")).thenAnswer(i -> {
+            jdbc.update("update station set deleted = true where code = 'ST-L13-02'");
+            return ApiResponse.ok(new WorkOrderReferenceView(0, List.of()));
+        });
+        del("/workcenters/WC-L13/stations/ST-L13-02", writer()).andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value("STATION_NOT_FOUND"));
+        del("/workcenters/WC-L13/stations/ST-NOPE", writer()).andExpect(status().isNotFound());
+    }
+
+    /** 删除草稿：Feign 检查在事务外；检查期间草稿被发布 → 取产品锁后复核 409 *_NOT_DRAFT，版本保留。 */
+    @Test void deleteDraftRechecksUnderProductLock() throws Exception {
+        workCenter("WC-L14");
+        material("L14-FG", "FG", "MAKE");
+        material("L14-RM", "RM", "BUY");
+        post("/routings", routingBody("L14-FG", "R01", "2026-10-01", "WC-L14", "装配"), admin()).andExpect(status().isCreated());
+        post("/boms", bomBody("L14-FG", "A01", "2026-10-01", "L14-RM"), admin()).andExpect(status().isCreated());
+        boolean[] seen = {true, true};
+        when(workOrders.versionReferences("ROUTING", "L14-FG", "R01")).thenAnswer(i -> {
+            seen[0] = inTx();
+            jdbc.update("update routing_header set status = 'RELEASED' where product_code = 'L14-FG' and version = 'R01'");
+            return ApiResponse.ok(new WorkOrderReferenceView(0, List.of()));
+        });
+        when(workOrders.versionReferences("BOM", "L14-FG", "A01")).thenAnswer(i -> {
+            seen[1] = inTx();
+            jdbc.update("update bom_header set status = 'RELEASED' where product_code = 'L14-FG' and version = 'A01'");
+            return ApiResponse.ok(new WorkOrderReferenceView(0, List.of()));
+        });
+        del("/routings/L14-FG/R01", writer()).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("ROUTING_NOT_DRAFT"));
+        del("/boms/L14-FG/A01", writer()).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("BOM_NOT_DRAFT"));
+        org.assertj.core.api.Assertions.assertThat(seen).containsExactly(false, false);
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("select count(*) from bom_line where product_code = 'L14-FG' and version = 'A01'", Integer.class)).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("select count(*) from routing_operation where product_code = 'L14-FG' and version = 'R01'", Integer.class)).isEqualTo(1);
+    }
 }

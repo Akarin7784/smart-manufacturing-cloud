@@ -27,8 +27,11 @@ manufacturing:
     clients:
       - client-id: workorder-service
         secret-hash: ${WORKORDER_CLIENT_SECRET_HASH:}
-        scopes: [ "inventory:reserve" ]
+        # quality:read（#74）：关闭工单前查询 NCR，令牌受众为 quality-service；与 inventory:reserve 须分开申请。
+        scopes: [ "inventory:reserve", "quality:read" ]
         audience: inventory-service
+        scope-audiences:
+          "[quality:read]": quality-service
       # 质检服务：把不良品数量写入/移出 QC-HOLD 隔离库位（入库、放行、报废），见 docs/quality-inventory-writeback-design.md。
       # 与 workorder-service 分开注册、各用一把密钥、scope 互不包含，任一服务泄露密钥都不能越权调用对方的接口。
       - client-id: quality-service
