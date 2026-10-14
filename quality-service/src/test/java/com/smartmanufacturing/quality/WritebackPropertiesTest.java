@@ -30,4 +30,29 @@ class WritebackPropertiesTest {
         assertThatThrownBy(() -> withWindow(Duration.ZERO)).isInstanceOf(IllegalArgumentException.class);
         assertThat(withWindow(Duration.ofDays(7).minusSeconds(1)).retryWindow()).isEqualTo(Duration.ofDays(7).minusSeconds(1));
     }
+
+    @Test void explicitValuesAndValidation() {
+        var c = new WritebackProperties.Client("q", "secret", "s", "http://inv:1", "http://auth:2", "inv-svc", "auth-svc",
+            Duration.ofSeconds(1), Duration.ofSeconds(2), Duration.ofSeconds(30));
+        assertThat(c.configured()).isTrue();
+        assertThat(c.inventoryBase()).isEqualTo("http://inv:1");
+        assertThat(c.authBase()).isEqualTo("http://auth:2");
+        var blank = new WritebackProperties.Client(" ", " ", " ", "", "", " ", " ", null, null, null);
+        assertThat(blank.configured()).isFalse();
+        assertThat(blank.clientId()).isEqualTo("quality-service");
+        assertThat(blank.authBase()).isEqualTo("http://auth-service");
+        assertThat(blank.inventoryBase()).isEqualTo("http://inventory-service");
+        var p = new WritebackProperties(Duration.ofDays(1), Duration.ofSeconds(5), 10, 3, Duration.ofSeconds(1),
+            Duration.ofMinutes(1), Duration.ofSeconds(30), Duration.ofDays(2), c, 0);
+        assertThat(p.client()).isSameAs(c);
+        assertThat(p.maxUnknown404Retries()).isZero();
+        assertThatThrownBy(() -> new WritebackProperties(null, null, 0, null, null, null, null, null, null, null))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new WritebackProperties(null, null, null, 0, null, null, null, null, null, null))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new WritebackProperties(null, null, null, null, null, null, null, null, null, -1))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new WritebackProperties(Duration.ofSeconds(-1), null, null, null, null, null, null, null, null, null))
+            .isInstanceOf(IllegalArgumentException.class);
+    }
 }
