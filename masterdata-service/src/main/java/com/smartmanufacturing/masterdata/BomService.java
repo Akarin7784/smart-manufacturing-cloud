@@ -4,7 +4,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.*;
@@ -20,12 +22,13 @@ public class BomService {
     private final MaterialRepository materials;
     private final RoutingService routings;
     private final MasterdataReferences references;
+    private final TransactionTemplate tx;
     private final int maxDepth;
 
-    BomService(JdbcTemplate jdbc, MaterialRepository materials, RoutingService routings, MasterdataReferences references,
+    BomService(JdbcTemplate jdbc, MaterialRepository materials, RoutingService routings, MasterdataReferences references, PlatformTransactionManager txManager,
                @Value("${manufacturing.masterdata.explosion-max-depth:20}") int maxDepth) {
         this.jdbc = jdbc; this.headers = new VersionedHeaderDao(jdbc, "bom_header");
-        this.materials = materials; this.routings = routings; this.references = references; this.maxDepth = maxDepth;
+        this.materials = materials; this.routings = routings; this.references = references; this.tx = new TransactionTemplate(txManager); this.maxDepth = maxDepth;
     }
 
     @Transactional(readOnly = true)
@@ -121,16 +124,24 @@ public class BomService {
         return get(product, version);
     }
 
-    /** 删除草稿（PR2）：先删明细再删版本头；已发布 / 作废版本 409 BOM_NOT_DRAFT；曾被工单引用 409 MASTERDATA_IN_USE。 */
-    @Transactional
+    /**
+     * 删除草稿（PR2）：先删明细再删版本头；已发布 / 作废版本 409 BOM_NOT_DRAFT；曾被工单引用 409 MASTERDATA_IN_USE。
+     * #74：远程引用检查在事务外、加锁前执行；之后与 retire 一样先取产品行锁（与发布 / 作废串行），复核仍是草稿再删除。
+     */
     public void deleteDraft(String product, String version) {
-        Bom current = get(product, version);
+        requireDraft(get(product, version), product, version);
+        references.requireVersionNeverReferenced("BOM", product, version);
+        tx.executeWithoutResult(s -> {
+            if (!materials.lockForUpdate(product)) throw Errors.notFound("BOM_NOT_FOUND", "BOM不存在: " + product + "/" + version);
+            requireDraft(get(product, version), product, version);
+            jdbc.update("delete from bom_line where product_code = ? and version = ?", product, version);
+            headers.deleteDraft(product, version);
+        });
+    }
+
+    private static void requireDraft(Bom current, String product, String version) {
         if (current.status() != LifecycleStatus.DRAFT)
             throw Errors.conflict("BOM_NOT_DRAFT", "只有草稿BOM可以删除: " + product + "/" + version);
-        references.requireVersionNeverReferenced("BOM", product, version);
-        jdbc.update("delete from bom_line where product_code = ? and version = ?", product, version);
-        if (headers.deleteDraft(product, version) == 0)
-            throw Errors.conflict("BOM_NOT_DRAFT", "BOM已被并发发布: " + product + "/" + version);
     }
 
     /** 发布校验；包内可见，供演示数据一致性测试复用同一规则。 */

@@ -228,6 +228,12 @@ public class OperationReportingService {
         if ("DONE".equals(task.status()) && updated.get(idx).total().compareTo(limit(order, updated, idx)) < 0)
             tasks.transition(task, "PAUSED", "PAUSE", "REPORT_REVERSED", operator);
         // #69：冲销使下游工序上限回到 0（上道已无合格数流入）且下游没有有效报工时，READY 的下游任务退回 PENDING（不对外发事件）
+        // 只处理直接下游就够（#74）：
+        //  1) 工序的可报上限只取决于直接上道的合格数，冲销第 idx 道只改变第 idx 道的累计，因此只有第 idx+1 道的上限会变化，
+        //     更下游（idx+2 及以后）的上限取决于 idx+1 道的合格数，这次冲销没有改动它们；
+        //  2) 若 idx+1 道仍有有效报工，它的合格数不变、下游照常保持；若 idx+1 道没有有效报工，则它的合格数为 0，
+        //     idx+2 道当初不可能因它进入 READY，或者在 idx+1 道的报工被冲销时已由同一规则退回 PENDING（逐级归纳）。
+        //  所以每次冲销只需检查直接下游，不需要级联遍历。
         if (idx + 1 < updated.size() && limit(order, updated, idx + 1).signum() <= 0 && updated.get(idx + 1).effective() <= 0) {
             OperationTaskStates.Task down = tasks.find(order.id(), updated.get(idx + 1).opNo());
             if ("READY".equals(down.status())) tasks.transition(down, "PENDING", "FLOW_BACK", "REPORT_REVERSED", operator);
