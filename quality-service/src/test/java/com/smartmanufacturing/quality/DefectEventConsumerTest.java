@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.rocketmq.common.message.MessageExt;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -24,6 +25,9 @@ class DefectEventConsumerTest {
     @Autowired ObjectMapper mapper;
     @Autowired JdbcTemplate jdbc;
     @Autowired MeterRegistry registry;
+    @Autowired RecordingEventSender sender;
+
+    @BeforeEach void isolate() { QualityTestIsolation.reset(jdbc, sender, null); }
 
     private DefectEventConsumer consumer() {
         // 不调用 start()：只验证单条消息的处理与 ACK 判定。
