@@ -1,6 +1,6 @@
 // 保护派工模拟实现的状态机（设计稿 §3）与错误类型，确保页面在后端上线前后行为一致。
 import { describe, it, expect } from 'vitest'
-import { createMockDispatchApi, taskActions, reassignBlockedReason, isDispatched, setDispatchApi, dispatchApi, type OperationTask } from '@/api/dispatch'
+import { operatorLabel, createMockDispatchApi, taskActions, reassignBlockedReason, isDispatched, setDispatchApi, dispatchApi, type OperationTask } from '@/api/dispatch'
 
 const t = (o: Partial<OperationTask>): OperationTask => ({ workOrderNo: 'A', operationNo: '10', name: '', workCenterCode: '', status: 'READY', stationCode: null, operator: null, plannedStart: null, plannedEnd: null, dispatchedAt: null, dispatchedBy: null, version: 0, ...o })
 
@@ -11,6 +11,13 @@ describe('派工动作规则', () => {
     expect(taskActions(t({ stationCode: 'S', status: 'RUNNING' }))).toMatchObject({ pause: true, reassign: false })
     expect(taskActions(t({ stationCode: 'S', status: 'PAUSED' }))).toMatchObject({ resume: true, reassign: true, cancelDispatch: false })
     expect(isDispatched(t({ stationCode: 'S' }))).toBe(true)
+  })
+  it('操作工显示：工号为空只显示姓名', () => {
+    expect(operatorLabel({ id: '1', employeeNo: 'E1', name: '张三' })).toBe('E1 张三')
+    expect(operatorLabel({ id: '2', employeeNo: null, name: 'worker' })).toBe('worker')
+    expect(operatorLabel({ id: '3', employeeNo: '  ', name: '李四' })).toBe('李四')
+    // 后端回退：工号=用户名=姓名时不重复显示
+    expect(operatorLabel({ id: '4', employeeNo: 'admin', name: 'admin' })).toBe('admin')
   })
   it('改派不可用原因', () => {
     expect(reassignBlockedReason(t({}))).toContain('尚未派工')
@@ -49,7 +56,7 @@ describe('模拟实现', () => {
     await api.dispatch('B', '10', { stationCode: 'S' }, 'k')
     expect((await api.cancelDispatch('B', '10', 'r', 'k')).stationCode).toBeNull()
     expect(await api.listOperators('E002')).toHaveLength(1)
-    expect(await api.listOperators()).toHaveLength(2)
+    expect(await api.listOperators()).toHaveLength(3)
   })
   it('可替换实现', () => {
     const api = createMockDispatchApi()

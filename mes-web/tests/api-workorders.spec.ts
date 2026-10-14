@@ -85,10 +85,19 @@ describe('派工 HTTP 实现（契约对齐）', () => {
     await api.listOperators()
     expect(last().params).toEqual({})
   })
-  it('任务列表取自 progress 的派工信息', async () => {
-    reply = () => ({ operations: [{ operationNo: '10', taskStatus: 'RUNNING', stationCode: 'S1', operator: 'op1', version: 2, name: '车', workCenterCode: 'WC1' }, { operationNo: '20' }] })
+  it('任务列表：派工信息取自 progress，工序名称与工作中心由 release 补齐', async () => {
+    reply = (c) => c.url?.endsWith('/release')
+      ? { operations: [{ opNo: '10', name: '车削', workCenterCode: 'WC1' }] }
+      : { operations: [{ operationNo: '10', taskStatus: 'RUNNING', stationCode: 'S1', operator: 'op1', version: 2, laborHours: '1.50' }, { operationNo: '20' }] }
     const ts = await api.listTasks('A')
-    expect(ts[0]).toMatchObject({ status: 'RUNNING', stationCode: 'S1', version: 2, workCenterCode: 'WC1' })
-    expect(ts[1]).toMatchObject({ status: 'PENDING', stationCode: null, version: 0 })
+    expect(ts[0]).toMatchObject({ status: 'RUNNING', stationCode: 'S1', version: 2, name: '车削', workCenterCode: 'WC1' })
+    expect(ts[1]).toMatchObject({ status: 'PENDING', stationCode: null, version: 0, name: '', workCenterCode: '' })
+  })
+  it('release 不可用（未下达 404）时任务列表降级', async () => {
+    http.defaults.adapter = async (config) => {
+      if (config.url?.endsWith('/release')) throw Object.assign(new Error('404'), { config })
+      return { status: 200, statusText: '', headers: {}, config, data: { data: { operations: [{ operationNo: '10' }] } } }
+    }
+    expect((await api.listTasks('A'))[0]).toMatchObject({ operationNo: '10', workCenterCode: '' })
   })
 })

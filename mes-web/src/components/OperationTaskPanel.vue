@@ -135,7 +135,7 @@
             <el-option
               v-for="p in operators"
               :key="p.id"
-              :label="`${p.employeeNo} ${p.name}`"
+              :label="operatorLabel(p)"
               :value="p.id"
             />
           </el-select>
@@ -172,14 +172,14 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import {
-  dispatchApi, DISPATCH_IS_MOCK, isDispatched, reassignBlockedReason, taskActions,
+  dispatchApi, DISPATCH_IS_MOCK, isDispatched, operatorLabel, reassignBlockedReason, taskActions,
   type Operator, type OperationTask, type OperationTaskStatus
 } from '@/api/dispatch'
 import { listStations, type Station } from '@/api/masterdata'
 import { newIdempotencyKey } from '@/api/workorders'
 import { useProblem } from '@/composables/useProblem'
 import { useAuthStore } from '@/stores/auth'
-import { canDispatchWith, canReportWith } from '@/utils/permissions'
+import { canDispatchWith, canListOperatorsWith, canReportWith } from '@/utils/permissions'
 
 const props = defineProps<{ workOrderNo: string }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -219,8 +219,8 @@ async function load() {
   } catch (e) {
     capture(e)
   }
-  // 操作工列表需要 execution:dispatch，无权限时静默为空，只影响下拉显示
-  operators.value = canDispatch.value ? await api.listOperators().catch(() => []) : []
+  // 操作工列表只认 execution:dispatch（仅持 workorder:write 的兼容账号请求会 403 并弹「无权限」），故不满足时不请求
+  operators.value = canListOperatorsWith(auth.can) ? await api.listOperators().catch(() => []) : []
 }
 
 /** 执行任务动作；busy 防止重复点击，失败显示 problem+json 中文提示。 */

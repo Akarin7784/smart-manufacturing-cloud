@@ -234,7 +234,26 @@ describe('派工面板（模拟实现）', () => {
     await panel.confirmAssign()
     await vi.waitFor(() => expect(document.body.textContent).toContain('工位不存在'))
   })
-  it('任务加载失败与无派工权限时操作工为空', async () => {
+  it('仅 workorder:write 时可派工但不请求操作工下拉；工号为空只显示姓名', async () => {
+    const mock = createMockDispatchApi()
+    const spy = vi.spyOn(mock, 'listOperators')
+    setDispatchApi(mock)
+    md.listStations.mockResolvedValue([])
+    const a = await mountAs('/workorders/WO1', WRITE)
+    await vi.waitFor(() => expect(a.w.find('.t-dispatch').exists()).toBe(true))
+    expect(spy).not.toHaveBeenCalled()
+    a.w.unmount()
+    const b = await mountAs('/workorders/WO1', ['workorder:read', 'execution:dispatch'])
+    await vi.waitFor(() => expect(spy).toHaveBeenCalled())
+    await click(b.w, '.t-dispatch')
+    await vi.waitFor(() => expect(document.body.querySelector('.r-person')).not.toBeNull())
+    const panel = b.w.findComponent({ name: 'OperationTaskPanel' }).vm as unknown as { assignForm: Record<string, string>; confirmAssign: () => Promise<void> }
+    panel.assignForm.stationCode = 'S9'
+    panel.assignForm.operator = 'op3'
+    await panel.confirmAssign()
+    await vi.waitFor(() => expect(b.w.find('.assign').text()).toBe('S9 · worker3'))
+  })
+    it('任务加载失败与无派工权限时操作工为空', async () => {
     const mock = createMockDispatchApi()
     mock.listTasks = () => Promise.reject(problem(500, 'internal-error', '服务异常'))
     setDispatchApi(mock)

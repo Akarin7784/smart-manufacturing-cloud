@@ -19,3 +19,8 @@ export function canReportWith(can: Can): boolean {
 export function canDispatchWith(can: Can): boolean {
   return can(PERM_EXECUTION_DISPATCH) || can(PERM_WORKORDER_WRITE)
 }
+
+/** 操作工下拉仅 execution:dispatch 可查（Gateway 与 auth-service 均不接受 workorder:write 兼容）。 */
+export function canListOperatorsWith(can: Can): boolean {
+  return can(PERM_EXECUTION_DISPATCH)
+}

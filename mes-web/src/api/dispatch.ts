@@ -7,7 +7,7 @@
  * 操作工下拉 GET /api/auth/operators 同样尚未实现，一并模拟。
  */
 import { http, HttpError } from './http'
-import { getProgress } from './workorders'
+import { getProgress, getRelease } from './workorders'
 
 /** 工序任务状态；是否已派工看 stationCode 是否为空（契约 OperationTaskStatus）。 */
 export type OperationTaskStatus = 'PENDING' | 'READY' | 'RUNNING' | 'PAUSED' | 'DONE' | 'CANCELLED'
@@ -42,11 +42,23 @@ export interface ReassignRequest extends DispatchRequest {
   expectedVersion: number
 }
 
-/** 操作工（/auth/operators，字段以最终契约为准）。 */
+/**
+ * 操作工（GET /api/auth/operators，PR #68 OperatorView）。id 为令牌 sub，派工 operator 传该值；
+ * 后端在工号 / 姓名为空时回退为用户名，前端仍按可空处理以防历史数据。
+ */
 export interface Operator {
   id: string
-  employeeNo: string
+  employeeNo: string | null
   name: string
+}
+
+/**
+ * 下拉显示：有工号显示「工号 姓名」，工号为空只显示姓名。
+ * PR #68 在工号为空时把 employeeNo 回退成用户名，此时常与 name 相同（如 "admin"），也只显示姓名，避免「admin admin」。
+ */
+export function operatorLabel(o: Operator): string {
+  const no = (o.employeeNo ?? '').trim()
+  return no && no !== o.name ? `${no} ${o.name}` : o.name
 }
 
 export interface OperationTaskQuery {
@@ -108,9 +120,13 @@ export function createHttpDispatchApi(): DispatchApi {
     (await http.post<Envelope<OperationTask>>(opPath(wo, op, action), body, { headers: { 'Idempotency-Key': key } })).data.data
   return {
     async listTasks(wo) {
-      const p = await getProgress(wo)
+      // /progress 带派工信息但不含工序名称与工作中心（PR #68 的 OperationProgressView），
+      // 这两项从下达快照 /release 补齐；快照不可用时降级为空，工位下拉不过滤
+      const [p, rel] = await Promise.all([getProgress(wo), getRelease(wo).catch(() => null)])
+      const ops = new Map((rel?.operations ?? []).map((o) => [o.opNo, o]))
       return p.operations.map((o) => ({
-        workOrderNo: wo, operationNo: o.operationNo, name: o.name ?? '', workCenterCode: o.workCenterCode ?? '',
+        workOrderNo: wo, operationNo: o.operationNo,
+        name: ops.get(o.operationNo)?.name ?? '', workCenterCode: ops.get(o.operationNo)?.workCenterCode ?? '',
         status: (o.taskStatus ?? 'PENDING') as OperationTaskStatus, stationCode: o.stationCode ?? null, operator: o.operator ?? null,
         plannedStart: o.plannedStart ?? null, plannedEnd: o.plannedEnd ?? null, dispatchedAt: null, dispatchedBy: null, version: o.version ?? 0
       }))
@@ -222,8 +238,9 @@ export function createMockDispatchApi(seed: (wo: string) => MockSeedOp[] = () =>
     },
     listOperators: async (q) => [
       { id: 'op1', employeeNo: 'E001', name: '操作员一' },
-      { id: 'op2', employeeNo: 'E002', name: '操作员二' }
-    ].filter((o) => !q || o.name.includes(q) || o.employeeNo.includes(q))
+      { id: 'op2', employeeNo: 'E002', name: '操作员二' },
+      { id: 'op3', employeeNo: null, name: 'worker3' }
+    ].filter((o) => !q || o.name.includes(q) || (o.employeeNo ?? '').includes(q))
   }
 }
 
