@@ -683,11 +683,91 @@ describe('报工页', () => {
     expect(m.w.find('.op-btn').exists()).toBe(false)
   })
 
+  type SearchVm = { onSearch: (q: string) => void; workOrders: { id: string }[]; searching: boolean; truncated: boolean; woId: string }
+  const searchVm = (w: { findComponent: (o: { name: string }) => { vm: unknown } }) => w.findComponent({ name: 'ReportView' }).vm as SearchVm
+
+  it('工单下拉远程搜索：防抖合并输入、关键字去空白、按两种可报工状态请求、空结果提示', async () => {
+    const { w } = await mountAs('/reports', WRITE)
+    await vi.waitFor(() => expect(api.listWorkOrders).toHaveBeenCalledTimes(2))
+    const vm = searchVm(w)
+    await vi.waitFor(() => expect(vm.workOrders.map((o) => o.id)).toEqual(['WO1', 'WO2', 'WO3']))
+    // 连续输入只在停顿后请求一次（最后的关键字）
+    vm.onSearch('齿')
+    vm.onSearch(' 齿轮 ')
+    expect(vm.searching).toBe(true)
+    await vi.waitFor(() => expect(api.listWorkOrders).toHaveBeenCalledTimes(4))
+    expect(api.listWorkOrders.mock.calls.slice(2).map((c) => c[0])).toEqual([
+      { page: 0, size: 100, status: 'IN_PROGRESS', keyword: '齿轮' }, { page: 0, size: 100, status: 'RELEASED', keyword: '齿轮' }])
+    await vi.waitFor(() => expect(vm.workOrders.map((o) => o.id)).toEqual(['WO2']))
+    expect(vm.searching).toBe(false)
+    // 无匹配：选项为空，下拉显示“没有匹配”
+    vm.onSearch('不存在')
+    await vi.waitFor(() => expect(vm.workOrders).toEqual([]))
+    const sel = () => w.findComponent({ name: 'ElSelect' })
+    expect(sel().props('noDataText')).toBe('没有匹配的可报工工单')
+    expect(sel().props('remote')).toBe(true)
+    // 清空关键字恢复默认列表
+    vm.onSearch('')
+    await vi.waitFor(() => expect(vm.workOrders.map((o) => o.id)).toEqual(['WO1', 'WO2', 'WO3']))
+    expect(api.listWorkOrders).toHaveBeenLastCalledWith({ page: 0, size: 100, status: 'RELEASED', keyword: undefined })
+    expect(sel().props('noDataText')).toBe('暂无可报工的工单')
+  })
+
+  it('工单搜索：慢响应不覆盖新结果；失败显示错误；超过一页时提示缩小范围；已选工单保留在选项中', async () => {
+    const { w } = await mountAs('/reports', WRITE)
+    const vm = searchVm(w)
+    await vi.waitFor(() => expect(vm.workOrders).toHaveLength(3))
+    expect(vm.truncated).toBe(false)
+    vm.woId = 'WO1'
+    // 第一次搜索挂起，第二次先返回
+    const pending: ((v: unknown) => void)[] = []
+    api.listWorkOrders.mockImplementationOnce(() => new Promise((r) => pending.push(r)) as never)
+      .mockImplementationOnce(() => new Promise((r) => pending.push(r)) as never)
+    vm.onSearch('WO')
+    await vi.waitFor(() => expect(pending).toHaveLength(2))
+    vm.onSearch('WO2')
+    await vi.waitFor(() => expect(vm.workOrders.map((o) => o.id)).toEqual(['WO1', 'WO2']))
+    // 旧请求此时才返回（含 12 条、总数很大），结果被丢弃
+    for (const r of pending) r({ items: orders, page: 0, size: 100, total: 500 })
+    await flushPromises()
+    expect(vm.workOrders.map((o) => o.id)).toEqual(['WO1', 'WO2'])
+    expect(vm.truncated).toBe(false)
+    expect(vm.searching).toBe(false)
+    // 总数超过本页：提示缩小范围
+    api.listWorkOrders.mockResolvedValueOnce({ items: [orders[0]], page: 0, size: 100, total: 150 })
+    vm.onSearch('W')
+    await vi.waitFor(() => expect(w.find('.wo-hint').exists()).toBe(true))
+    expect(w.find('.wo-hint').text()).toContain('100')
+    // 搜索失败
+    api.listWorkOrders.mockRejectedValueOnce(problem(400, 'validation-error', 'keyword: 过长'))
+    vm.onSearch('x'.repeat(10))
+    await vi.waitFor(() => expect(w.find('.top-err').text()).toContain('过长'))
+    expect(vm.searching).toBe(false)
+  })
+
+  it('从详情跳转预选的工单不在默认列表时按工单号补查并显示', async () => {
+    api.listWorkOrders.mockImplementation(async (q) => q?.keyword === 'WO77'
+      ? { items: [{ id: 'WO77', deviceId: 'D', product: '壳体', quantity: 1, status: 'RELEASED' }, { id: 'WO770', deviceId: 'D', product: 'x', quantity: 1, status: 'RELEASED' }].filter((o) => o.status === q.status), page: 0, size: 100, total: 2 }
+      : serverList(q))
+    const { w } = await mountAs('/reports?wo=WO77', WRITE)
+    const vm = searchVm(w)
+    await vi.waitFor(() => expect(vm.woId).toBe('WO77'))
+    await vi.waitFor(() => expect(vm.workOrders[0].id).toBe('WO77'))
+    expect(vm.workOrders.filter((o) => o.id === 'WO770')).toEqual([])
+    await vi.waitFor(() => expect(w.find('.wo-select').text()).toContain('WO77 · 壳体'))
+    // 补查失败时不影响进度加载
+    api.listWorkOrders.mockImplementation(async (q) => { if (q?.keyword) throw new Error('x'); return serverList(q) })
+    const m2 = await mountAs('/reports?wo=WO88', WRITE)
+    await vi.waitFor(() => expect(searchVm(m2.w).woId).toBe('WO88'))
+    await vi.waitFor(() => expect(api.getProgress).toHaveBeenCalledWith('WO88'))
+  })
+
   it('无预选工单时只列出可报工的工单', async () => {
     const { w } = await mountAs('/reports', WRITE)
     await vi.waitFor(() => expect(api.listWorkOrders).toHaveBeenCalledTimes(2))
     // 服务端按状态过滤可报工的工单，每页取上限 100
-    expect(api.listWorkOrders.mock.calls.map((c) => c[0])).toEqual([{ status: 'IN_PROGRESS', size: 100 }, { status: 'RELEASED', size: 100 }])
+    expect(api.listWorkOrders.mock.calls.map((c) => c[0])).toEqual([
+      { page: 0, size: 100, status: 'IN_PROGRESS', keyword: undefined }, { page: 0, size: 100, status: 'RELEASED', keyword: undefined }])
     const vm = w.findComponent({ name: 'ReportView' }).vm as unknown as { woId: string; onWorkOrderChange: () => Promise<void> }
     vm.woId = 'WO2'
     await vm.onWorkOrderChange()
