@@ -37,6 +37,10 @@ servers:
 tags:
   - name: reporting
     description: 工序报工、冲销与完工
+  - name: lifecycle
+    description: 工单创建、下达、冻结与恢复
+  - name: dispatch
+    description: 工序派工、开工、暂停与恢复（M1 设计）
 security:
   - userBearer: []
 
@@ -277,6 +281,460 @@ paths:
         '404':
           $ref: '#/components/responses/Problem'
 
+  /api/workorders:
+    post:
+      tags: [lifecycle]
+      operationId: createWorkOrder
+      summary: 创建工单（已实现，补契约）
+      description: |
+        幂等创建：首次 201；同键同内容重放 200 并带 Idempotent-Replayed: true；同键不同内容 422。创建时同步查询设备是否 ONLINE（离线 409 device-offline，设备服务不可用 503）。需要 `workorder:write`。
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkOrder'
+      responses:
+        '201':
+          description: 已创建。
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+    get:
+      tags: [lifecycle]
+      operationId: listWorkOrders
+      summary: 工单列表（已实现，补契约）
+      description: |
+        返回已持久化的工单。需要 `workorder:read`。
+      responses:
+        '200':
+          description: 工单列表。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderListResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/{workOrderNo}/release:
+    post:
+      tags: [lifecycle]
+      operationId: releaseWorkOrder
+      summary: 下达工单（已实现，补契约）
+      description: |
+        CREATED → RELEASED：冻结 BOM 展开与工艺快照、生成工序任务（首道 READY，其余 PENDING）、整单预留物料。首次与重放都返回 200（重放带 Idempotent-Replayed: true）。
+        已被其他键下达或状态不允许 409 workorder-state-conflict；主数据无效 422 release-masterdata-invalid；物料短缺 409 material-shortage。需要 `workorder:write` 与 `masterdata:read`。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 已下达。
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderReleaseResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+    get:
+      tags: [lifecycle]
+      operationId: getWorkOrderRelease
+      summary: 查询下达快照（已实现，补契约）
+      description: |
+        返回版本、工序任务与物料预留。未下达 404 workorder-not-released。需要 `workorder:read`。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+      responses:
+        '200':
+          description: 下达快照。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderReleaseResponse'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/{workOrderNo}/hold:
+    post:
+      tags: [lifecycle]
+      operationId: holdWorkOrder
+      summary: 冻结工单（已实现，补契约）
+      description: |
+        RELEASED / IN_PROGRESS → ON_HOLD，记录 resumeTarget；同一原因重复冻结幂等。M1 起：RUNNING 的工序任务同时转 PAUSED。需要 `workorder:write`。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HoldRequest'
+      responses:
+        '200':
+          description: 已冻结。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderReleaseResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/{workOrderNo}/resume:
+    post:
+      tags: [lifecycle]
+      operationId: resumeWorkOrder
+      summary: 解除冻结原因（已实现，补契约）
+      description: |
+        解除一个冻结原因；全部解除后恢复到 resumeTarget。工序任务不自动恢复，需操作工 resume。需要 `workorder:write`。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResumeRequest'
+      responses:
+        '200':
+          description: 已解除。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderReleaseResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/{workOrderNo}/operations/{operationNo}/dispatch:
+    post:
+      tags: [dispatch]
+      operationId: dispatchOperation
+      summary: 派工（M1 设计）
+      description: |
+        允许 PENDING / READY 且未派工的任务；写入工位、操作工、计划时间，任务状态不变。工位不存在或不属于该工作中心 422 station-not-found。
+        M1 新增（设计见 docs/workorder-dispatch-design.md，实现前）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
+        任务状态不允许 409 task-state-conflict；乐观锁失败 409 concurrent-modification；幂等语义同报工。
+        需要 `execution:dispatch`（兼容期 `workorder:write` 亦可）。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/OperationNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DispatchRequest'
+      responses:
+        '200':
+          description: 成功（重放时 Idempotent-Replayed 为 true）。
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationTaskResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/{workOrderNo}/operations/{operationNo}/reassign:
+    post:
+      tags: [dispatch]
+      operationId: reassignOperation
+      summary: 改派（M1 设计）
+      description: |
+        允许 READY / PAUSED（含已报工）；RUNNING 返回 409 task-state-conflict，需先暂停。expectedVersion 不符 409 concurrent-modification。已有报工保留原工位与操作人。
+        M1 新增（设计见 docs/workorder-dispatch-design.md，实现前）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
+        任务状态不允许 409 task-state-conflict；乐观锁失败 409 concurrent-modification；幂等语义同报工。
+        需要 `execution:dispatch`（兼容期 `workorder:write` 亦可）。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/OperationNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReassignRequest'
+      responses:
+        '200':
+          description: 成功（重放时 Idempotent-Replayed 为 true）。
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationTaskResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/{workOrderNo}/operations/{operationNo}/cancel-dispatch:
+    post:
+      tags: [dispatch]
+      operationId: cancelOperationDispatch
+      summary: 取消派工（M1 设计）
+      description: |
+        允许已派工且无报工的 PENDING / READY 任务；未派工 409 task-not-dispatched。
+        M1 新增（设计见 docs/workorder-dispatch-design.md，实现前）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
+        任务状态不允许 409 task-state-conflict；乐观锁失败 409 concurrent-modification；幂等语义同报工。
+        需要 `execution:dispatch`（兼容期 `workorder:write` 亦可）。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/OperationNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskActionRequest'
+      responses:
+        '200':
+          description: 成功（重放时 Idempotent-Replayed 为 true）。
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationTaskResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/{workOrderNo}/operations/{operationNo}/start:
+    post:
+      tags: [dispatch]
+      operationId: startOperation
+      summary: 开工（M1 设计）
+      description: |
+        READY 且已派工 → RUNNING；未派工 409 task-not-dispatched；工单 ON_HOLD 409 workorder-state-conflict。设备预留 M1 为占位实现。
+        M1 新增（设计见 docs/workorder-dispatch-design.md，实现前）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
+        任务状态不允许 409 task-state-conflict；乐观锁失败 409 concurrent-modification；幂等语义同报工。
+        需要 `execution:report`（兼容期 `workorder:write` 亦可）。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/OperationNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskActionRequest'
+      responses:
+        '200':
+          description: 成功（重放时 Idempotent-Replayed 为 true）。
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationTaskResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/{workOrderNo}/operations/{operationNo}/pause:
+    post:
+      tags: [dispatch]
+      operationId: pauseOperation
+      summary: 暂停（M1 设计）
+      description: |
+        RUNNING → PAUSED，reason 必填。
+        M1 新增（设计见 docs/workorder-dispatch-design.md，实现前）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
+        任务状态不允许 409 task-state-conflict；乐观锁失败 409 concurrent-modification；幂等语义同报工。
+        需要 `execution:report`（兼容期 `workorder:write` 亦可）。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/OperationNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskActionRequest'
+      responses:
+        '200':
+          description: 成功（重放时 Idempotent-Replayed 为 true）。
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationTaskResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/{workOrderNo}/operations/{operationNo}/resume:
+    post:
+      tags: [dispatch]
+      operationId: resumeOperation
+      summary: 恢复（M1 设计）
+      description: |
+        PAUSED → RUNNING；工单 ON_HOLD 409 workorder-state-conflict。
+        M1 新增（设计见 docs/workorder-dispatch-design.md，实现前）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
+        任务状态不允许 409 task-state-conflict；乐观锁失败 409 concurrent-modification；幂等语义同报工。
+        需要 `execution:report`（兼容期 `workorder:write` 亦可）。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/OperationNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskActionRequest'
+      responses:
+        '200':
+          description: 成功（重放时 Idempotent-Replayed 为 true）。
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationTaskResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+  /api/operation-tasks:
+    get:
+      tags: [dispatch]
+      operationId: listOperationTasks
+      summary: 按工位查询工序任务（M1 设计）
+      description: 工位工作台任务列表，按计划开始时间、工单号排序。需要 `workorder:read`。
+      parameters:
+        - {name: station, in: query, required: false, description: 工位编码。, schema: {type: string}}
+        - {name: status, in: query, required: false, description: 任务状态，可重复。, schema: {type: array, items: {$ref: '#/components/schemas/OperationTaskStatus'}}, explode: true}
+        - {name: operator, in: query, required: false, description: 指派操作工。, schema: {type: string}}
+        - {name: page, in: query, required: false, description: 页码，从 0 开始。, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: size, in: query, required: false, description: 每页条数。, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+      responses:
+        '200':
+          description: 任务列表。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationTaskListResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+
 components:
   securitySchemes:
     userBearer:
@@ -338,8 +796,8 @@ components:
       description: 十进制数量字符串，最多 6 位小数（响应中固定 6 位）。
     ReportOperationRequest:
       type: object
-      description: 工序报工请求；数量可为 JSON 数字或十进制字符串，不得为负且合计大于 0。
-      required: [goodQty, defectQty, scrapQty, uom]
+      description: 工序报工请求；数量可为 JSON 数字或十进制字符串，不得为负且合计大于 0。laborHours 为 M1 新增必填字段（本次报工总工时，冲销时同步反冲），实现前服务端尚未校验。
+      required: [goodQty, defectQty, scrapQty, uom, laborHours]
       properties:
         goodQty:
           $ref: '#/components/schemas/Decimal'
@@ -351,6 +809,8 @@ components:
           type: string
           maxLength: 16
           description: 计量单位，同一工单内必须一致。
+        laborHours:
+          $ref: '#/components/schemas/Hours'
         lotNo:
           type: string
           maxLength: 64
@@ -566,6 +1026,159 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/WorkOrderCancellationView'
+    Hours:
+      type: string
+      description: 工时（小时），非负，最多 2 位小数，以十进制字符串传输。
+      pattern: '^\d{1,6}(\.\d{1,2})?$'
+    OperationTaskStatus:
+      type: string
+      enum: [PENDING, READY, RUNNING, PAUSED, DONE, CANCELLED]
+      description: 工序任务状态；是否已派工看 stationCode 是否为空。
+    DispatchRequest:
+      type: object
+      description: 派工请求。
+      required: [stationCode]
+      properties:
+        stationCode: {type: string, maxLength: 64, description: 工位编码（须属于该工序工作中心）。}
+        operator: {type: string, maxLength: 64, description: 指派操作工用户名（可空）。}
+        plannedStart: {type: string, format: date-time, description: 计划开始。}
+        plannedEnd: {type: string, format: date-time, description: 计划结束，须晚于计划开始。}
+        note: {type: string, maxLength: 256, description: 备注。}
+    ReassignRequest:
+      description: 改派请求；expectedVersion 为读到的任务版本。
+      allOf:
+        - $ref: '#/components/schemas/DispatchRequest'
+        - type: object
+          required: [expectedVersion]
+          properties:
+            expectedVersion: {type: integer, description: 任务版本（乐观锁）。}
+    TaskActionRequest:
+      type: object
+      description: 取消派工 / 开工 / 暂停 / 恢复请求；cancel-dispatch 与 pause 的 reason 必填。
+      properties:
+        reason: {type: string, maxLength: 256, description: 原因。}
+    OperationTaskView:
+      type: object
+      description: 工序任务（含派工信息）。
+      properties:
+        workOrderNo: {type: string, description: 工单号。}
+        operationNo: {type: string, description: 工序号。}
+        name: {type: string, description: 工序名称。}
+        workCenterCode: {type: string, description: 工作中心。}
+        status: {$ref: '#/components/schemas/OperationTaskStatus'}
+        stationCode: {type: [string, 'null'], description: 派工工位；null 为未派工。}
+        operator: {type: [string, 'null'], description: 指派操作工。}
+        plannedStart: {type: [string, 'null'], format: date-time, description: 计划开始。}
+        plannedEnd: {type: [string, 'null'], format: date-time, description: 计划结束。}
+        dispatchedAt: {type: [string, 'null'], format: date-time, description: 最近派工时间。}
+        dispatchedBy: {type: [string, 'null'], description: 最近派工人。}
+        version: {type: integer, description: 任务版本。}
+    OperationTaskResponse:
+      description: 工序任务响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/OperationTaskView'}
+    OperationTaskListResponse:
+      description: 工序任务列表响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              type: array
+              description: 任务。
+              items: {$ref: '#/components/schemas/OperationTaskView'}
+    CreateWorkOrder:
+      type: object
+      description: 创建工单请求。
+      required: [deviceId, product, quantity]
+      properties:
+        deviceId: {type: string, maxLength: 64, description: 设备 ID。}
+        product: {type: string, maxLength: 128, description: 产品编码。}
+        quantity: {type: integer, minimum: 1, maximum: 1000000, description: 计划数量。}
+    WorkOrder:
+      type: object
+      description: 工单。
+      properties:
+        id: {type: string, description: 工单号。}
+        deviceId: {type: string, description: 设备 ID。}
+        product: {type: string, description: 产品编码。}
+        quantity: {type: integer, description: 计划数量。}
+        status: {type: string, description: 工单状态。}
+    WorkOrderResponse:
+      description: 工单响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/WorkOrder'}
+    WorkOrderListResponse:
+      description: 工单列表响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              type: array
+              description: 工单。
+              items: {$ref: '#/components/schemas/WorkOrder'}
+    HoldReason:
+      type: string
+      enum: [MANUAL, LOT_HELD, FAI_FAILED, EQUIPMENT_FAULT, MATERIAL_RESERVATION_EXPIRED]
+      description: 冻结原因。
+    HoldRequest:
+      type: object
+      description: 冻结请求。
+      required: [reason]
+      properties:
+        reason: {$ref: '#/components/schemas/HoldReason'}
+        note: {type: string, maxLength: 256, description: 备注。}
+    ResumeRequest:
+      type: object
+      description: 解除冻结请求。
+      required: [reason]
+      properties:
+        reason: {$ref: '#/components/schemas/HoldReason'}
+        note: {type: string, maxLength: 256, description: 备注。}
+    WorkOrderReleaseView:
+      type: object
+      description: 下达快照。
+      properties:
+        orderId: {type: string, description: 工单号。}
+        status: {type: string, description: 工单状态。}
+        version: {type: integer, description: 工单版本。}
+        productCode: {type: string, description: 产品编码。}
+        bomVersion: {type: string, description: BOM 版本。}
+        routingVersion: {type: string, description: 工艺版本。}
+        releasedAt: {type: string, format: date-time, description: 下达时间。}
+        resumeTarget: {type: [string, 'null'], description: 冻结恢复目标。}
+        holdReasons: {type: array, items: {type: string}, description: 当前冻结原因。}
+        bomLineCount: {type: integer, description: BOM 快照行数。}
+        operations:
+          type: array
+          description: 工序任务快照。
+          items:
+            type: object
+            properties:
+              opNo: {type: string, description: 工序号。}
+              name: {type: string, description: 名称。}
+              workCenterCode: {type: string, description: 工作中心。}
+              status: {type: string, description: 任务状态。}
+              reportPoint: {type: boolean, description: 是否报工点。}
+              firstArticleRequired: {type: boolean, description: 是否首件检。}
+              inspectionPointCodes: {type: array, items: {type: string}, description: 检验点。}
+        reservation:
+          type: [object, 'null']
+          description: 物料预留（reservationId、status、expiresAt、lines）。
+    WorkOrderReleaseResponse:
+      description: 下达快照响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/WorkOrderReleaseView'}
     ProblemType:
       type: string
       description: |
