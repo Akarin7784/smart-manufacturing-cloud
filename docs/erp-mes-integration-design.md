@@ -44,7 +44,7 @@
 | ERP→MES（MES 返回） | `application/problem+json`，顶层 `type`，写法和 workorder / masterdata 一致 |
 | MES→ERP（ERP 返回） | 过渡期保持 `R{code,msg,data}`；OpenAPI 的错误 examples **只用 R**，码表见 `ErpErrorR`。MES→ERP **不**写 problem+json 错误样例 |
 
-身份不符（scope / audience）两边都是 **403**。
+两边一致：令牌缺失 / 无效 / 过期 / **aud 不符 → 401**；令牌有效但**身份或 scope 不对 → 403**（与 ERP #25 一致）。
 
 ## 2. ERP → MES：生产订单下达 → 创建工单
 - `POST /api/integration/erp/work-orders/dispatch`
@@ -70,13 +70,14 @@
 
 - 请求头 `Idempotency-Key` = 请求体 `requestNo`
 - 重试：网络 / 5xx / 429 / 40904 退避；401 刷新令牌后重试一次；400 / 403 / 40902 / 40903 不重试，转人工
-- 重复提交返回与首次**相同**的成功结果（同一 `erpDocumentNo`）
+- 成功体为 ERP 的 `R{code:0,msg,data}`，`data = {requestNo, erpDocumentNo, replayed, acceptedAt}`；重放 200 + `Idempotent-Replayed: true` + `replayed=true`，`erpDocumentNo`、`acceptedAt` 与首次相同
+- 原则（PM 拍板）：打到 ERP 的回调以 ERP `docs/integration`（ERP #25）为准，MES 对齐
 
 ## 4. 服务账号与 JWT
 | 方向 | 签发方 | client / scope / audience（提案） |
 | --- | --- | --- |
 | ERP → MES | MES `auth-service` `client_credentials` | `erp-integration` / `integration:workorder-dispatch` / `manufacturing-api` |
-| MES → ERP | 待 ERP 定义 | 提案 scope：`integration:material-issue`、`integration:finished-goods-receipt`、`integration:scrap` |
+| MES → ERP | ERP 签发（ERP #25，client `mes-integration`，aud `erp-api`） | `erp:integration:material-issue`、`erp:integration:finished-goods-receipt`、`erp:integration:scrap` |
 
 密钥只从环境变量或 Nacos 读取（如 `ERP_INTEGRATION_CLIENT_SECRET`），本公开仓库不提交任何密钥。
 
@@ -91,11 +92,14 @@
 | ~~OQ-ERR-1（部分）~~ | **已关闭（过渡）** | MES→ERP 保持 R；码表写入契约。ERP 是否最终改 problem+json 另议 |
 | OQ-SRC-1 | 仍开 | ERP 需新建 `docs/integration` 作为唯一事实来源 |
 | OQ-AUTH-1 | 仍开 | ERP→MES 是否接受 MES auth 签发的服务令牌及命名 |
-| OQ-AUTH-2 | 仍开 | MES→ERP：ERP 需新增服务账号（或接受 MES JWKS） |
+| ~~OQ-AUTH-2~~ | **已关闭（方案）** | ERP #25 定为 ERP 自有服务账号 `mes-integration`；待 ERP 实现 |
 | OQ-CB-1/2/3 | 仍开 | 三个回调在 ERP 中尚不存在：路径、字段、冲销报工反向领料 |
 | OQ-MAP-3 | 仍开 | uom、仓库编码两边主数据映射 |
 | ~~OQ-ERR-2~~ | **已关闭** | 按 ERP PR #25 统一 400 / 400，不新增细分码 |
-| OQ-ALIGN-1 | 仍开 | ERP PR #25 与本契约差异：aud 不符 ERP 为 401（本契约约定 403）；回调 scope 命名 `erp:integration:*`；成功体包 `R{code:0,data}`；领料必填字段不同 |
+| ~~OQ-ALIGN-1~~ | **已关闭** | 回调以 ERP #25 为准：aud 不符 401、scope `erp:integration:*`、成功体 `R{code:0,msg,data}`、领料字段照 #25 |
+| OQ-CB-4 | 仍开（小钱的 ERP 后续文档 PR） | 领料倒冲需要的 `operationNo`、`reportId`（追溯到工序 / 报工）在 ERP #25 中没有，MES 已从请求中去掉；请 ERP 补字段 |
+| OQ-CB-5 | 仍开（小钱） | ERP #25 的 `reasonCode` 仍写死枚举，按 PM 决定由小钱在后续文档 PR 中去掉，改为字典校验 |
+| OQ-DEC-1 | 仍开（备注） | ERP #25 `Decimal6` 接受 1–6 位小数（`1.5` 等于 `1.500000`）；MES 回调统一发 6 位，兼容。ERP→MES 下达仍要求固定 6 位 |
 
 ## 6. 测试约定
 OpenAPI 每个操作都有完整 examples：成功、幂等重放、401、403、400（含幂等键缺失 / 不一致、超 6 位小数、报废原因不在字典）、409（含 40902 / 40903 / 40904）。

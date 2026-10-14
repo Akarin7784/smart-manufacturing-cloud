@@ -37,7 +37,7 @@ info:
 
     ## 给契约测试 / mock 的说明
     每个操作的 `responses` 均带 **完整 examples**：成功、幂等重放（相同 body + `Idempotent-Replayed: true`）、
-    401（缺令牌 / 坏令牌）、403（scope 或 audience 不符）、400（幂等键缺失或不一致、数量超过 6 位小数）、409。ERP→MES 的错误为 problem+json（顶层 `type`）；MES→ERP 的错误为 ERP 的 `R{code,msg,data}`。
+    401（缺令牌 / 坏令牌 / aud 不符）、403（令牌有效但身份或 scope 不对）、400（幂等键缺失或不一致、数量超过 6 位小数）、409。ERP→MES 的错误为 problem+json（顶层 `type`）；MES→ERP 的错误为 ERP 的 `R{code,msg,data}`。
     测试工程师可直接按 examples 生成 mock 与契约测试，无需猜字段。
 servers:
   - url: http://localhost:8080
@@ -73,7 +73,7 @@ paths:
 
         - 数量为固定 6 位小数字符串；超过 6 位小数或格式不符直接 400 `validation-error`，**不四舍五入、不截断**。
 
-        - 身份不符（scope 或 audience）：403 `access-denied`（与 ERP 约定的边界规则对称）；缺令牌 / 令牌无效：401。
+        - 缺令牌 / 令牌无效 / 过期 / aud 不符：401 `authentication-required`；令牌有效但身份或 scope 不对：403 `access-denied`（与 ERP #25 一致）。
 
         需要服务令牌 scope `integration:workorder-dispatch`，aud `manufacturing-api`。'
       parameters:
@@ -210,8 +210,16 @@ paths:
                     status: 401
                     detail: 令牌无效或已过期
                     instance: /api/integration/erp/work-orders/dispatch
+                wrongAudience:
+                  summary: aud 不是 manufacturing-api（令牌无效）
+                  value:
+                    type: authentication-required
+                    title: 需要认证
+                    status: 401
+                    detail: 令牌受众不符
+                    instance: /api/integration/erp/work-orders/dispatch
         '403':
-          description: 身份不符：scope 或 audience 不对。
+          description: 令牌有效，但身份或 scope 不对。
           content:
             application/problem+json:
               schema:
@@ -225,13 +233,13 @@ paths:
                     status: 403
                     detail: 服务令牌缺少 scope integration:workorder-dispatch
                     instance: /api/integration/erp/work-orders/dispatch
-                wrongAudience:
-                  summary: aud 不是 manufacturing-api
+                wrongIdentity:
+                  summary: 有效的用户令牌（非服务身份）调用下达接口
                   value:
                     type: access-denied
                     title: 没有访问权限
                     status: 403
-                    detail: 服务令牌受众不符
+                    detail: 该接口只接受 erp-integration 服务身份
                     instance: /api/integration/erp/work-orders/dispatch
         '409':
           description: 幂等键冲突，或生产订单已绑定其他工单。
@@ -293,7 +301,9 @@ paths:
 
         - 数量超过 6 位小数：400 / 400，不四舍五入。
 
-        - 身份不符（scope / audience）：403 / 403。
+        - 令牌缺失 / 无效 / 过期 / aud≠`erp-api`：401 / 401；令牌有效但 scope 或身份不对：403 / 403。需要 scope `erp:integration:material-issue`（ERP #25 命名）。
+
+        - 成功体为 `R{code:0,msg,data}`，`data` 形状见 `CallbackAck`（与 ERP #25 一致）。
 
         - 错误体沿用 ERP 现有的 `R{code,msg,data}`（application/json），**不是** problem+json；码表见 `ErpErrorR`。
 
@@ -313,8 +323,6 @@ paths:
                   requestNo: MI-WO-20261014-0001-OP10-R0001
                   workOrderNo: WO-20261014-0001
                   erpProductionOrderNo: PO-2026-1001
-                  operationNo: OP10
-                  reportId: R0001
                   warehouseCode: W01
                   occurredAt: '2026-10-14T16:00:00+08:00'
                   lines:
@@ -329,27 +337,38 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CallbackAck'
+                $ref: '#/components/schemas/RCallbackAck'
               examples:
                 created:
                   summary: 首次
-                  value: &id001
-                    requestNo: MI-WO-20261014-0001-OP10-R0001
-                    erpDocumentNo: MAT-OUT-20261014-0088
-                    acceptedAt: '2026-10-14T16:00:01+08:00'
+                  value:
+                    code: 0
+                    msg: ok
+                    data:
+                      requestNo: MI-WO-20261014-0001-OP10-R0001
+                      erpDocumentNo: MAT-OUT-20261014-0088
+                      replayed: false
+                      acceptedAt: '2026-10-14T16:00:01+08:00'
         '200':
-          description: 幂等重放：同一 Idempotency-Key（= requestNo）且参数相同，body 与首次完全相同。
+          description: '幂等重放：同服务身份、同 requestNo、同内容 → 返回首次结果（同一 erpDocumentNo、acceptedAt），`data.replayed=true`，响应头 `Idempotent-Replayed: true`。'
           headers:
             Idempotent-Replayed:
               $ref: '#/components/headers/IdempotentReplayed'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CallbackAck'
+                $ref: '#/components/schemas/RCallbackAck'
               examples:
                 replay:
                   summary: 重放返回同一个 erpDocumentNo
-                  value: *id001
+                  value:
+                    code: 0
+                    msg: ok
+                    data:
+                      requestNo: MI-WO-20261014-0001-OP10-R0001
+                      erpDocumentNo: MAT-OUT-20261014-0088
+                      replayed: true
+                      acceptedAt: '2026-10-14T16:00:01+08:00'
         '400':
           description: 幂等键缺失或请求头与请求体不一致，或参数非法（含数量超过 6 位小数，不四舍五入）。
           content:
@@ -400,21 +419,27 @@ paths:
                     code: 401
                     msg: 未登录或登录已失效
                     data: null
+                wrongAudience:
+                  summary: aud 不是 erp-api（如 MES 签发的令牌、用户令牌）
+                  value:
+                    code: 401
+                    msg: 未登录或登录已失效
+                    data: null
         '403':
-          description: 身份不符：scope 或 audience 不对。
+          description: 令牌有效，但身份或 scope 不对。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErpErrorR'
               examples:
                 wrongScope:
-                  summary: 缺 scope integration:material-issue
+                  summary: 缺 scope erp:integration:material-issue
                   value:
                     code: 403
                     msg: 无权限
                     data: null
-                wrongAudience:
-                  summary: audience 不符
+                userToken:
+                  summary: 有效的用户 JWT 调用集成回调
                   value:
                     code: 403
                     msg: 无权限
@@ -444,6 +469,8 @@ paths:
                     code: 40903
                     msg: 单据状态已变更，请刷新后重试
                     data: null
+      security:
+      - erpServiceBearer: []
   /api/integration/mes/finished-goods-receipts:
     post:
       tags:
@@ -460,7 +487,9 @@ paths:
 
         - 数量超过 6 位小数：400 / 400，不四舍五入。
 
-        - 身份不符（scope / audience）：403 / 403。
+        - 令牌缺失 / 无效 / 过期 / aud≠`erp-api`：401 / 401；令牌有效但 scope 或身份不对：403 / 403。需要 scope `erp:integration:finished-goods-receipt`（ERP #25 命名）。
+
+        - 成功体为 `R{code:0,msg,data}`，`data` 形状见 `CallbackAck`（与 ERP #25 一致）。
 
         - 错误体沿用 ERP 现有的 `R{code,msg,data}`（application/json），**不是** problem+json；码表见 `ErpErrorR`。
 
@@ -492,27 +521,38 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CallbackAck'
+                $ref: '#/components/schemas/RCallbackAck'
               examples:
                 created:
                   summary: 首次
-                  value: &id002
-                    requestNo: FGR-WO-20261014-0001
-                    erpDocumentNo: FIN-IN-20261021-0012
-                    acceptedAt: '2026-10-14T16:00:01+08:00'
+                  value:
+                    code: 0
+                    msg: ok
+                    data:
+                      requestNo: FGR-WO-20261014-0001
+                      erpDocumentNo: FIN-IN-20261021-0012
+                      replayed: false
+                      acceptedAt: '2026-10-14T16:00:01+08:00'
         '200':
-          description: 幂等重放：同一 Idempotency-Key（= requestNo）且参数相同，body 与首次完全相同。
+          description: '幂等重放：同服务身份、同 requestNo、同内容 → 返回首次结果（同一 erpDocumentNo、acceptedAt），`data.replayed=true`，响应头 `Idempotent-Replayed: true`。'
           headers:
             Idempotent-Replayed:
               $ref: '#/components/headers/IdempotentReplayed'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CallbackAck'
+                $ref: '#/components/schemas/RCallbackAck'
               examples:
                 replay:
                   summary: 重放返回同一个 erpDocumentNo
-                  value: *id002
+                  value:
+                    code: 0
+                    msg: ok
+                    data:
+                      requestNo: FGR-WO-20261014-0001
+                      erpDocumentNo: FIN-IN-20261021-0012
+                      replayed: true
+                      acceptedAt: '2026-10-14T16:00:01+08:00'
         '400':
           description: 幂等键缺失或请求头与请求体不一致，或参数非法（含数量超过 6 位小数，不四舍五入）。
           content:
@@ -563,21 +603,27 @@ paths:
                     code: 401
                     msg: 未登录或登录已失效
                     data: null
+                wrongAudience:
+                  summary: aud 不是 erp-api（如 MES 签发的令牌、用户令牌）
+                  value:
+                    code: 401
+                    msg: 未登录或登录已失效
+                    data: null
         '403':
-          description: 身份不符：scope 或 audience 不对。
+          description: 令牌有效，但身份或 scope 不对。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErpErrorR'
               examples:
                 wrongScope:
-                  summary: 缺 scope integration:finished-goods-receipt
+                  summary: 缺 scope erp:integration:finished-goods-receipt
                   value:
                     code: 403
                     msg: 无权限
                     data: null
-                wrongAudience:
-                  summary: audience 不符
+                userToken:
+                  summary: 有效的用户 JWT 调用集成回调
                   value:
                     code: 403
                     msg: 无权限
@@ -607,6 +653,8 @@ paths:
                     code: 40903
                     msg: 单据状态已变更，请刷新后重试
                     data: null
+      security:
+      - erpServiceBearer: []
   /api/integration/mes/scraps:
     post:
       tags:
@@ -623,7 +671,9 @@ paths:
 
         - 数量超过 6 位小数：400 / 400，不四舍五入。
 
-        - 身份不符（scope / audience）：403 / 403。
+        - 令牌缺失 / 无效 / 过期 / aud≠`erp-api`：401 / 401；令牌有效但 scope 或身份不对：403 / 403。需要 scope `erp:integration:scrap`（ERP #25 命名）。
+
+        - 成功体为 `R{code:0,msg,data}`，`data` 形状见 `CallbackAck`（与 ERP #25 一致）。
 
         - 错误体沿用 ERP 现有的 `R{code,msg,data}`（application/json），**不是** problem+json；码表见 `ErpErrorR`。
 
@@ -658,27 +708,38 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CallbackAck'
+                $ref: '#/components/schemas/RCallbackAck'
               examples:
                 created:
                   summary: 首次
-                  value: &id003
-                    requestNo: SCR-WO-20261014-0001-OP20-R0002
-                    erpDocumentNo: SCRAP-20261020-0003
-                    acceptedAt: '2026-10-14T16:00:01+08:00'
+                  value:
+                    code: 0
+                    msg: ok
+                    data:
+                      requestNo: SCR-WO-20261014-0001-OP20-R0002
+                      erpDocumentNo: SCRAP-20261020-0003
+                      replayed: false
+                      acceptedAt: '2026-10-14T16:00:01+08:00'
         '200':
-          description: 幂等重放：同一 Idempotency-Key（= requestNo）且参数相同，body 与首次完全相同。
+          description: '幂等重放：同服务身份、同 requestNo、同内容 → 返回首次结果（同一 erpDocumentNo、acceptedAt），`data.replayed=true`，响应头 `Idempotent-Replayed: true`。'
           headers:
             Idempotent-Replayed:
               $ref: '#/components/headers/IdempotentReplayed'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CallbackAck'
+                $ref: '#/components/schemas/RCallbackAck'
               examples:
                 replay:
                   summary: 重放返回同一个 erpDocumentNo
-                  value: *id003
+                  value:
+                    code: 0
+                    msg: ok
+                    data:
+                      requestNo: SCR-WO-20261014-0001-OP20-R0002
+                      erpDocumentNo: SCRAP-20261020-0003
+                      replayed: true
+                      acceptedAt: '2026-10-14T16:00:01+08:00'
         '400':
           description: 幂等键缺失或请求头与请求体不一致，或参数非法（含数量超过 6 位小数，不四舍五入）。
           content:
@@ -735,21 +796,27 @@ paths:
                     code: 401
                     msg: 未登录或登录已失效
                     data: null
+                wrongAudience:
+                  summary: aud 不是 erp-api（如 MES 签发的令牌、用户令牌）
+                  value:
+                    code: 401
+                    msg: 未登录或登录已失效
+                    data: null
         '403':
-          description: 身份不符：scope 或 audience 不对。
+          description: 令牌有效，但身份或 scope 不对。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErpErrorR'
               examples:
                 wrongScope:
-                  summary: 缺 scope integration:scrap
+                  summary: 缺 scope erp:integration:scrap
                   value:
                     code: 403
                     msg: 无权限
                     data: null
-                wrongAudience:
-                  summary: audience 不符
+                userToken:
+                  summary: 有效的用户 JWT 调用集成回调
                   value:
                     code: 403
                     msg: 无权限
@@ -779,22 +846,19 @@ paths:
                     code: 40903
                     msg: 单据状态已变更，请刷新后重试
                     data: null
+      security:
+      - erpServiceBearer: []
 components:
   securitySchemes:
     erpServiceBearer:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: 'MES auth-service 签发的服务令牌（`POST /api/auth/oauth2/token`，`grant_type=client_credentials`）。
+      description: 'ERP→MES：MES auth-service `client_credentials` 签发，client `erp-integration`，scope `integration:workorder-dispatch`，aud `manufacturing-api`。
 
-        提案客户端 `erp-integration`：ERP→MES 申请 scope `integration:workorder-dispatch`，audience `manufacturing-api`。
+        MES→ERP：ERP 签发（ERP #25：`POST /api/auth/oauth2/token`，client `mes-integration`，aud `erp-api`），scope `erp:integration:material-issue` / `erp:integration:finished-goods-receipt` / `erp:integration:scrap`。
 
-        MES→ERP 方向的客户端/scope/audience 由 ERP 定义（OQ-AUTH-2）。
-
-        明文密钥仅环境变量 / Nacos（如 `ERP_INTEGRATION_CLIENT_SECRET`），不得入库。
-
-
-        MES→ERP：ERP 校验服务身份，scope / audience 不符返回 403。'
+        两个方向一致：令牌缺失 / 无效 / 过期 / aud 不符 → 401；令牌有效但身份或 scope 不对 → 403。密钥只来自环境变量 / Nacos（如 `ERP_INTEGRATION_CLIENT_SECRET`、`ERP_MES_CLIENT_SECRET`），不入库。'
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -932,8 +996,7 @@ components:
       required:
       - requestNo
       - workOrderNo
-      - operationNo
-      - reportId
+      - erpProductionOrderNo
       - warehouseCode
       - occurredAt
       - lines
@@ -959,14 +1022,7 @@ components:
           minItems: 1
           items:
             $ref: '#/components/schemas/MaterialIssueLine'
-        operationNo:
-          type: string
-          maxLength: 16
-          description: 倒冲来源工序。
-        reportId:
-          type: string
-          maxLength: 64
-          description: 倒冲来源报工记录 ID。
+      description: '领料（报工倒冲）回传，字段与必填项完全按 ERP #25；MES 需要但 #25 没有的字段见 OQ-CB-4。'
     FinishedGoodsReceiptRequest:
       type: object
       required:
@@ -1058,6 +1114,7 @@ components:
       required:
       - requestNo
       - erpDocumentNo
+      - replayed
       - acceptedAt
       properties:
         requestNo:
@@ -1065,9 +1122,13 @@ components:
         erpDocumentNo:
           type: string
           description: ERP 生成的单据号。
+        replayed:
+          type: boolean
+          description: true 表示本次为幂等重放。
         acceptedAt:
           type: string
           format: date-time
+          description: 首次受理时间（重放时不变）。
     ProblemType:
       type: string
       description: '本集成契约用到的 problem type（与工单/主数据同写法）。新增 type 须同步设计文档。
@@ -1139,9 +1200,9 @@ components:
 
         | 400 | 400 | 参数错误：字段校验、引用不存在、reasonCode 不在字典、数量超过 6 位小数、Idempotency-Key / requestNo 缺失或不一致 | ERP 现有 | 不重试，告警 |
 
-        | 401 | 401 | 未认证 / 令牌无效 | ERP 现有 | 刷新令牌后重试一次 |
+        | 401 | 401 | 令牌缺失 / 无效 / 过期 / aud 不符 | ERP 现有 | 刷新令牌后重试一次 |
 
-        | 403 | 403 | 身份不符（scope / audience） | ERP 现有 | 不重试，告警 |
+        | 403 | 403 | 令牌有效但 scope 或身份不对 | ERP 现有 | 不重试，告警 |
 
         | 409 | 40902 | 同一请求号、参数不同 | ERP 现有 | 不重试，告警 |
 
@@ -1163,3 +1224,20 @@ components:
           description: 说明，不用于分支。
         data:
           description: 通常为 null。
+    RCallbackAck:
+      description: 'ERP 回调成功体 `R{code:0,msg,data}`（与 ERP #25 一致）。'
+      allOf:
+      - type: object
+        required:
+        - code
+        - msg
+        - data
+        properties:
+          code:
+            const: 0
+            description: 成功固定为 0。
+          msg:
+            type: string
+            description: 成功为 ok。
+          data:
+            $ref: '#/components/schemas/CallbackAck'
