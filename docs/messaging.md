@@ -104,7 +104,7 @@
 | `workOrderNo` | 工单号 |
 | `operationNo` | 工序号 |
 | `materialCode` | 物料编码 |
-| `lotNo` | 批次号 |
+| `lotNo` | 批次号，**必有**：报工请求带了就用请求值，否则缺省为 `workOrderNo`；`DefectReversed` 与原报工一致。质检回写库存直接透传 |
 | `uom` | 计量单位 |
 | `defectQty` | 不良数量，`DECIMAL(18,6)`，JSON 中用十进制字符串表示，避免浮点精度丢失 |
 | `reportId` | 仅 `DefectReported`：本次报工记录 ID（`DefectReversed` 不含该字段） |

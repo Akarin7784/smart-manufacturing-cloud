@@ -229,6 +229,30 @@ class OperationReportingMySqlIT {
         assertThat(jdbc.queryForObject("select count(*) from wo_operation_report where reversed_report_id = ?", Integer.class, rid)).isEqualTo(1);
     }
 
+    /** 报工未带 lotNo 时缺省为工单号：落库、响应、DefectReported 与 DefectReversed 均使用工单号；空白 lotNo 返回 400。 */
+    @Test void lotNoDefaultsToWorkOrderNo() throws Exception {
+        String id = released(10);
+        String path = "/workorders/" + id + "/operations/OP10/reports";
+        // 空白批次号被拒绝，避免空串批次流入库存
+        assertProblem(call(path, UUID.randomUUID().toString(),
+            "{\"goodQty\":\"1\",\"defectQty\":\"0\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"lotNo\":\"  \"}"), 400, "validation-error");
+        // 超长批次号（> 64，与 lot_no 列宽一致）被拒绝
+        assertProblem(call(path, UUID.randomUUID().toString(),
+            "{\"goodQty\":\"1\",\"defectQty\":\"0\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"lotNo\":\"" + "L".repeat(65) + "\"}"), 400, "validation-error");
+        MvcResult r = call(path, UUID.randomUUID().toString(), "{\"goodQty\":\"8\",\"defectQty\":\"2\",\"scrapQty\":\"0\",\"uom\":\"PCS\"}");
+        assertThat(r.getResponse().getStatus()).isEqualTo(201);
+        String rid = reportId(r);
+        assertThat(json(r).at("/data/report/lotNo").asText()).isEqualTo(id);
+        assertThat(jdbc.queryForObject("select lot_no from wo_operation_report where report_id = ?", String.class, rid)).isEqualTo(id);
+        var reported = events(id, "DefectReported");
+        assertThat(reported).hasSize(1);
+        assertThat(reported.get(0).get("lotNo").asText()).isEqualTo(id);
+        reverse(id, rid);
+        var reversed = events(id, "DefectReversed");
+        assertThat(reversed).hasSize(1);
+        assertThat(reversed.get(0).get("lotNo").asText()).isEqualTo(id);
+    }
+
     /** 门槛 3：冲销后累计、状态与事件一致；COMPLETED→IN_PROGRESS；只能冲销一次；全部冲销后仍为 IN_PROGRESS。 */
     @Test void reversalKeepsProgressStatusAndEventsConsistent() throws Exception {
         String id = released(10);
