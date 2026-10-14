@@ -25,6 +25,22 @@ public class QualityMetrics {
     public static final String INVALID = "invalid";
     /** 清理任务涉及的表，作为 mes_quality_cleanup_deleted_total 的 table 标签取值。 */
     public static final java.util.List<String> CLEANUP_TABLES = java.util.List.of("consumed_event", "defect_report_lock");
+    /** mes_quality_writeback_total 的 result 取值（与 observability.md 第 5 节、运维告警一致，不得改名）。 */
+    public static final String WRITEBACK_OK = "ok";
+    public static final String WRITEBACK_REPLAY = "replay";
+    public static final String WRITEBACK_RETRY = "retry";
+    public static final String WRITEBACK_FAILED = "failed";
+    public static final String WRITEBACK_CANCELLED = "cancelled";
+    public static final String WRITEBACK_RESOLVED_MANUALLY = "resolved_manually";
+    public static final java.util.List<String> WRITEBACK_RESULTS = java.util.List.of(WRITEBACK_OK, WRITEBACK_REPLAY, WRITEBACK_RETRY,
+        WRITEBACK_FAILED, WRITEBACK_CANCELLED, WRITEBACK_RESOLVED_MANUALLY);
+    /** 库存调用鉴权失败的 operation 取值（token 为向认证服务申请令牌被拒）。 */
+    public static final java.util.List<String> INVENTORY_AUTH_OPERATIONS = java.util.List.of("hold", "release", "scrap", "token");
+    /** 库存契约不一致的 operation 取值。 */
+    public static final java.util.List<String> INVENTORY_CONTRACT_OPERATIONS = java.util.List.of("hold", "release", "scrap");
+    /** mes_quality_writeback_retry_total 的 operation 与 reason 取值。 */
+    public static final java.util.List<String> WRITEBACK_RETRY_OPERATIONS = java.util.List.of("hold", "release", "scrap");
+    public static final java.util.List<String> WRITEBACK_RETRY_REASONS = java.util.List.of("not_found_unknown", "5xx", "429", "network");
     private final MeterRegistry registry;
     private final Counter pendingExpired;
 
@@ -51,6 +67,54 @@ public class QualityMetrics {
         Gauge.builder("mes.quality.ncr.open", jdbc,
                 j -> count(j, "select count(*) from ncr where status in ('OPEN', 'UNDER_REVIEW', 'DISPOSED')"))
             .description("未关闭的 NCR 数").register(registry);
+        // mes_quality_writeback_total{result}：6 个结果序列启动预注册为 0，告警（failed、resolved_manually 增量）从 0 开始可判定。
+        for (String result : WRITEBACK_RESULTS) writebackCounter(result);
+        // mes_quality_inventory_auth_failure_total{operation} 与 mes_quality_inventory_contract_mismatch_total{operation}：启动预注册为 0。
+        for (String op : INVENTORY_AUTH_OPERATIONS) authFailureCounter(op);
+        for (String op : INVENTORY_CONTRACT_OPERATIONS) contractMismatchCounter(op);
+        // mes_quality_writeback_retry_total{operation,reason}：3 × 4 个序列启动预注册为 0。
+        for (String op : WRITEBACK_RETRY_OPERATIONS) for (String reason : WRITEBACK_RETRY_REASONS) retryCounter(op, reason);
+        // mes_quality_writeback_pending：PENDING（含退避中）与 RUNNING（执行中）的回写任务数，抓取时查询（走 status, next_attempt_at 索引），启动即 0。
+        Gauge.builder("mes.quality.writeback.pending", jdbc,
+                j -> count(j, "select count(*) from inventory_writeback where status in ('PENDING', 'RUNNING')"))
+            .description("待执行的库存回写任务数").register(registry);
+    }
+
+    /** 库存回写结果计数（提交后计数：回写事务回滚不产生虚假计数）。 */
+    public void writeback(String result) {
+        afterCommit(() -> writebackCounter(result).increment());
+    }
+
+    /** 库存调用鉴权失败（401 刷新令牌后仍 401、403、令牌端点 4xx），提交后计数。 */
+    public void inventoryAuthFailure(String operation) {
+        afterCommit(() -> authFailureCounter(operation).increment());
+    }
+
+    /** 库存返回契约之外或说明请求构造有误的响应（400、422 idempotency-key-conflict、未约定状态、2xx 缺 txnId），提交后计数。 */
+    public void inventoryContractMismatch(String operation) {
+        afterCommit(() -> contractMismatchCounter(operation).increment());
+    }
+
+    /** 每次进入退避重试计一次（提交后计数），按 operation 与重试原因区分。 */
+    public void writebackRetry(String operation, String reason) {
+        afterCommit(() -> retryCounter(operation, reason).increment());
+    }
+
+    private Counter retryCounter(String op, String reason) {
+        return Counter.builder("mes.quality.writeback.retry").description("库存回写退避重试次数").tag("operation", op).tag("reason", reason)
+            .register(registry);
+    }
+
+    private Counter authFailureCounter(String op) {
+        return Counter.builder("mes.quality.inventory.auth.failure").description("调用库存鉴权失败").tag("operation", op).register(registry);
+    }
+
+    private Counter contractMismatchCounter(String op) {
+        return Counter.builder("mes.quality.inventory.contract.mismatch").description("库存响应与契约不一致").tag("operation", op).register(registry);
+    }
+
+    private Counter writebackCounter(String result) {
+        return Counter.builder("mes.quality.writeback").description("库存回写任务执行结果").tag("result", result).register(registry);
     }
 
     private static double count(JdbcTemplate jdbc, String sql) {
@@ -59,7 +123,7 @@ public class QualityMetrics {
     }
 
     /**
-     * mes_quality_api_total{result}：修改类接口结果。取值为 ok、replay、7 种 ProblemType 的下划线写法以及兜底 error。
+     * mes_quality_api_total{result}：修改类接口结果。取值为 ok、replay、8 种 ProblemType 的下划线写法以及兜底 error。
      * 在事务结束后由控制器调用，因此不需要 afterCommit。
      */
     public void api(String result) {

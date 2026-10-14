@@ -25,7 +25,8 @@ import java.util.regex.Pattern;
  *   <li>写操作都要求调用方已开启事务（MANDATORY）：HTTP 写入经 {@link IdempotencyService}（READ COMMITTED），
  *       事件消费经 {@link DefectEventHandler}，状态变更、处置行、outbox 事件同一事务提交。</li>
  *   <li>状态判断前先 {@code SELECT ... FOR UPDATE} 锁 NCR 行，同一 NCR 的并发处置串行执行，累计量不会超过不良量。</li>
- *   <li>本期所有处置（含 SCRAP）只登记记录，<b>不调用库存服务、不改动库存</b>。</li>
+ *   <li>库存回写（QC-HOLD）不在本事务内调用库存：建单、处置、作废时在同一事务写入回写任务（{@link WritebackService}），
+ *       由 {@link WritebackWorker} 异步执行；关闭前要求回写任务全部到终态。</li>
  *   <li>version 每次状态或处置变化 +1，即事件 aggregateVersion。</li>
  * </ul>
  */
@@ -40,10 +41,12 @@ public class NcrService {
     private final OutboxWriter outbox;
     private final QualityMetrics metrics;
     private final NcrNumberGenerator numbers;
+    private final WritebackService writebacks;
     private final Clock clock;
 
-    public NcrService(JdbcTemplate jdbc, OutboxWriter outbox, QualityMetrics metrics, NcrNumberGenerator numbers, Clock clock) {
-        this.jdbc = jdbc; this.outbox = outbox; this.metrics = metrics; this.numbers = numbers; this.clock = clock;
+    public NcrService(JdbcTemplate jdbc, OutboxWriter outbox, QualityMetrics metrics, NcrNumberGenerator numbers, WritebackService writebacks,
+                      Clock clock) {
+        this.jdbc = jdbc; this.outbox = outbox; this.metrics = metrics; this.numbers = numbers; this.writebacks = writebacks; this.clock = clock;
     }
 
     /** NCR 行（不含处置行）。 */
@@ -117,7 +120,8 @@ public class NcrService {
 
     /**
      * 登记（部分）处置：仅 UNDER_REVIEW；uom 必须等于 NCR 单位（422 uom-mismatch）；数量不得超过剩余待处置量（422 over-dispose）。
-     * 累计量等于不良量时自动转 DISPOSED。每条处置行发一次 NcrDisposed。SCRAP 等所有类型都不改动库存。
+     * 累计量等于不良量时自动转 DISPOSED。每条处置行发一次 NcrDisposed，并在同一事务写一条库存回写任务
+     * （SCRAP → 报废出库；REWORK / CONCESSION → 放行出库，dispositionId 取处置行编号 line_no）。
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public Ncr dispose(String ncrNo, String operator, CreateDisposition request) {
@@ -139,9 +143,12 @@ public class NcrService {
         Instant now = clock.instant();
         String dispositionId = UUID.randomUUID().toString();
         Integer lines = jdbc.queryForObject("select count(*) from ncr_disposition where ncr_no = ?", Integer.class, ncrNo);
+        int lineNo = (lines == null ? 0 : lines) + 1;
         jdbc.update("insert into ncr_disposition (disposition_id, ncr_no, line_no, type, qty, uom, reason, operator, disposed_at)"
-                + " values (?, ?, ?, ?, ?, ?, ?, ?, ?)", dispositionId, ncrNo, (lines == null ? 0 : lines) + 1, type.name(), qty,
+                + " values (?, ?, ?, ?, ?, ?, ?, ?, ?)", dispositionId, ncrNo, lineNo, type.name(), qty,
             ncr.uom(), request.reason(), operator, Timestamp.from(now));
+        // 处置行只追加、line_no 在 NCR 内唯一且不复用（行锁下分配），作为库存请求的 dispositionId，幂等键因此稳定。
+        writebacks.enqueueDisposition(ncrNo, lineNo, type, ncr.materialCode(), ncr.lotNo(), ncr.uom(), qty);
         BigDecimal disposed = ncr.disposedQty().add(qty);
         Status next = disposed.compareTo(ncr.defectQty()) == 0 ? Status.DISPOSED : Status.UNDER_REVIEW;
         jdbc.update("update ncr set disposed_qty = ?, status = ?, version = version + 1, updated_at = ? where ncr_no = ?",
@@ -156,13 +163,17 @@ public class NcrService {
         return get(ncrNo);
     }
 
-    /** 关闭：DISPOSED → CLOSED；已 CLOSED 返回当前状态（幂等）；作废 409 ncr-voided；其他 409 invalid-status-transition。 */
+    /**
+     * 关闭：DISPOSED → CLOSED；已 CLOSED 返回当前状态（幂等）；作废 409 ncr-voided；其他 409 invalid-status-transition；
+     * 仍有 PENDING / FAILED 的库存回写任务 409 writeback-pending。
+     */
     @Transactional(propagation = Propagation.MANDATORY)
     public Ncr close(String ncrNo) {
         Row ncr = load(ncrNo, true);
         if (ncr.status() == Status.CLOSED) return toDto(ncr);
         rejectVoided(ncr);
         if (ncr.status() != Status.DISPOSED) throw transition(ncr, "关闭");
+        writebacks.assertSettled(ncrNo);
         updateStatus(ncr, Status.CLOSED);
         outbox.append("NcrClosed", ncrNo, Map.of());
         return get(ncrNo);
@@ -174,10 +185,11 @@ public class NcrService {
     public record DefectReport(String reportId, String workOrderNo, String operationNo, String materialCode, String lotNo,
                                String uom, BigDecimal defectQty) {}
 
-    /** 按报工建 OPEN 的 NCR 并发 NcrOpened。 */
+    /** 按报工建 OPEN 的 NCR 并发 NcrOpened，同一事务写 HOLD 回写任务（不良数量入库存 QC-HOLD）。 */
     @Transactional(propagation = Propagation.MANDATORY)
     public String open(DefectReport report) {
         String ncrNo = insert(report, Status.OPEN, null, null, null);
+        writebacks.enqueueHold(ncrNo, report.materialCode(), report.lotNo(), report.uom(), report.defectQty());
         Map<String, Object> extra = new LinkedHashMap<>();
         extra.put("materialCode", report.materialCode());
         extra.put("uom", report.uom());
@@ -196,12 +208,16 @@ public class NcrService {
         return ncrNo;
     }
 
-    /** 未处置的 NCR（OPEN/UNDER_REVIEW 且无处置行）被冲销：转 VOIDED（REVERSED）并发 NcrVoided。调用方已持有 NCR 行锁并检查过状态。 */
+    /**
+     * 未处置的 NCR（OPEN/UNDER_REVIEW 且无处置行）被冲销：转 VOIDED（REVERSED）并发 NcrVoided。调用方已持有 NCR 行锁并检查过状态。
+     * 同一事务按 HOLD 是否尝试过决定取消 HOLD 或追加 VOID（作废扣回），见 {@link WritebackService#onVoided}。
+     */
     @Transactional(propagation = Propagation.MANDATORY)
     public void voidByReversal(String ncrNo, Status from, String reversedReportId, String reversalId) {
         jdbc.update("update ncr set status = 'VOIDED', void_reason = 'REVERSED', reversed_report_id = ?, reversal_id = ?,"
             + " version = version + 1, updated_at = ? where ncr_no = ?", reversedReportId, reversalId, Timestamp.from(clock.instant()), ncrNo);
         outbox.append("NcrVoided", ncrNo, voidedExtra(reversedReportId, reversalId, VoidReason.REVERSED));
+        writebacks.onVoided(ncrNo);
         metrics.transition(from.name(), Status.VOIDED.name());
     }
 

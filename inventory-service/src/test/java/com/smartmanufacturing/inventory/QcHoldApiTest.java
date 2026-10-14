@@ -77,6 +77,32 @@ class QcHoldApiTest {
             .containsExactly("QC_HOLD_IN", "SCRAP", "QC_HOLD_RELEASE", "QC_HOLD_RELEASE");
     }
 
+    /**
+     * 隔离接口专用 404（#55）：物料从未登记 → material-not-found；批次不存在 → lot-not-found；
+     * QC-HOLD 库位停用 → location-not-found（receipts 与出隔离都返回）。title 为固定中文，响应按契约校验。
+     */
+    @Test void qcHoldNotFoundTypes() throws Exception {
+        String never = "QH-NEVER-" + UUID.randomUUID().toString().substring(0, 8);
+        assertProblem(call("scraps", key(), "{" + base(never, "1") + ",\"dispositionId\":1}", quality(), 404), "material-not-found", "物料不存在");
+        call("receipts", key(), "{" + base("QH-L", "1") + "}", quality(), 201);
+        String otherLot = "{\"ncrNo\":\"NCR-20261012-0001\",\"materialCode\":\"QH-L\",\"uom\":\"pcs\",\"lotNo\":\"NO-SUCH\",\"qty\":\"1\"";
+        assertProblem(call("releases", key(), otherLot + ",\"reason\":\"NCR_VOIDED\"}", quality(), 404), "lot-not-found", "批次不存在");
+        jdbc.update("update warehouse_location set enabled = FALSE where code = 'QC-HOLD'");
+        try {
+            assertProblem(call("receipts", key(), "{" + base("QH-L", "1") + "}", quality(), 404), "location-not-found", "库位不存在");
+            assertProblem(call("scraps", key(), "{" + base("QH-L", "1") + ",\"dispositionId\":2}", quality(), 404), "location-not-found", "库位不存在");
+        } finally {
+            jdbc.update("update warehouse_location set enabled = TRUE where code = 'QC-HOLD'");
+        }
+    }
+
+    private static void assertProblem(MvcResult r, String type, String title) throws Exception {
+        var body = new com.fasterxml.jackson.databind.ObjectMapper().readTree(r.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8));
+        assertThat(body.get("type").asText()).isEqualTo(type);
+        assertThat(body.get("title").asText()).isEqualTo(title);
+        assertThat(body.get("status").asInt()).isEqualTo(404);
+    }
+
     /** 同键同请求重放首次响应；同键不同请求 422；缺键 400。 */
     @Test void idempotencyReusesExistingMechanism() throws Exception {
         String k = key();

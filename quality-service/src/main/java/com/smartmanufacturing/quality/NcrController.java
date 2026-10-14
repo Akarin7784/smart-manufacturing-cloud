@@ -19,11 +19,12 @@ import java.util.function.Supplier;
 @RequestMapping("/quality")
 public class NcrController {
     private final NcrService ncrs;
+    private final WritebackService writebacks;
     private final IdempotencyService idempotency;
     private final QualityMetrics metrics;
 
-    public NcrController(NcrService ncrs, IdempotencyService idempotency, QualityMetrics metrics) {
-        this.ncrs = ncrs; this.idempotency = idempotency; this.metrics = metrics;
+    public NcrController(NcrService ncrs, WritebackService writebacks, IdempotencyService idempotency, QualityMetrics metrics) {
+        this.ncrs = ncrs; this.writebacks = writebacks; this.idempotency = idempotency; this.metrics = metrics;
     }
 
     @GetMapping("/ncrs")
@@ -60,6 +61,36 @@ public class NcrController {
     public ResponseEntity<String> close(@PathVariable String ncrNo, @RequestHeader(value = "Idempotency-Key", required = false) String key,
                                         Authentication auth) {
         return write(auth, key, "ncr.close", Map.of("ncrNo", ncrNo), 200, () -> ncrs.close(ncrNo));
+    }
+
+    /** 查询 NCR 的库存回写任务（按创建顺序）。 */
+    @GetMapping("/ncrs/{ncrNo}/writebacks")
+    @PreAuthorize("hasAuthority('quality:read')")
+    public java.util.List<WritebackTask> writebacks(@PathVariable String ncrNo) { return writebacks.list(ncrNo); }
+
+    /** 人工重试 FAILED 的回写任务（重试窗口内），幂等键不变。 */
+    @PostMapping("/ncrs/{ncrNo}/writebacks/{writebackId}/retry")
+    @PreAuthorize("hasAuthority('quality:write')")
+    public ResponseEntity<String> retryWriteback(@PathVariable String ncrNo, @PathVariable long writebackId,
+                                                 @RequestHeader(value = "Idempotency-Key", required = false) String key, Authentication auth) {
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("ncrNo", ncrNo);
+        input.put("writebackId", writebackId);
+        return write(auth, key, "writeback.retry", input, 200, () -> writebacks.retry(ncrNo, writebackId));
+    }
+
+    /** 人工结案 FAILED 的回写任务：reason 必填，审计操作人取令牌 sub。 */
+    @PostMapping("/ncrs/{ncrNo}/writebacks/{writebackId}/resolve")
+    @PreAuthorize("hasAuthority('quality:write')")
+    public ResponseEntity<String> resolveWriteback(@PathVariable String ncrNo, @PathVariable long writebackId,
+                                                   @RequestHeader(value = "Idempotency-Key", required = false) String key,
+                                                   @RequestBody ResolveWriteback request, Authentication auth) {
+        String operator = CallerIdentity.of(auth);
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("ncrNo", ncrNo);
+        input.put("writebackId", writebackId);
+        input.put("request", request);
+        return write(auth, key, "writeback.resolve", input, 200, () -> writebacks.resolve(ncrNo, writebackId, operator, request.reason()));
     }
 
     @GetMapping("/pending-reversals")
