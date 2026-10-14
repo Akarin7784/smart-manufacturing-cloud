@@ -75,7 +75,7 @@ stateDiagram-v2
 `GET /api/workorders/{no}/progress` 的每道工序会附带 `taskStatus`、`stationCode`、`operator`、`plannedStart`、`plannedEnd`、`version`。
 
 **下拉数据来源**
-- 工位：`GET /api/masterdata/workcenters`（已有，返回结果里包含 stations），按任务的 `workCenterCode` 过滤。
+- 工位：`GET /api/workcenters`（已有，返回结果里包含 stations），按任务的 `workCenterCode` 过滤。
 - 操作工（Q3 已定）：新增 `GET /api/auth/operators`，需要 `execution:dispatch`；`/auth/users` 权限不放宽。只返回启用状态的用户，字段只有 `{id, employeeNo, name}`，不返回角色、手机号等。`id` 即派工请求的 `operator` 取值；`employeeNo` / `name` 取 auth_user.employee_no / display_name（V3 新增，可空），为空时回退为用户名。
 
 ## 5. 权限
