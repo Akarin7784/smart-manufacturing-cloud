@@ -246,6 +246,7 @@ import { useProblem } from '@/composables/useProblem'
 import { useAuthStore } from '@/stores/auth'
 import { canReportWith, PERM_WORKORDER_WRITE } from '@/utils/permissions'
 import OperationTaskPanel from '@/components/OperationTaskPanel.vue'
+import { isBusinessRejection } from '@/api/http'
 
 const route = useRoute()
 const router = useRouter()
@@ -292,16 +293,24 @@ async function load() {
   ])
 }
 
-/** 执行工单动作并刷新；busy 防重复点击，失败时显示 problem+json 解析后的原因。 */
-async function run(fn: () => Promise<unknown>, onOk?: () => void) {
+/**
+ * 执行工单动作并刷新；busy 防重复点击，失败时显示 problem+json 解析后的原因。
+ * renewKey 用于作废该动作的幂等键：成功后作废；409 / 422 业务拒绝时也作废并刷新数据（状态已变化，旧键重试无意义）；
+ * 网络错误、503 等保留原键，重试时由后端幂等去重。
+ */
+async function run(fn: () => Promise<unknown>, renewKey?: () => void) {
   if (busy.value) return
   busy.value = true
   act.reset()
   try {
     await fn()
-    onOk?.()
+    renewKey?.()
     await load()
   } catch (e) {
+    if (isBusinessRejection(e)) {
+      renewKey?.()
+      await load()
+    }
     act.capture(e)
   } finally {
     busy.value = false

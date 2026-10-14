@@ -1,8 +1,8 @@
 <!--
   报工页（车间平板）：选工单 → 选工序 → 录入合格/不良/报废数量与批次 → 提交。
-  接口：POST /api/workorders/{id}/operations/{opNo}/reports（需 workorder:write，带 Idempotency-Key）。
+  接口：POST /api/workorders/{id}/operations/{opNo}/reports（需 execution:report，兼容期 workorder:write 亦可；带 Idempotency-Key）。
   所有可点控件高度 ≥48px；数量输入使用 inputmode="decimal" 以唤起数字键盘。
-  注意：工时 laborHours 已按 M1 要求采集并发送，但后端 ReportOperationRequest 目前尚未定义该字段（会被忽略），待后端补齐。
+  工时 laborHours 为必填（小时，≥0，最多 2 位小数，以字符串发送）。
 -->
 <template>
   <div class="page">
@@ -252,7 +252,7 @@ async function submit() {
       goodQty: form.goodQty.trim() || '0',
       defectQty: form.defectQty.trim() || '0',
       scrapQty: form.scrapQty.trim() || '0',
-      // 工时以字符串发送，保留 2 位小数精度（后端暂未支持该字段，见 PR 说明）
+      // 工时以 2 位小数字符串发送，与契约 Hours 一致
       laborHours: Number(form.laborHours.trim()).toFixed(2),
       uom: form.uom.trim(),
       lotNo: normalizeLotNo(form.lotNo),

@@ -144,14 +144,61 @@ describe('工单详情', () => {
     api.completeWorkOrder.mockResolvedValueOnce({} as never)
     await click(w, '.act-complete')
     await vi.waitFor(() => expect(api.completeWorkOrder).toHaveBeenCalledTimes(2))
-    // 失败重试复用同一个幂等键
-    expect(api.completeWorkOrder.mock.calls[0][2]).toBe(api.completeWorkOrder.mock.calls[1][2])
+    // 409 业务拒绝：作废幂等键，下次完工使用新键
+    expect(api.completeWorkOrder.mock.calls[0][2]).not.toBe(api.completeWorkOrder.mock.calls[1][2])
     prompt.mockRejectedValueOnce('cancel')
     await click(w, '.act-complete')
     await flushPromises()
     expect(api.completeWorkOrder).toHaveBeenCalledTimes(2)
     await click(w, '.act-report')
     await vi.waitFor(() => expect(router.currentRoute.value.query.wo).toBe('WO1'))
+  })
+  it('工单动作：409/422 作废幂等键并刷新；503 与网络错误保留原键重试', async () => {
+    const { w } = await mountAs('/workorders/WO1', WRITE)
+    await vi.waitFor(() => expect(w.find('.act-complete').exists()).toBe(true))
+    const keys = () => api.completeWorkOrder.mock.calls.map((c) => c[2])
+    const progressCalls = () => api.getProgress.mock.calls.length
+    const complete = async () => {
+      prompt.mockResolvedValueOnce({ value: '短缺', action: 'confirm' } as never)
+      await click(w, '.act-complete')
+    }
+    // 503：保留原键
+    api.completeWorkOrder.mockRejectedValueOnce(problem(503, 'service-unavailable', '服务暂不可用'))
+    await complete()
+    await vi.waitFor(() => expect(w.find('.act-err').text()).toContain('服务暂不可用'))
+    // 网络错误（status 0）：保留原键
+    api.completeWorkOrder.mockRejectedValueOnce(new HttpError({ status: 0, message: '网络异常' }))
+    await complete()
+    await vi.waitFor(() => expect(keys()).toHaveLength(2))
+    expect(keys()[1]).toBe(keys()[0])
+    // 422：作废并刷新
+    const before = progressCalls()
+    api.completeWorkOrder.mockRejectedValueOnce(problem(422, 'validation-error', 'reason: 过长'))
+    await complete()
+    await vi.waitFor(() => expect(progressCalls()).toBeGreaterThan(before))
+    api.completeWorkOrder.mockResolvedValueOnce({} as never)
+    await complete()
+    await vi.waitFor(() => expect(keys()).toHaveLength(4))
+    expect(keys()[2]).toBe(keys()[0])
+    expect(keys()[3]).not.toBe(keys()[2])
+    // 成功后再次完工换新键
+    api.completeWorkOrder.mockResolvedValueOnce({} as never)
+    await complete()
+    await vi.waitFor(() => expect(keys()).toHaveLength(5))
+    expect(keys()[4]).not.toBe(keys()[3])
+  })
+  it('下达 409 作废键并刷新', async () => {
+    api.getProgress.mockResolvedValue(progress('CREATED'))
+    const { w } = await mountAs('/workorders/WO1', WRITE)
+    await vi.waitFor(() => expect(w.find('.act-release').exists()).toBe(true))
+    api.releaseWorkOrder.mockRejectedValueOnce(problem(409, 'MATERIAL_SHORTAGE', '物料短缺'))
+    await click(w, '.act-release')
+    await vi.waitFor(() => expect(w.find('.act-err').text()).toContain('物料短缺'))
+    api.releaseWorkOrder.mockResolvedValueOnce({} as never)
+    await click(w, '.act-release')
+    await vi.waitFor(() => expect(api.releaseWorkOrder).toHaveBeenCalledTimes(2))
+    const [k1, k2] = api.releaseWorkOrder.mock.calls.map((c) => c[1])
+    expect(k1).not.toBe(k2)
   })
   it('CREATED 可下达；ON_HOLD 显示解除原因；只读用户无按钮', async () => {
     api.getProgress.mockResolvedValue(progress('CREATED'))
@@ -285,6 +332,71 @@ describe('派工面板（真实 HTTP 实现 + 后端替身）', () => {
     await vi.waitFor(() => expect(c.w.find('.task').exists()).toBe(true))
     expect(operatorCalls()).toBe(before)
     expect(c.w.find('.t-dispatch').exists()).toBe(false)
+  })
+
+  const keyOf = (c: { headers?: unknown }) => AxiosHeaders.from(c.headers as AxiosHeaders).get('Idempotency-Key')
+  const postsTo = (f: FakeBackend, action: string) => f.calls.filter((c) => c.method === 'post' && c.url?.endsWith(`/${action}`))
+
+  it('改派 409（版本过期）→ 自动刷新拿到新 version → 再次改派成功，两次幂等键不同', async () => {
+    const f = useFake()
+    f.tasks[0].stationCode = 'S1'
+    f.tasks[0].version = 1
+    md.listStations.mockResolvedValue([{ code: 'S2', name: '二号位', workCenterCode: 'WC' }])
+    const { w } = await mountAs('/workorders/WO1', ['workorder:read', 'execution:dispatch'])
+    await vi.waitFor(() => expect(w.find('.t-reassign').exists()).toBe(true))
+    const panel = panelOf(w)
+    await click(w, '.t-reassign')
+    // 页面读到 version=1 后，他人改动使后端版本变为 2
+    f.tasks[0].version = 2
+    panel.assignForm.stationCode = 'S2'
+    await panel.confirmAssign()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('数据已被他人修改'))
+    // 409 后自动刷新：面板拿到 version=2
+    await vi.waitFor(() => expect(panel.tasks[0].version).toBe(2))
+    await panel.confirmAssign()
+    await vi.waitFor(() => expect(w.find('.assign').text()).toContain('S2'))
+    const calls = postsTo(f, 'reassign')
+    expect(calls).toHaveLength(2)
+    expect(JSON.parse(calls[0].data).expectedVersion).toBe(1)
+    expect(JSON.parse(calls[1].data).expectedVersion).toBe(2)
+    expect(keyOf(calls[0])).not.toBe(keyOf(calls[1]))
+  })
+
+  it('开工 409 task-state-conflict → 自动刷新任务状态 → 下次开工使用新幂等键', async () => {
+    const f = useFake()
+    f.tasks[0].stationCode = 'S1'
+    const { w } = await mountAs('/workorders/WO1', ['workorder:read', 'execution:report'])
+    await vi.waitFor(() => expect(w.find('.t-start').exists()).toBe(true))
+    const before = api.getProgress.mock.calls.length
+    f.failNext('start', 409, 'task-state-conflict')
+    await click(w, '.t-start')
+    await vi.waitFor(() => expect(w.find('.task-err').text()).toContain('派工任务当前状态不允许此操作'))
+    // 失败后重新拉取了任务（进度接口再次被调用）
+    await vi.waitFor(() => expect(api.getProgress.mock.calls.length).toBeGreaterThan(before))
+    await click(w, '.t-start')
+    await vi.waitFor(() => expect(w.find('.t-pause').exists()).toBe(true))
+    const calls = postsTo(f, 'start')
+    expect(calls).toHaveLength(2)
+    expect(keyOf(calls[0])).not.toBe(keyOf(calls[1]))
+  })
+
+  it('开工遇 503 与网络错误时重试复用同一个幂等键', async () => {
+    const f = useFake()
+    f.tasks[0].stationCode = 'S1'
+    const { w } = await mountAs('/workorders/WO1', ['workorder:read', 'execution:report'])
+    await vi.waitFor(() => expect(w.find('.t-start').exists()).toBe(true))
+    f.failNext('start', 503)
+    await click(w, '.t-start')
+    await vi.waitFor(() => expect(w.find('.task-err').exists()).toBe(true))
+    f.failNext('start', 0)
+    await click(w, '.t-start')
+    await vi.waitFor(() => expect(postsTo(f, 'start')).toHaveLength(2))
+    await vi.waitFor(() => expect(w.find('.task-err').text()).toContain('网络'))
+    await click(w, '.t-start')
+    await vi.waitFor(() => expect(w.find('.t-pause').exists()).toBe(true))
+    const keys = postsTo(f, 'start').map(keyOf)
+    expect(keys).toHaveLength(3)
+    expect(new Set(keys).size).toBe(1)
   })
 
   it('任务加载失败时显示错误', async () => {

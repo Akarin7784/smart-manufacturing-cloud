@@ -8,6 +8,8 @@ export interface FakeBackend {
   tasks: OperationTask[]
   calls: InternalAxiosRequestConfig[]
   operators: { id: string; employeeNo: string | null; name: string }[]
+  /** 让下一次指定动作失败（409/422 返回 problem+json；0 模拟网络错误；其他如 503 为服务不可用）。 */
+  failNext(action: string, status: number, type?: string): void
   /** 供 vi.mocked(getProgress) 返回带派工信息的进度。 */
   progress(wo: string): { workOrderNo: string; status: string; plannedQty: string; operations: Record<string, unknown>[] }
 }
@@ -19,8 +21,10 @@ export function installFakeDispatchBackend(seed: { operationNo: string; status?:
     workOrderNo: 'WO1', operationNo: s.operationNo, name: '', workCenterCode: '', status: s.status ?? 'PENDING',
     stationCode: null, operator: null, plannedStart: null, plannedEnd: null, dispatchedAt: null, dispatchedBy: null, version: 0
   }))
+  const failures = new Map<string, { status: number; type?: string }>()
   const fake: FakeBackend = {
     tasks, calls: [],
+    failNext: (action, status, type) => { failures.set(action, { status, type }) },
     operators: [{ id: 'op1', employeeNo: 'E001', name: '操作员一' }, { id: 'op3', employeeNo: null, name: 'worker3' }],
     progress: (wo) => ({
       workOrderNo: wo, status: 'IN_PROGRESS', plannedQty: '10.000000',
@@ -45,6 +49,12 @@ export function installFakeDispatchBackend(seed: { operationNo: string; status?:
     if (!m) throw fail(config, 404, 'not-found', url)
     const t = tasks.find((x) => x.operationNo === decodeURIComponent(m[2]))
     if (!t) throw fail(config, 404, 'operation-not-found', '工序不存在')
+    const injected = failures.get(m[3])
+    if (injected) {
+      failures.delete(m[3])
+      if (injected.status === 0) throw new AxiosError('Network Error', 'ERR_NETWORK', config)
+      throw fail(config, injected.status, injected.type ?? 'service-unavailable', `注入失败 ${injected.status}`)
+    }
     const body = config.data ? JSON.parse(config.data) : {}
     const dispatched = !!t.stationCode
     const conflict = () => fail(config, 409, 'task-state-conflict', `工序 ${t.operationNo}（${t.status}）状态冲突`)

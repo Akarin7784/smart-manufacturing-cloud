@@ -75,7 +75,7 @@ export interface OperationProgressView {
   uom: string | null
   limit: string
   effectiveReports: number
-  /** 以下为派工契约（M1）新增的附带信息，后端实现前可能缺失。 */
+  /** 以下为 M1 派工信息（#68）；旧数据或未下达时可能缺失。 */
   name?: string
   workCenterCode?: string
   taskStatus?: string
@@ -105,7 +105,7 @@ export interface OperationReportView {
   lotNo: string | null
   note: string | null
   reversedReportId: string | null
-  /** 本次报工工时（派工契约新增，后端实现前缺失）。 */
+  /** 本次报工工时（2 位小数字符串，冲销为负）。 */
   laborHours?: string
   operator: string
   createdAt: string
@@ -116,7 +116,7 @@ export interface ReportOperationRequest {
   goodQty: string
   defectQty: string
   scrapQty: string
-  /** 工时（小时，2 位小数字符串）。注意：后端 ReportOperationRequest 尚未定义该字段。 */
+  /** 工时（小时，≥0，最多 2 位小数的十进制字符串，必填）。 */
   laborHours: string
   uom: string
   lotNo: string | null

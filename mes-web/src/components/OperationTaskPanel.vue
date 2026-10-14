@@ -170,6 +170,7 @@ import {
 } from '@/api/dispatch'
 import { listStations, type Station } from '@/api/masterdata'
 import { newIdempotencyKey } from '@/api/workorders'
+import { isBusinessRejection } from '@/api/http'
 import { useProblem } from '@/composables/useProblem'
 import { useAuthStore } from '@/stores/auth'
 import { canDispatchWith, canReportWith } from '@/utils/permissions'
@@ -215,7 +216,12 @@ async function load() {
   operators.value = canDispatch.value ? await api.listOperators().catch(() => []) : []
 }
 
-/** 执行任务动作；busy 防止重复点击，失败显示 problem+json 中文提示。 */
+/**
+ * 执行任务动作；busy 防止重复点击，失败显示 problem+json 中文提示。
+ * 幂等键策略：成功后作废；409 / 422 属业务拒绝（状态冲突、版本过期、工位无效等），同键重试只会得到同样结果，
+ * 因此作废该键并刷新任务（拿到最新状态与 version），下次操作使用新键；网络错误、503 等可能未落库的失败保留原键，
+ * 重试时后端可按幂等键去重。
+ */
 async function run(actionKey: string, fn: (key: string) => Promise<unknown>) {
   if (busy.value) return false
   busy.value = true
@@ -227,6 +233,11 @@ async function run(actionKey: string, fn: (key: string) => Promise<unknown>) {
     emit('changed')
     return true
   } catch (e) {
+    if (isBusinessRejection(e)) {
+      keys.delete(actionKey)
+      await load()
+    }
+    // 刷新本身的错误不覆盖动作错误，动作失败原因优先展示
     capture(e)
     return false
   } finally {
@@ -273,7 +284,8 @@ async function openAssign(t: OperationTask, m: 'dispatch' | 'reassign') {
 }
 
 async function confirmAssign() {
-  const t = target.value as OperationTask
+  // 取最新加载的任务（409 后已自动刷新），保证改派带上当前 version，而不是打开对话框时的旧值
+  const t = tasks.value.find((x) => x.operationNo === target.value?.operationNo) ?? (target.value as OperationTask)
   const req = { stationCode: assignForm.stationCode, operator: assignForm.operator || null }
   dlg.reset()
   const ok = await run(`${mode.value}:${t.operationNo}:${t.version}:${req.stationCode}:${req.operator}`, (k) =>
