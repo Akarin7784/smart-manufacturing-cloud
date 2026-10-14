@@ -7,74 +7,97 @@
 ## 0. ERP 源契约核查（2026-10-14）
 | 项 | 结论 |
 | --- | --- |
-| 仓库 | `Akarin7784/smart-manufacturing-erp`，**公开**仓库（不是私有），main `29af6c5` |
+| 仓库 | `Akarin7784/smart-manufacturing-erp`（公开），核查时 main `29af6c5` |
 | `docs/integration/` | **不存在**；仓库里也没有 `docs/` 目录，没有任何 OpenAPI 文件 |
 | 生产订单 / MES 接口 | **不存在**。ERP 现有模块：mdm、purchase、sales、inventory、finance、workflow、auth |
-| 错误体 | `R{code:int, msg, data}`，HTTP 状态取 ErrorCode 大类（如 409 / 40902），**不是** problem+json |
-| 幂等 | 请求头 `Idempotency-Key`；`UNIQUE(user_name, idem_key)`，保留 24h；同键不同参数返回 409/40902，处理中返回 409/40904，成功则返回原单据 |
-| 认证 | ERP 自签 JWT（`ERP_JWT_SECRET`，用户登录 + `tv` 版本号），**没有** client_credentials / 服务账号 |
+| 错误体 | `R{code:int, msg, data}`，HTTP 状态取 ErrorCode 大类（如 409 / 40902） |
+| 幂等（现状） | 请求头 `Idempotency-Key`；`UNIQUE(user_name, idem_key)`，保留 24h |
+| 认证 | ERP 自签 JWT，**没有** client_credentials / 服务账号 |
 
-所以本 PR 里的路径、字段、scope、回调地址**都是 MES 的提案**，不能当作 ERP 已有的行为。冲突项和缺失项见 §5，需要 ERP 方确认或补契约。
+本 PR 里的路径和字段是 MES 提案；与 ERP 最终契约冲突时以 ERP `docs/integration` 为准。下面「已拍板」条款是 PM 与 ERP 约定的边界，写进契约后两边实现都按它来。
 
-## 1. ERP → MES：生产订单下达 → 创建工单
-- `POST /api/integration/erp/work-orders/dispatch`，必须带 `Idempotency-Key`。
-- 首次成功返回 201。同键同请求体重放返回 200，body 与首次相同，并带 `Idempotent-Replayed: true`。同键不同请求体返回 422 `idempotency-key-conflict`；缺幂等键返回 400 `idempotency-key-required`。
-- 只创建工单（`CREATED`），不自动下达。下达仍由 MES 计划员执行，或另起契约。
-- `erpProductionOrderNo` 在 MES 侧唯一：已绑定其他工单、且幂等键不同时，返回 409 `erp-production-order-conflict`。
+## 1. 已拍板（覆盖此前不一致的说法）
 
-### 字段映射（MES 提案 vs ERP 契约）
+### 1.1 字段与数量
+| 项 | 决定 |
+| --- | --- |
+| `deviceId` | 可选。创建时**不**校验设备是否存在或在线。 |
+| 数量 | 一律固定 **6 位小数**的字符串（如 `"100.000000"`）。超过 6 位小数或格式不符直接 **400**，不四舍五入、不截断。 |
+
+### 1.2 幂等
+| 方向 | 规则 |
+| --- | --- |
+| ERP→MES 下达 | 只用请求头 `Idempotency-Key`。同键不同请求体 → **409** `idempotency-key-conflict`（与 ERP 回调的 40902 对称；工单服务既有接口仍是 422，本集成接口单独按此约定）。 |
+| MES→ERP 回调 | 请求头 `Idempotency-Key` **必须等于**请求体 `requestNo`。ERP 按**请求头**去重，按**服务身份**隔离，记录保留 **≥ 90 天**（不是用户维度 24h）。缺头或缺 `requestNo` → 400 / 40002；头与体不一致 → 400 / 40003；同键不同参数 → 409 / 40902；处理中 → 409 / 40904。 |
+
+### 1.3 业务时机
+| 动作 | 时机 |
+| --- | --- |
+| 领料回传 | **报工倒冲**：报工成功后立即回传，一次报工一笔 |
+| 报废回传 | 报废一产生就立即回传（报工报废数 > 0，或 NCR 报废处置） |
+| 完工入库 | 工单变为 **COMPLETED** 时（不是 CLOSED）。未 COMPLETED 就回传 → ERP 409 / 40903 |
+| 退料（#72） | 必须在工单 **CLOSED** 之前完成 |
+
+### 1.4 错误体
+| 方向 | 错误体 |
+| --- | --- |
+| ERP→MES（MES 返回） | `application/problem+json`，顶层 `type`，写法和 workorder / masterdata 一致 |
+| MES→ERP（ERP 返回） | 过渡期保持 `R{code,msg,data}`；OpenAPI 的错误 examples **只用 R**，码表见 `ErpErrorR`。MES→ERP **不**写 problem+json 错误样例 |
+
+身份不符（scope / audience）两边都是 **403**。
+
+## 2. ERP → MES：生产订单下达 → 创建工单
+- `POST /api/integration/erp/work-orders/dispatch`
+- 首次成功 201；同键同请求体重放 200 + `Idempotent-Replayed: true`，body 与首次相同
+- `erpProductionOrderNo` 在 MES 侧唯一；已绑定其他工单且幂等键不同 → 409 `erp-production-order-conflict`
+
+### 字段映射
 | 下达请求字段 | MES 工单字段 | ERP 契约 | 说明 |
 | --- | --- | --- | --- |
-| `erpProductionOrderNo` | 新增 `erp_order_no` 字段（实现 PR 中加 Flyway 迁移） | 无，**待 ERP 定义** | 业务主键 |
-| `productCode` | `product` | 无 | 必须存在于 MES 主数据，否则返回 422 `release-masterdata-invalid` |
-| `quantity`（Decimal 字符串） | `quantity`（目前是整数） | 无 | 精度冲突，见 OQ-MAP-2 |
-| `uom` | 无对应字段 | 无 | 新增字段或校验，见 OQ-MAP-3 |
-| `plannedStartDate` / `plannedFinishDate` | 无 | 无 | 实现时决定是否落库 |
-| `warehouseCode` | 无 | ERP 有仓库主数据 | 用作完工入库的默认仓 |
-| `deviceId`（可选） | `deviceId`（**MES 必填**） | ERP 没有这个概念 | 冲突，见 OQ-MAP-1 |
+| `erpProductionOrderNo` | 新增 `erp_order_no`（实现 PR 加 Flyway） | 无，待 ERP 定义 | 业务主键 |
+| `productCode` | `product` | 无 | 须存在于 MES 主数据，否则 422 |
+| `quantity`（固定 6 位小数字符串） | `quantity`（目前整数） | 无 | **已拍板**：契约与实现统一 6 位小数；实现 PR 改类型 |
+| `uom` | 无 | 无 | 新增或校验，见 OQ-MAP-3 |
+| `warehouseCode` | 无 | ERP 有仓库 | 完工入库默认仓 |
+| `deviceId`（可选） | 可选写入 | 无设备概念 | **已拍板**：可选，不校验在线 |
 
-## 2. MES → ERP 回调：领料 / 完工入库 / 报废
-| 动作 | 提案路径（宿主在 ERP） | 幂等请求号规则（提案） |
-| --- | --- | --- |
-| 领料 | `POST /api/integration/mes/material-issues` | `MI-{工单号}-{序号}` |
-| 完工入库 | `POST /api/integration/mes/finished-goods-receipts` | `FGR-{工单号}-{序号}` |
-| 报废 | `POST /api/integration/mes/scraps` | `SCR-{工单号}-{工序}-{序号}` |
+## 3. MES → ERP 回调
+| 动作 | 提案路径 | 触发 | 幂等请求号建议 |
+| --- | --- | --- | --- |
+| 领料（报工倒冲） | `POST /api/integration/mes/material-issues` | 报工成功后立即 | `MI-{工单}-{工序}-{报工ID}` |
+| 完工入库 | `POST /api/integration/mes/finished-goods-receipts` | 工单 COMPLETED | `FGR-{工单}` |
+| 报废 | `POST /api/integration/mes/scraps` | 报废产生即回传 | `SCR-{工单}-{工序}-{报工或NCR}` |
 
-- **幂等**：请求体中的 `requestNo` 全局唯一。相同 `requestNo` 加相同内容，ERP 返回与首次相同的结果（200，带同一个 `erpDocumentNo`）；相同 `requestNo` 加不同内容返回 422（或 ERP 的 409/40902，见 OQ-ERR-1）。
-- **重试**：MES 用 outbox 和后台任务（参照现有 `ReservationReleaseWorker` 模式）至少一次投递。
-  - 网络错误、超时、5xx、429：指数退避重试，退避间隔和上限在实现 PR 里定，并列入 observability。
-  - 401：刷新服务令牌后重试一次。
-  - 400、403、409、422：不重试，标记 FAILED 并告警，等人工处理。
-- **重复返回相同结果**：ERP 必须保证这一点。现有 ERP 幂等记录只保留 24h，过期后会被当作新键处理，与 MES 的长期重试冲突，见 OQ-IDEM-1。
+- 请求头 `Idempotency-Key` = 请求体 `requestNo`
+- 重试：网络 / 5xx / 429 / 40904 退避；401 刷新令牌后重试一次；400 / 403 / 40902 / 40903 不重试，转人工
+- 重复提交返回与首次**相同**的成功结果（同一 `erpDocumentNo`）
 
-## 3. 服务账号与 JWT
+## 4. 服务账号与 JWT
 | 方向 | 签发方 | client / scope / audience（提案） |
 | --- | --- | --- |
-| ERP → MES | MES `auth-service`，`POST /api/auth/oauth2/token`，`grant_type=client_credentials` | client `erp-integration`，scope `integration:workorder-dispatch`，aud `manufacturing-api` |
-| MES → ERP | **待 ERP 定义**（ERP 目前没有服务账号） | 提案 scope：`integration:material-issue`、`integration:finished-goods-receipt`、`integration:scrap` |
+| ERP → MES | MES `auth-service` `client_credentials` | `erp-integration` / `integration:workorder-dispatch` / `manufacturing-api` |
+| MES → ERP | 待 ERP 定义 | 提案 scope：`integration:material-issue`、`integration:finished-goods-receipt`、`integration:scrap` |
 
-- 沿用 `docs/authentication.md` 的规则：一个令牌只有一个受众；服务令牌不带 `permissions`；服务 scope 不进 `Role` 枚举。
-- 受众不符返回 401 `authentication-required`，scope 不符返回 403 `access-denied`，和库存、质检服务一致。
-- **密钥只能来自环境变量或 Nacos**，例如 `ERP_INTEGRATION_CLIENT_SECRET`（明文只给 ERP），auth 端只保存 BCrypt 散列；MES→ERP 的凭据例如 `MES_ERP_CLIENT_SECRET`。本仓库是公开仓库，**禁止**提交任何密钥、令牌或 ERP 服务账号的 JWT。
+密钥只从环境变量或 Nacos 读取（如 `ERP_INTEGRATION_CLIENT_SECRET`），本公开仓库不提交任何密钥。
 
-## 4. 错误
-- MES 暴露的接口：`application/problem+json`，`type` 用 kebab-case 相对 URI，与 workorder、masterdata 一致。type 表见 OpenAPI 中的 `ProblemType`。
-- ERP 回调的错误：ERP 目前返回 `R{code,msg}`。MES 适配层只按 HTTP 状态和 ERP 数字码映射成 MES 内部的 problem type，不解析 `msg`。映射表需要 ERP 先提供（OQ-ERR-1）。契约 examples 按"ERP 改成 problem+json"写，这一点也需要 ERP 确认。
-
-## 5. 开放问题 / 需要 ERP 侧改动
-| ID | 问题 | 需要谁 |
+## 5. 开放问题（已关闭的打钩）
+| ID | 状态 | 说明 |
 | --- | --- | --- |
-| OQ-SRC-1 | ERP 仓库没有 `docs/integration`，需要 ERP 新建并作为唯一事实来源；本 PR 的路径和字段以那边的定稿为准 | ERP |
-| OQ-AUTH-1 | ERP→MES 是否接受由 MES auth-service 签发服务令牌（客户端 `erp-integration`），以及 scope 和 aud 的名称 | PM / ERP |
-| OQ-AUTH-2 | MES→ERP：ERP 没有 client_credentials，需要 ERP 新增服务账号机制，或接受 MES 令牌（JWKS 验签） | ERP |
-| OQ-ERR-1 | ERP 错误体是 `R` 数字码，不是 problem+json。ERP 是否改成 problem+json，否则要给出数字码到 type 的映射表 | ERP |
-| OQ-IDEM-1 | ERP 幂等按用户维度、只保留 24h，过期后同键会重复建单。回调需要按 `requestNo` 永久（或足够长时间）去重 | ERP |
-| OQ-IDEM-2 | 幂等键放在请求头 `Idempotency-Key`（ERP 现有做法）还是请求体 `requestNo`（本提案）；回调方向需要统一 | ERP |
-| OQ-CB-1/2/3 | 领料、完工入库、报废接口在 ERP 中不存在：路径、字段、是否部分成功、单据号格式 | ERP |
-| OQ-MAP-1 | MES 创建工单时 `deviceId` 必填，且要求设备在线；ERP 没有设备概念。方案二选一：下达时不校验设备，或在 MES 侧改为下达后分配设备 | PM |
-| OQ-MAP-2 | MES `quantity` 是整数，ERP 和本契约用 6 位小数；需要定精度和舍入规则 | PM / ERP |
-| OQ-MAP-3 | `uom` 和仓库编码在两边主数据中的映射，以及编码是否一致 | ERP / MES |
-| OQ-FLOW-1 | 领料时机：按派工、报工倒冲还是领料单？完工入库在 COMPLETED 时触发还是 CLOSED 时触发？与 #72 退料的先后顺序 | PM |
+| ~~OQ-MAP-1~~ | **已关闭** | deviceId 可选，创建不校验在线 |
+| ~~OQ-MAP-2~~ | **已关闭** | 数量固定 6 位小数字符串；超精度 400 |
+| ~~OQ-IDEM-2~~ | **已关闭** | ERP→MES 用请求头；MES→ERP 请求头 = requestNo |
+| ~~OQ-IDEM-1~~ | **已关闭（约定）** | 回调按服务身份去重，TTL ≥ 90 天；ERP 需改实现 |
+| ~~OQ-FLOW-1~~ | **已关闭** | 报工倒冲 / COMPLETED 入库 / 报废即时 / 退料在 CLOSED 前 |
+| ~~OQ-ERR-1（部分）~~ | **已关闭（过渡）** | MES→ERP 保持 R；码表写入契约。ERP 是否最终改 problem+json 另议 |
+| OQ-SRC-1 | 仍开 | ERP 需新建 `docs/integration` 作为唯一事实来源 |
+| OQ-AUTH-1 | 仍开 | ERP→MES 是否接受 MES auth 签发的服务令牌及命名 |
+| OQ-AUTH-2 | 仍开 | MES→ERP：ERP 需新增服务账号（或接受 MES JWKS） |
+| OQ-CB-1/2/3 | 仍开 | 三个回调在 ERP 中尚不存在：路径、字段、冲销报工反向领料 |
+| OQ-MAP-3 | 仍开 | uom、仓库编码两边主数据映射 |
+| OQ-ERR-2 | 仍开 | ERP 需新增 40002 / 40003（幂等键缺失 / 不一致） |
 
 ## 6. 测试约定
-OpenAPI 中每个操作都带完整 examples：成功、幂等重放、401（缺令牌 / 坏令牌 / 受众不符）、403（scope 不符）、业务 409/422，全部是带顶层 `type` 的 problem+json。测试工程师可以直接据此生成 mock 和契约测试。实现 PR 中计划增加 `ErpIntegrationContractTest`，校验 examples 与 schema 一致。
+OpenAPI 每个操作都有完整 examples：成功、幂等重放、401、403、400（含幂等键缺失 / 不一致、超 6 位小数）、409（含 40902 / 40903 / 40904）。
+- ERP→MES：错误 examples 为 problem+json
+- MES→ERP：错误 examples 仅为 `R{code,msg,data}`
+测试工程师可据此生成 mock 与契约测试（含头与 requestNo 不一致用例）。
