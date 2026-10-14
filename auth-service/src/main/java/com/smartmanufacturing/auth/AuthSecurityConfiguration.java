@@ -46,7 +46,8 @@ public class AuthSecurityConfiguration {
                 // 仅在独立管理端口（内网）上匿名开放 Prometheus 抓取；业务端口上的 actuator 仍需 metrics:read。
                 .requestMatchers(ResourceSecurityConfiguration.prometheusOnManagementPort(environment)).permitAll()
                 .requestMatchers("/actuator/**").hasAuthority("metrics:read")
-                .requestMatchers("/auth/me", "/auth/users", "/auth/users/**").authenticated()
+                // /auth/operators 由方法级 @PreAuthorize 要求 execution:dispatch
+                .requestMatchers("/auth/me", "/auth/users", "/auth/users/**", "/auth/operators").authenticated()
                 .anyRequest().denyAll())
             .exceptionHandling(errors -> errors
                 .authenticationEntryPoint((req, res, e) -> SecurityProblem.AUTHENTICATION_REQUIRED.write(mapper, req, res))

@@ -29,7 +29,10 @@ class WorkOrderCancellation {
     private final JdbcTemplate jdbc;
     private final WorkOrderJournal journal;
     private final Clock clock;
-    WorkOrderCancellation(JdbcTemplate jdbc, WorkOrderJournal journal, Clock clock) { this.jdbc = jdbc; this.journal = journal; this.clock = clock; }
+    private final OperationTaskStates tasks;
+    WorkOrderCancellation(JdbcTemplate jdbc, WorkOrderJournal journal, Clock clock, OperationTaskStates tasks) {
+        this.jdbc = jdbc; this.journal = journal; this.clock = clock; this.tasks = tasks;
+    }
 
     /** 取消释放的库存幂等键。 */
     static String releaseKey(String orderId, String reservationId) { return "cancel-" + orderId + "-" + reservationId; }
@@ -62,6 +65,8 @@ class WorkOrderCancellation {
                 UUID.randomUUID().toString(), orderId, reservationId, MaterialReservationPort.ReleaseReason.WORK_ORDER_CANCELLED.name(),
                 releaseKey(orderId, reservationId), DbTimes.ts(now));
         }
+        // 级联取消工序任务（M1）：所有未 DONE 的任务 → CANCELLED，各发 OperationCancelled
+        tasks.cancelAll(orderId, operator);
         journal.statusChanged(orderId, status, "CANCELLED", "CANCEL", note, operator);
         var payload = new LinkedHashMap<String, Object>();
         payload.put("previousStatus", status);

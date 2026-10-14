@@ -68,11 +68,21 @@ class OperationReportingMySqlIT {
 
     private MvcResult report(String id, String op, String good, String defect, String scrap) throws Exception {
         return call("/workorders/" + id + "/operations/" + op + "/reports", UUID.randomUUID().toString(),
-            "{\"goodQty\":\"" + good + "\",\"defectQty\":\"" + defect + "\",\"scrapQty\":\"" + scrap + "\",\"uom\":\"PCS\",\"lotNo\":\"LOT-1\"}");
+            "{\"goodQty\":\"" + good + "\",\"defectQty\":\"" + defect + "\",\"scrapQty\":\"" + scrap + "\",\"uom\":\"PCS\",\"laborHours\":\"1.00\",\"lotNo\":\"LOT-1\"}");
     }
 
     private MvcResult reverse(String id, String reportId) throws Exception {
         return call("/workorders/" + id + "/reports/" + reportId + "/reversal", UUID.randomUUID().toString(), "{\"reason\":\"误报\"}");
+    }
+
+    /**
+     * M1（PM 2026-10-14）：DONE 的任务冲销后进入 PAUSED，需要显式 resume 才能继续报工；
+     * 这些用例的任务未派工（老数据形态），所以先补派工再恢复。
+     */
+    private void resumeAfterReversal(String id, String op, String station) throws Exception {
+        assertThat(jdbc.queryForObject("select status from operation_task where order_id = ? and op_no = ?", String.class, id, op)).isEqualTo("PAUSED");
+        assertThat(call("/workorders/" + id + "/operations/" + op + "/dispatch", UUID.randomUUID().toString(), "{\"stationCode\":\"" + station + "\"}").getResponse().getStatus()).isEqualTo(200);
+        assertThat(call("/workorders/" + id + "/operations/" + op + "/resume", UUID.randomUUID().toString(), "{}").getResponse().getStatus()).isEqualTo(200);
     }
 
     private JsonNode json(MvcResult r) throws Exception { return mapper.readTree(r.getResponse().getContentAsString(StandardCharsets.UTF_8)); }
@@ -109,10 +119,10 @@ class OperationReportingMySqlIT {
             .isEqualByComparingTo(new BigDecimal(e.get("plannedQty").asText()));
     }
 
-    /** 工单状态事件按 aggregateVersion 排序（消费端的排序依据；occurredAt 仅用于展示）。 */
+    /** 工单状态事件（只取 WorkOrder*，同 Topic 的 Operation* 任务事件按 taskVersion 排序，不参与本断言）按 aggregateVersion 排序。 */
     private List<JsonNode> stateEvents(String id) throws Exception {
         List<JsonNode> out = new ArrayList<>();
-        for (var row : jdbc.queryForList("select event_type, payload from outbox_event where aggregate_id = ? and topic = 'mes-workorder-event'", id)) {
+        for (var row : jdbc.queryForList("select event_type, payload from outbox_event where aggregate_id = ? and topic = 'mes-workorder-event' and event_type like 'WorkOrder%'", id)) {
             var n = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree((String) row.get("payload"));
             n.put("_type", (String) row.get("event_type"));
             out.add(n);
@@ -130,6 +140,7 @@ class OperationReportingMySqlIT {
         assertThat(status(id)).isEqualTo("COMPLETED");
         assertThat(reverse(id, last).getResponse().getStatus()).isEqualTo(201);
         assertThat(status(id)).isEqualTo("IN_PROGRESS");
+        resumeAfterReversal(id, "OP20", "ST-ASM-01");
         report(id, "OP20", "4", "0", "0");
         assertThat(status(id)).isEqualTo("COMPLETED");
 
@@ -191,7 +202,7 @@ class OperationReportingMySqlIT {
         assertThat(counter("mes.workorder.report", "result", "over_report") - over0).isEqualTo(7);
         double replay0 = counter("mes.workorder.report", "result", "replay"), closed0 = counter("mes.workorder.report", "result", "workorder_closed");
         String path = "/workorders/" + id + "/operations/OP20/reports";
-        String body = "{\"goodQty\":1,\"defectQty\":0,\"scrapQty\":0,\"uom\":\"PCS\"}";
+        String body = "{\"goodQty\":1,\"defectQty\":0,\"scrapQty\":0,\"uom\":\"PCS\",\"laborHours\":\"1.00\"}";
         call(path, "m-1", body); call(path, "m-1", body);
         assertThat(counter("mes.workorder.report", "result", "replay") - replay0).isEqualTo(1);
         jdbc.update("update work_order set status = 'CLOSED' where id = ?", id);
@@ -208,7 +219,7 @@ class OperationReportingMySqlIT {
     @Test void idempotentReplay() throws Exception {
         String id = released(10);
         String path = "/workorders/" + id + "/operations/OP10/reports";
-        String body = "{\"goodQty\":3,\"defectQty\":0,\"scrapQty\":0,\"uom\":\"PCS\"}";
+        String body = "{\"goodQty\":3,\"defectQty\":0,\"scrapQty\":0,\"uom\":\"PCS\",\"laborHours\":\"1.00\"}";
         MvcResult first = call(path, "k-1", body), again = call(path, "k-1", body);
         assertThat(first.getResponse().getStatus()).isEqualTo(201);
         assertThat(again.getResponse().getStatus()).isEqualTo(201);
@@ -235,18 +246,18 @@ class OperationReportingMySqlIT {
         String path = "/workorders/" + id + "/operations/OP10/reports";
         // 纯空白批次号 trim 后为空，视同未传，缺省为工单号（不再 400）
         MvcResult blank = call(path, UUID.randomUUID().toString(),
-            "{\"goodQty\":\"1\",\"defectQty\":\"0\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"lotNo\":\"  \"}");
+            "{\"goodQty\":\"1\",\"defectQty\":\"0\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"laborHours\":\"1.00\",\"lotNo\":\"  \"}");
         assertThat(blank.getResponse().getStatus()).isEqualTo(201);
         assertThat(jdbc.queryForObject("select lot_no from wo_operation_report where report_id = ?", String.class, reportId(blank))).isEqualTo(id);
         // 首尾空白被去掉后落库
         MvcResult trimmed = call(path, UUID.randomUUID().toString(),
-            "{\"goodQty\":\"1\",\"defectQty\":\"0\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"lotNo\":\" LOT 1 \"}");
+            "{\"goodQty\":\"1\",\"defectQty\":\"0\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"laborHours\":\"1.00\",\"lotNo\":\" LOT 1 \"}");
         assertThat(trimmed.getResponse().getStatus()).isEqualTo(201);
         assertThat(jdbc.queryForObject("select lot_no from wo_operation_report where report_id = ?", String.class, reportId(trimmed))).isEqualTo("LOT 1");
         // 超长批次号（> 64，与 lot_no 列宽一致）被拒绝
         assertProblem(call(path, UUID.randomUUID().toString(),
-            "{\"goodQty\":\"1\",\"defectQty\":\"0\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"lotNo\":\"" + "L".repeat(65) + "\"}"), 400, "validation-error");
-        MvcResult r = call(path, UUID.randomUUID().toString(), "{\"goodQty\":\"8\",\"defectQty\":\"2\",\"scrapQty\":\"0\",\"uom\":\"PCS\"}");
+            "{\"goodQty\":\"1\",\"defectQty\":\"0\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"laborHours\":\"1.00\",\"lotNo\":\"" + "L".repeat(65) + "\"}"), 400, "validation-error");
+        MvcResult r = call(path, UUID.randomUUID().toString(), "{\"goodQty\":\"8\",\"defectQty\":\"2\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"laborHours\":\"1.00\"}");
         assertThat(r.getResponse().getStatus()).isEqualTo(201);
         String rid = reportId(r);
         assertThat(json(r).at("/data/report/lotNo").asText()).isEqualTo(id);
@@ -286,6 +297,7 @@ class OperationReportingMySqlIT {
         assertThat(defectRev.get(0).has("occurredAt")).isTrue();
         assertThat(jdbc.queryForObject("select topic from outbox_event where event_type = 'DefectReversed' and aggregate_id = ?", String.class, id)).isEqualTo("mes-workorder-quality");
 
+        resumeAfterReversal(id, "OP20", "ST-ASM-01");
         String d = reportId(report(id, "OP20", "10", "0", "0"));
         assertThat(status(id)).isEqualTo("COMPLETED");
         var completed = events(id, "WorkOrderCompleted");
@@ -364,7 +376,7 @@ class OperationReportingMySqlIT {
         report(id, "OP10", "1", "0", "0");
         double before = counter("mes.workorder.report", "result", "uom_mismatch");
         MvcResult r = call("/workorders/" + id + "/operations/OP10/reports", UUID.randomUUID().toString(),
-            "{\"goodQty\":1,\"defectQty\":0,\"scrapQty\":0,\"uom\":\"KG\"}");
+            "{\"goodQty\":1,\"defectQty\":0,\"scrapQty\":0,\"uom\":\"KG\",\"laborHours\":\"1.00\"}");
         assertProblem(r, 422, "uom-mismatch");
         assertThat(json(r).at("/data/expectedUom").asText()).isEqualTo("PCS");
         assertThat(counter("mes.workorder.report", "result", "uom_mismatch") - before).isEqualTo(1);

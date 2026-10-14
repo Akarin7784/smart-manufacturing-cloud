@@ -34,6 +34,14 @@ public enum WorkOrderProblemType {
     /** 库存服务不可用（5xx、网络错误或服务令牌被拒），同步调用（下达、恢复时重新预留）失败。 */
     INVENTORY_SERVICE_UNAVAILABLE("inventory-service-unavailable", "库存服务不可用", "INVENTORY_SERVICE_UNAVAILABLE", HttpStatus.SERVICE_UNAVAILABLE),
 
+    // ---- M1 工序派工与任务状态（本次新增）
+    /** 动作不允许在当前任务状态下执行：RUNNING 时改派、PAUSED 时报工、重复派工等。 */
+    TASK_STATE_CONFLICT("task-state-conflict", "工序任务状态冲突", "TASK_STATE_CONFLICT", HttpStatus.CONFLICT),
+    /** 任务未派工就开工 / 暂停 / 恢复 / 改派，或取消一个没有派过工的任务；报工不使用本类型（兼容未派工老数据）。 */
+    TASK_NOT_DISPATCHED("task-not-dispatched", "工序未派工", "TASK_NOT_DISPATCHED", HttpStatus.CONFLICT),
+    /** 工位不存在、已删除，或不属于该工序的工作中心。 */
+    STATION_NOT_FOUND("station-not-found", "工位不存在", "STATION_NOT_FOUND", HttpStatus.UNPROCESSABLE_ENTITY),
+
     // ---- 既有业务码
     VALIDATION_ERROR("validation-error", "请求参数无效", "INVALID_ARGUMENT", HttpStatus.BAD_REQUEST),
     IDEMPOTENCY_KEY_REQUIRED("idempotency-key-required", "缺少幂等键", "IDEMPOTENCY_KEY_REQUIRED", HttpStatus.BAD_REQUEST),

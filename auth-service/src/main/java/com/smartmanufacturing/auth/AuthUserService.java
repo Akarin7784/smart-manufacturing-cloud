@@ -73,6 +73,12 @@ public class AuthUserService {
             (rs, row) -> new UserView(rs.getString(1), rs.getString(2), Role.valueOf(rs.getString(3)), rs.getBoolean(4)));
     }
 
+    /** 操作工下拉：只查启用账号，只取 id、工号、姓名三列；工号为空时返回 null（PM 评审：不回退），姓名为空时回退为用户名；按姓名排序。 */
+    public List<OperatorView> operators() {
+        return jdbc.query("select id, employee_no, coalesce(display_name, username) as name from auth_user where enabled = true order by name, id",
+            (rs, row) -> new OperatorView(rs.getString(1), rs.getString(2), rs.getString(3)));
+    }
+
     /** 更新角色和状态并清除登录锁定；已有短期令牌的权限保持到过期。 */
     public UserView update(String id, UpdateUserRequest request, String actorId) {
         if (id.equals(actorId) && (!request.enabled() || request.role() != Role.ADMIN))

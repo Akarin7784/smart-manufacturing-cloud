@@ -178,4 +178,68 @@ class AuthIntegrationTest {
             org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.instance").value(instance),
             org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").doesNotExist());
     }
+
+    /**
+     * 操作工下拉（M1）：PLANNER 与 ADMIN 可查；只返回启用账号；每项只有 id、employeeNo、name 三个字段（不带角色、启用状态、手机号）；
+     * 工号为空时为 null、姓名为空时回退为用户名；没有 execution:dispatch 的用户 403；/auth/users 对 PLANNER 仍是 403（未放宽）。
+     */
+    @Test void operatorsEndpointReturnsOnlyEnabledUsersWithMinimalFields() throws Exception {
+        users.create(new CreateUserRequest("planner", USER_PASSWORD, Role.PLANNER));
+        UserView worker = users.create(new CreateUserRequest("worker", USER_PASSWORD, Role.OPERATOR));
+        UserView gone = users.create(new CreateUserRequest("gone", USER_PASSWORD, Role.OPERATOR));
+        users.create(new CreateUserRequest("viewer", USER_PASSWORD, Role.VIEWER));
+        jdbc.update("update auth_user set employee_no = 'E1001', display_name = '张三' where id = ?", worker.id());
+        jdbc.update("update auth_user set enabled = false where id = ?", gone.id());
+
+        String planner = login("planner", USER_PASSWORD);
+        String body = mvc.perform(get("/auth/operators").header("Authorization", "Bearer " + planner))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        var data = mapper.readTree(body).path("data");
+        List<String> ids = new java.util.ArrayList<>();
+        for (var item : data) {
+            List<String> fields = new java.util.ArrayList<>();
+            item.fieldNames().forEachRemaining(fields::add);
+            assertEquals(List.of("id", "employeeNo", "name"), fields, "下拉项只能包含 id / employeeNo / name");
+            ids.add(item.path("id").asText());
+            if (item.path("id").asText().equals(worker.id())) {
+                assertEquals("E1001", item.path("employeeNo").asText());
+                assertEquals("张三", item.path("name").asText());
+            }
+        }
+        assertTrue(ids.contains(worker.id()));
+        assertFalse(ids.contains(gone.id()), "禁用账号不应出现在下拉中");
+        assertFalse(body.contains("role") || body.contains("phone") || body.contains("enabled") || body.contains("password"));
+        // 历史账号：工号为空时返回 null（不回退为用户名），姓名回退为用户名
+        assertTrue(body.contains("\"employeeNo\":null,\"name\":\"viewer\""), body);
+        assertFalse(body.contains("\"employeeNo\":\"viewer\""));
+        // 管理员也可以查
+        mvc.perform(get("/auth/operators").header("Authorization", "Bearer " + login("admin", ADMIN_PASSWORD))).andExpect(status().isOk());
+        // 兼容期：只有 workorder:write（操作工角色，无 execution:dispatch）也能取下拉；查看者 403；未登录 401
+        mvc.perform(get("/auth/operators").header("Authorization", "Bearer " + login("worker", USER_PASSWORD))).andExpect(status().isOk());
+        mvc.perform(get("/auth/operators").header("Authorization", "Bearer " + login("viewer", USER_PASSWORD))).andExpect(status().isForbidden());
+        mvc.perform(get("/auth/operators")).andExpect(status().isUnauthorized());
+        // 不放宽 /auth/users
+        mvc.perform(get("/auth/users").header("Authorization", "Bearer " + planner)).andExpect(status().isForbidden());
+    }
+
+    /** 兼容期：令牌只有 workorder:write 一个权限也能取操作工下拉（与派工接口一致）。 */
+    @Test void operatorsAllowWorkorderWriteOnlyDuringTransition() throws Exception {
+        org.springframework.test.web.servlet.request.RequestPostProcessor writerOnly =
+            org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt()
+                .authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("workorder:write"));
+        mvc.perform(get("/auth/operators").with(writerOnly)).andExpect(status().isOk()).andExpect(jsonPath("$.data[0].id").exists());
+        org.springframework.test.web.servlet.request.RequestPostProcessor readOnly =
+            org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt()
+                .authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("workorder:read"));
+        mvc.perform(get("/auth/operators").with(readOnly)).andExpect(status().isForbidden());
+    }
+
+    /** PLANNER 令牌带 execution:dispatch 与工单只读，不含 workorder:write。 */
+    @Test void plannerTokenCarriesDispatchButNotWorkorderWrite() throws Exception {
+        users.create(new CreateUserRequest("planner", USER_PASSWORD, Role.PLANNER));
+        var permissions = decoder.decode(login("planner", USER_PASSWORD)).getClaimAsStringList("permissions");
+        assertTrue(permissions.containsAll(List.of("execution:dispatch", "workorder:read", "masterdata:read")));
+        assertFalse(permissions.contains("workorder:write"));
+        assertFalse(permissions.contains("execution:report"));
+    }
 }

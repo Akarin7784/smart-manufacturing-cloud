@@ -33,6 +33,8 @@ public class OperationReportingService {
     /** 数量统一按 6 位小数（DECIMAL(18,6)）存储与输出。 */
     static final int SCALE = 6;
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(SCALE);
+    /** 工时统一 2 位小数（DECIMAL(10,2)）。 */
+    private static final BigDecimal HOURS_ZERO = BigDecimal.ZERO.setScale(2);
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
@@ -41,10 +43,13 @@ public class OperationReportingService {
     private final Clock clock;
     private final ReportingMetrics metrics;
     private final WorkOrderCancellation cancellation;
+    private final OperationTaskStates tasks;
     private final String eventTopic, startedTag, completedTag, reopenedTag, qualityTopic, defectReportedTag, defectReversedTag;
 
     public OperationReportingService(JdbcTemplate jdbc, TransactionTemplate tx, WorkOrderJournal journal, ObjectMapper mapper,
-                                     Clock clock, MqProperties mq, ReportingMetrics metrics, WorkOrderCancellation cancellation) {
+                                     Clock clock, MqProperties mq, ReportingMetrics metrics, WorkOrderCancellation cancellation,
+                                     OperationTaskStates tasks) {
+        this.tasks = tasks;
         this.metrics = metrics;
         this.cancellation = cancellation;
         this.jdbc = jdbc; this.tx = tx; this.journal = journal; this.mapper = mapper; this.clock = clock;
@@ -61,19 +66,20 @@ public class OperationReportingService {
     /** 命令执行结果：HTTP 状态、响应体（ApiResponse JSON）以及是否为幂等重放。 */
     public record CommandResult(int status, String body, boolean replayed) {}
 
-    private record Order(String id, String status, BigDecimal planned, String product) {}
-    private record Progress(String opNo, int seq, BigDecimal good, BigDecimal defect, BigDecimal scrap, String uom, int effective) {
+    /** 已加锁的工单行快照（派工命令 OperationTaskService 也复用）。 */
+    record Order(String id, String status, BigDecimal planned, String product) {}
+    private record Progress(String opNo, int seq, BigDecimal good, BigDecimal defect, BigDecimal scrap, String uom, int effective, BigDecimal labor) {
         BigDecimal total() { return good.add(defect).add(scrap); }
     }
     private record Report(String reportId, String orderId, String type, String opNo, BigDecimal good, BigDecimal defect,
                           BigDecimal scrap, String uom, String lotNo, String note, String reversedReportId, String operator,
-                          java.time.Instant createdAt) {}
+                          java.time.Instant createdAt, String station, BigDecimal labor) {}
 
     // ------------------------------------------------------------------ 报工
 
     public CommandResult report(String orderNo, String opNo, ReportOperationRequest req, String key, String operator) {
         String hash = hash("REPORT", orderNo, opNo, num(req.goodQty()), num(req.defectQty()), num(req.scrapQty()),
-            req.uom(), req.lotNo(), req.note());
+            req.uom(), req.lotNo(), req.note(), req.laborHours());
         // 业务异常（含 Problem type）由 WorkOrderProblemHandler 统一计数，这里只计成功、重放与非预期异常
         try {
             CommandResult r = idempotent(operator, key, "REPORT", orderNo, hash, 201, order -> doReport(order, opNo, req, operator));
@@ -102,6 +108,12 @@ public class OperationReportingService {
         List<Progress> ops = progress(order.id());
         int k = indexOf(ops, opNo);
         Progress cur = ops.get(k);
+        // M1 任务状态：报工不要求先派工（兼容已下达未派工的老数据）；暂停、已取消的任务拒绝报工
+        OperationTaskStates.Task task = tasks.find(order.id(), opNo);
+        if ("PAUSED".equals(task.status()) || "CANCELLED".equals(task.status()))
+            throw WorkOrderProblemType.TASK_STATE_CONFLICT.exception("工序 " + opNo + " 当前任务状态 " + task.status() + " 不允许报工"
+                + ("PAUSED".equals(task.status()) ? "，请先恢复" : ""), Map.of("operationNo", opNo, "taskStatus", task.status()));
+        BigDecimal labor = hours(req.laborHours());
         String uom = ops.stream().map(Progress::uom).filter(Objects::nonNull).findFirst().orElse(null);
         if (uom != null && !uom.equals(req.uom()))
             throw WorkOrderProblemType.UOM_MISMATCH.exception("报工单位 " + req.uom() + " 与本工单已报工单位 " + uom + " 不一致",
@@ -113,14 +125,18 @@ public class OperationReportingService {
             throw WorkOrderProblemType.OVER_REPORT.exception("工序 " + opNo + " 累计报工将超过上限 " + num(limit),
                 overData(opNo, limit, cur.total(), requested));
         }
+        // 自动开工（PM 2026-10-14 确认）：READY（或已有流入但状态未推进的老数据 PENDING）报工直接 RUNNING
+        if ("READY".equals(task.status()) || "PENDING".equals(task.status()))
+            task = tasks.transition(task, "RUNNING", "START", "AUTO_START_BY_REPORT", operator);
         String reportId = UUID.randomUUID().toString();
         var now = clock.instant();
         // 批次号缺省为工单号（一个工单对应一个产出批次），落库与事件统一使用该值，保证质检回写库存时始终有批次
         String lotNo = effectiveLotNo(req.lotNo(), order.id());
-        jdbc.update("insert into wo_operation_report (report_id, order_id, op_no, type, good_qty, defect_qty, scrap_qty, uom, lot_no, note, reversed_report_id, operator, request_id, created_at) values (?, ?, ?, 'REPORT', ?, ?, ?, ?, ?, ?, null, ?, ?, ?)",
-            reportId, order.id(), opNo, good, defect, scrap, req.uom(), lotNo, req.note(), operator, MDC.get("requestId"), DbTimes.ts(now));
-        jdbc.update("update wo_operation_progress set good_qty = good_qty + ?, defect_qty = defect_qty + ?, scrap_qty = scrap_qty + ?, uom = ?, effective_reports = effective_reports + 1, updated_at = ? where order_id = ? and op_no = ?",
-            good, defect, scrap, req.uom(), DbTimes.ts(now), order.id(), opNo);
+        jdbc.update("insert into wo_operation_report (report_id, order_id, op_no, type, good_qty, defect_qty, scrap_qty, uom, lot_no, note, reversed_report_id, operator, request_id, created_at, station_code, labor_hours) values (?, ?, ?, 'REPORT', ?, ?, ?, ?, ?, ?, null, ?, ?, ?, ?, ?)",
+            reportId, order.id(), opNo, good, defect, scrap, req.uom(), lotNo, req.note(), operator, MDC.get("requestId"), DbTimes.ts(now), task.station(), labor);
+        // 报工记录写入当时的工位（未派工为 null），之后改派不会修改这条记录
+        jdbc.update("update wo_operation_progress set good_qty = good_qty + ?, defect_qty = defect_qty + ?, scrap_qty = scrap_qty + ?, uom = ?, effective_reports = effective_reports + 1, labor_hours = labor_hours + ?, updated_at = ? where order_id = ? and op_no = ?",
+            good, defect, scrap, req.uom(), labor, DbTimes.ts(now), order.id(), opNo);
         if (defect.signum() > 0)
             defectEvent(order, opNo, req.uom(), lotNo, defect, reportId, null, "DefectReported", defectReportedTag);
 
@@ -132,6 +148,8 @@ public class OperationReportingService {
             status = "IN_PROGRESS";
         }
         List<Progress> updated = progress(order.id());
+        // 结算任务状态：本道达到上限且上道完工 → DONE；下道有流入 → READY
+        tasks.settle(order.id(), totals(order, updated), operator);
         Progress last = updated.get(updated.size() - 1);
         if (last.good().compareTo(order.planned()) >= 0) {
             long v = changeStatus(order.id(), status, "COMPLETED", "AUTO_COMPLETE", "末道累计合格数达到计划数", operator);
@@ -190,16 +208,23 @@ public class OperationReportingService {
         }
         String reversalId = UUID.randomUUID().toString();
         var now = clock.instant();
-        jdbc.update("insert into wo_operation_report (report_id, order_id, op_no, type, good_qty, defect_qty, scrap_qty, uom, lot_no, note, reversed_report_id, operator, request_id, created_at) values (?, ?, ?, 'REVERSAL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        jdbc.update("insert into wo_operation_report (report_id, order_id, op_no, type, good_qty, defect_qty, scrap_qty, uom, lot_no, note, reversed_report_id, operator, request_id, created_at, station_code, labor_hours) values (?, ?, ?, 'REVERSAL', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             reversalId, order.id(), original.opNo(), original.good().negate(), original.defect().negate(), original.scrap().negate(),
-            original.uom(), effectiveLotNo(original.lotNo(), order.id()), reason, reportId, operator, MDC.get("requestId"), DbTimes.ts(now));
-        jdbc.update("update wo_operation_progress set good_qty = good_qty - ?, defect_qty = defect_qty - ?, scrap_qty = scrap_qty - ?, effective_reports = effective_reports - 1, updated_at = ? where order_id = ? and op_no = ?",
-            original.good(), original.defect(), original.scrap(), DbTimes.ts(now), order.id(), original.opNo());
+            original.uom(), effectiveLotNo(original.lotNo(), order.id()), reason, reportId, operator, MDC.get("requestId"), DbTimes.ts(now),
+            original.station(), original.labor().negate());
+        // 工时与数量一起反冲；冲销记录沿用原报工的工位
+        jdbc.update("update wo_operation_progress set good_qty = good_qty - ?, defect_qty = defect_qty - ?, scrap_qty = scrap_qty - ?, effective_reports = effective_reports - 1, labor_hours = labor_hours - ?, updated_at = ? where order_id = ? and op_no = ?",
+            original.good(), original.defect(), original.scrap(), original.labor(), DbTimes.ts(now), order.id(), original.opNo());
         if (original.defect().signum() > 0)
             defectEvent(order, original.opNo(), original.uom(), effectiveLotNo(original.lotNo(), order.id()), original.defect(), reversalId, reportId, "DefectReversed", defectReversedTag);
 
         String status = order.status();
         List<Progress> updated = progress(order.id());
+        // DONE 的任务冲销后累计不足上限 → PAUSED（PM 2026-10-14 确认：不回 RUNNING，现场不一定有人在做，由操作员显式 resume）
+        int idx = indexOf(updated, original.opNo());
+        OperationTaskStates.Task task = tasks.find(order.id(), original.opNo());
+        if ("DONE".equals(task.status()) && updated.get(idx).total().compareTo(limit(order, updated, idx)) < 0)
+            tasks.transition(task, "PAUSED", "PAUSE", "REPORT_REVERSED", operator);
         Progress lastOp = updated.get(updated.size() - 1);
         if ("COMPLETED".equals(status) && lastOp.good().compareTo(order.planned()) < 0) {
             // 冲销导致末道合格数不足计划数：从完工退回生产中并发布 WorkOrderReopened；全部冲销后仍保持 IN_PROGRESS，不回到 RELEASED
@@ -274,7 +299,7 @@ public class OperationReportingService {
     // ------------------------------------------------------------------ 内部
 
     /** 在单个事务内：锁工单行 → 查幂等记录（命中则重放）→ 执行命令 → 保存幂等记录。 */
-    private CommandResult idempotent(String principal, String key, String command, String orderNo, String hash, int status,
+    CommandResult idempotent(String principal, String key, String command, String orderNo, String hash, int status,
                                      java.util.function.Function<Order, Object> work) {
         try {
             return tx.execute(s -> {
@@ -322,13 +347,14 @@ public class OperationReportingService {
     }
 
     private List<Progress> readProgress(String orderId) {
-        return jdbc.query("select op_no, seq, good_qty, defect_qty, scrap_qty, uom, effective_reports from wo_operation_progress where order_id = ? order by seq",
-            (rs, i) -> new Progress(rs.getString(1), rs.getInt(2), qty(rs.getBigDecimal(3)), qty(rs.getBigDecimal(4)), qty(rs.getBigDecimal(5)), rs.getString(6), rs.getInt(7)), orderId);
+        return jdbc.query("select op_no, seq, good_qty, defect_qty, scrap_qty, uom, effective_reports, labor_hours from wo_operation_progress where order_id = ? order by seq",
+            (rs, i) -> new Progress(rs.getString(1), rs.getInt(2), qty(rs.getBigDecimal(3)), qty(rs.getBigDecimal(4)), qty(rs.getBigDecimal(5)), rs.getString(6), rs.getInt(7),
+                rs.getBigDecimal(8).setScale(2, RoundingMode.UNNECESSARY)), orderId);
     }
 
     private List<Progress> fromTasks(String orderId) {
         return jdbc.query("select op_no, seq from operation_task where order_id = ? order by seq",
-            (rs, i) -> new Progress(rs.getString(1), rs.getInt(2), ZERO, ZERO, ZERO, null, 0), orderId);
+            (rs, i) -> new Progress(rs.getString(1), rs.getInt(2), ZERO, ZERO, ZERO, null, 0, HOURS_ZERO), orderId);
     }
 
     private static int indexOf(List<Progress> ops, String opNo) {
@@ -336,15 +362,37 @@ public class OperationReportingService {
         throw WorkOrderProblemType.OPERATION_NOT_FOUND.exception("工序 " + opNo + " 不在下达时的工艺快照中");
     }
 
+    /** 各工序累计与上限，供任务状态结算。 */
+    private static List<OperationTaskStates.OpTotals> totals(Order order, List<Progress> ops) {
+        List<OperationTaskStates.OpTotals> list = new ArrayList<>();
+        for (int i = 0; i < ops.size(); i++) list.add(new OperationTaskStates.OpTotals(ops.get(i).opNo(), ops.get(i).total(), limit(order, ops, i)));
+        return list;
+    }
+
+    /**
+     * 解析工时：入口 @Pattern 已保证非负、最多 2 位小数；这里再防御一次（如内部直接调用），不合法返回 validation-error。
+     */
+    static BigDecimal hours(String v) {
+        if (v == null || !v.matches("\\d{1,6}(\\.\\d{1,2})?"))
+            throw WorkOrderProblemType.VALIDATION_ERROR.exception("laborHours 必须是非负、最多 2 位小数的十进制字符串");
+        return new BigDecimal(v).setScale(2, RoundingMode.UNNECESSARY);
+    }
+
     /** 本工序上限：首道 = 计划数；后续 = 上道累计合格数。 */
     private static BigDecimal limit(Order order, List<Progress> ops, int k) { return k == 0 ? order.planned() : ops.get(k - 1).good(); }
 
     private WorkOrderProgressView progressView(String orderId, String status, BigDecimal planned, List<Progress> ops) {
         List<OperationProgressView> views = new ArrayList<>();
+        // 附带派工信息（M1）：任务状态、工位、操作工、计划时间与任务版本
+        Map<String, OperationTaskStates.Task> byOp = new HashMap<>();
+        for (OperationTaskStates.Task t : tasks.all(orderId)) byOp.put(t.opNo(), t);
         for (int i = 0; i < ops.size(); i++) {
             Progress p = ops.get(i);
             BigDecimal limit = i == 0 ? planned : ops.get(i - 1).good();
-            views.add(new OperationProgressView(p.opNo(), p.seq(), num(p.good()), num(p.defect()), num(p.scrap()), p.uom(), num(limit), p.effective()));
+            OperationTaskStates.Task t = byOp.get(p.opNo());
+            views.add(new OperationProgressView(p.opNo(), p.seq(), num(p.good()), num(p.defect()), num(p.scrap()), p.uom(), num(limit), p.effective(),
+                p.labor().toPlainString(), t == null ? null : t.status(), t == null ? null : t.station(), t == null ? null : t.operator(),
+                t == null ? null : t.plannedStart(), t == null ? null : t.plannedEnd(), t == null ? 0 : t.version()));
         }
         return new WorkOrderProgressView(orderId, status, num(planned), views);
     }
@@ -415,12 +463,13 @@ public class OperationReportingService {
         return new Report(rs.getString("report_id"), rs.getString("order_id"), rs.getString("type"), rs.getString("op_no"),
             qty(rs.getBigDecimal("good_qty")), qty(rs.getBigDecimal("defect_qty")), qty(rs.getBigDecimal("scrap_qty")),
             rs.getString("uom"), rs.getString("lot_no"), rs.getString("note"), rs.getString("reversed_report_id"),
-            rs.getString("operator"), rs.getTimestamp("created_at").toInstant());
+            rs.getString("operator"), rs.getTimestamp("created_at").toInstant(), rs.getString("station_code"),
+            rs.getBigDecimal("labor_hours").setScale(2, RoundingMode.UNNECESSARY));
     }
 
     private static OperationReportView reportView(Report r) {
         return new OperationReportView(r.reportId(), r.type(), r.opNo(), num(r.good()), num(r.defect()), num(r.scrap()), r.uom(),
-            r.lotNo(), r.note(), r.reversedReportId(), r.operator(), r.createdAt());
+            r.lotNo(), r.note(), r.reversedReportId(), r.operator(), r.createdAt(), r.station(), r.labor().toPlainString());
     }
 
     /** 统一为 6 位小数；超过 6 位的输入已被 @Digits 拒绝，这里不会发生舍入。 */
@@ -431,7 +480,7 @@ public class OperationReportingService {
         try { return mapper.writeValueAsString(o); } catch (JsonProcessingException e) { throw new IllegalStateException("响应序列化失败", e); }
     }
 
-    private static String hash(String... parts) {
+    static String hash(String... parts) {
         try {
             MessageDigest d = MessageDigest.getInstance("SHA-256");
             for (String p : parts) { d.update(String.valueOf(p).getBytes(StandardCharsets.UTF_8)); d.update((byte) 0); }

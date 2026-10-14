@@ -15,7 +15,7 @@ class OperationReportLotNoTest {
     private final Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
 
     private ReportOperationRequest req(String lotNo) {
-        return new ReportOperationRequest(BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.ZERO, "PCS", lotNo, null);
+        return new ReportOperationRequest(BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.ZERO, "PCS", lotNo, null, "1.00");
     }
 
     @Test void absentLotNoDefaultsToWorkOrderNo() {

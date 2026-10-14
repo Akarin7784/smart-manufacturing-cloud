@@ -12,7 +12,7 @@
 | --- | --- |
 | 模块：cloud-gateway、auth-service、device-service、workorder-service、cloud-api、cloud-common、cloud-security | 新服务沿用同一结构：`xxx-service` + 契约放 `cloud-api` + Servlet 公共组件放 `cloud-common` |
 | 每个业务服务独立数据库、独立 MySQL 账号，**无跨库外键** | 跨上下文只引用业务编码（物料编码、设备编码、工单号），通过 Feign 查询或事件快照获取数据 |
-| 工单当前仅有 `CREATED` 状态，创建时同步查询设备 `ONLINE` | 状态机需扩展；“读设备状态≠预留资源”已在 AGENTS.md 明确，派工阶段需引入预留 + 幂等 + 补偿 |
+| 工单状态机已实现 CREATED/RELEASED/IN_PROGRESS/ON_HOLD/COMPLETED/CANCELLED（CLOSED 仅作报工守卫，尚无关闭入口）；创建时仍同步查询设备 `ONLINE` | 派工设计见 docs/workorder-dispatch-design.md；“读设备状态≠预留资源”已在 AGENTS.md 明确，派工阶段需引入预留 + 幂等 + 补偿 |
 | 权限为 `资源:动作` 字符串（`workorder:write` 等），ADMIN/OPERATOR/VIEWER 三角色，网关与服务双重校验 | 新模块按同一命名扩展权限，并补充角色（工艺员、质检员、班组长）；每个新接口须同步网关规则与越权测试 |
 | docs/architecture.md 建议 outbox + RocketMQ 5.3.1、Seata 2.5.0 仅在确有跨服务同步写入时引入 | 生产过程优先采用**本地事务 + outbox + 最终一致**；不在报工主链路引入全局事务 |
 | schema.sql 仅为开发初始化，上线改 Flyway/Liquibase | 每个新服务从第一天起使用 Flyway 迁移，演示主数据用独立的 `R__demo_data.sql`（可重复迁移，仅 demo profile 执行） |
@@ -130,7 +130,7 @@ classDiagram
   - `good(n-1)`：上道累计合格数（已转出到本道的可加工数）；首道工序以工单计划数×(1+超交容差) 代替。
   - `scrap(n)`：本道累计报废；`pendingRework(n)`：本道判返工且尚未返回的数量（已离开合格流，但未消失）。
   - `reworkReturn(n)`：返工完成后回流到本道重新加工的数量（返工件不重复计入上道合格数）。
-  - 示例：上道合格 10，本道已报合格 8、报废 2，则本道再报任何数量都返回 422 `QTY_EXCEEDS_INPUT`；若其中 1 件返工回流，则可再报 1 件。
+  - 示例：上道合格 10，本道已报合格 8、报废 2，则本道再报任何数量都返回 422 `over-report`；若其中 1 件返工回流，则可再报 1 件。
   - 每次报工在同一事务内以 `version` 乐观锁更新 operation_task 累计值，保证并发报工下不变量成立。
 - 追溯属性为 SERIAL 的物料装配必须扫描序列号；LOT 的必须扫描批次；NONE 只记数量。
 
