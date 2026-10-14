@@ -7,6 +7,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.when;
 
 /** 下达测试公共夹具：GR-60 减速机的简化 BOM / 工艺主数据桩与建单、清表工具。 */
@@ -33,6 +34,12 @@ final class ReleaseFixtures {
     static void stubMasterdata(MasterdataClient client) {
         when(client.explode(eq(PRODUCT), anyString(), any())).thenAnswer(inv -> ApiResponse.ok(explosion(((BigDecimal) inv.getArgument(2)).intValue())));
         when(client.effectiveRouting(eq(PRODUCT), anyString())).thenReturn(ApiResponse.ok(routing()));
+        // 派工校验工位归属：WC-CNC 两个工位、WC-ASM 一个工位；其他工作中心按主数据 404（降级映射为 release-masterdata-invalid）
+        when(client.workCenter(anyString())).thenThrow(new com.smartmanufacturing.common.BusinessException("RELEASE_MASTERDATA_INVALID", "工作中心不存在", org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY));
+        doReturn(ApiResponse.ok(new WorkCenter("WC-CNC", "数控", "W1", false, List.of(new Station("ST-CNC-01", "1 号机", "WC-CNC"), new Station("ST-CNC-02", "2 号机", "WC-CNC")))))
+            .when(client).workCenter("WC-CNC");
+        doReturn(ApiResponse.ok(new WorkCenter("WC-ASM", "装配", "W1", false, List.of(new Station("ST-ASM-01", "装配线", "WC-ASM")))))
+            .when(client).workCenter("WC-ASM");
     }
 
     static String createOrder(JdbcTemplate jdbc, int qty) {
@@ -42,7 +49,7 @@ final class ReleaseFixtures {
     }
 
     static void clear(JdbcTemplate jdbc) {
-        for (String t : List.of("wo_reservation_release_task", "wo_inventory_audit", "wo_operation_report", "wo_operation_progress", "wo_command_request", "work_order_lifecycle", "work_order_hold_reason", "wo_bom_snapshot", "operation_task", "wo_material_reservation",
+        for (String t : List.of("wo_reservation_release_task", "wo_inventory_audit", "wo_operation_report", "wo_operation_progress", "wo_command_request", "work_order_lifecycle", "work_order_hold_reason", "wo_bom_snapshot", "operation_task_log", "operation_task", "wo_material_reservation",
             "wo_material_reservation_line", "work_order_status_log", "outbox_event", "consumed_event", "work_order_request", "work_order"))
             jdbc.update("delete from " + t);
     }

@@ -50,15 +50,23 @@ public class GatewaySecurityConfiguration {
                 .pathMatchers("/actuator/**").hasAuthority("metrics:read")
                 .pathMatchers("/api/auth/users", "/api/auth/users/**").hasAuthority("user:manage")
                 .pathMatchers(HttpMethod.GET, "/api/auth/me").authenticated()
+                // 派工用操作工下拉（M1）：计划员 / 管理员
+                .pathMatchers(HttpMethod.GET, "/api/auth/operators").hasAuthority("execution:dispatch")
                 .pathMatchers("/api/devices/config").hasAuthority("config:read")
                 .pathMatchers(HttpMethod.GET, "/api/devices", "/api/devices/**").hasAuthority("device:read")
-                .pathMatchers(HttpMethod.GET, "/api/workorders", "/api/workorders/**").hasAuthority("workorder:read")
+                .pathMatchers(HttpMethod.GET, "/api/workorders", "/api/workorders/**", "/api/operation-tasks", "/api/operation-tasks/**").hasAuthority("workorder:read")
+                // M1 派工 / 改派 / 取消派工：execution:dispatch，兼容期 workorder:write 亦可（服务内 @PreAuthorize 同样规则）
+                .pathMatchers(HttpMethod.POST, "/api/workorders/*/operations/*/dispatch", "/api/workorders/*/operations/*/reassign",
+                    "/api/workorders/*/operations/*/cancel-dispatch").hasAnyAuthority("execution:dispatch", "workorder:write")
+                // M1 开工 / 暂停 / 恢复与报工、冲销：execution:report，兼容期 workorder:write 亦可
+                .pathMatchers(HttpMethod.POST, "/api/workorders/*/operations/*/start", "/api/workorders/*/operations/*/pause",
+                    "/api/workorders/*/operations/*/resume", "/api/workorders/*/operations/*/reports",
+                    "/api/workorders/*/reports/*/reversal").hasAnyAuthority("execution:report", "workorder:write")
                 .pathMatchers(HttpMethod.POST, "/api/workorders").hasAuthority("workorder:write")
                 // 工单下达 / 冻结 / 恢复：写权限；下达时令牌透传主数据服务，还需 masterdata:read（由主数据服务校验）。
                 .pathMatchers(HttpMethod.POST, "/api/workorders/*/release", "/api/workorders/*/hold", "/api/workorders/*/resume").hasAuthority("workorder:write")
                 // 工序报工、冲销、手工完工与取消
-                .pathMatchers(HttpMethod.POST, "/api/workorders/*/operations/*/reports", "/api/workorders/*/reports/*/reversal",
-                    "/api/workorders/*/complete", "/api/workorders/*/cancel").hasAuthority("workorder:write")
+                .pathMatchers(HttpMethod.POST, "/api/workorders/*/complete", "/api/workorders/*/cancel").hasAuthority("workorder:write")
                 // 主数据：发布单独授权，必须排在通用写规则之前；服务内 @PreAuthorize 再次校验同样的权限。
                 .pathMatchers(HttpMethod.GET, "/api/materials", "/api/materials/**", "/api/workcenters", "/api/workcenters/**",
                     "/api/boms", "/api/boms/**", "/api/routings", "/api/routings/**").hasAuthority("masterdata:read")

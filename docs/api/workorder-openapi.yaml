@@ -40,7 +40,7 @@ tags:
   - name: lifecycle
     description: 工单创建、下达、冻结与恢复
   - name: dispatch
-    description: 工序派工、开工、暂停与恢复（M1 设计）
+    description: 工序派工、开工、暂停与恢复（M1）
 security:
   - userBearer: []
 
@@ -50,7 +50,10 @@ paths:
       tags: [reporting]
       operationId: reportOperation
       summary: 工序报工
-      description: 追加一条报工记录并更新工序累计；不良数大于 0 时发布 DefectReported。需要 `workorder:write`。
+      description: |
+        追加一条报工记录并更新工序累计；不良数大于 0 时发布 DefectReported。需要 `execution:report`（兼容期 `workorder:write` 亦可）。
+        M1：不要求先派工（兼容已下达未派工的老数据）；READY 任务报工自动开工为 RUNNING；任务 PAUSED / CANCELLED 时 409 task-state-conflict。
+        本道累计达到上限且上道已完工时任务 DONE，并记录报工当时的工位。
       parameters:
         - $ref: '#/components/parameters/WorkOrderNo'
         - $ref: '#/components/parameters/OperationNo'
@@ -461,10 +464,10 @@ paths:
     post:
       tags: [dispatch]
       operationId: dispatchOperation
-      summary: 派工（M1 设计）
+      summary: 派工（M1）
       description: |
-        允许 PENDING / READY 且未派工的任务；写入工位、操作工、计划时间，任务状态不变。工位不存在或不属于该工作中心 422 station-not-found。
-        M1 新增（设计见 docs/workorder-dispatch-design.md，实现前）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
+        允许未派工且 PENDING / READY 的任务（未派工老数据被报工自动开工或冲销暂停后，RUNNING / PAUSED 也允许补派工）；写入工位、操作工（auth 用户 id，取自 GET /api/auth/operators）、计划时间，任务状态不变。工位不存在或不属于该工作中心 422 station-not-found。
+        M1 新增（设计见 docs/workorder-dispatch-design.md）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
         任务状态不允许 409 task-state-conflict；乐观锁失败 409 concurrent-modification；幂等语义同报工。
         需要 `execution:dispatch`（兼容期 `workorder:write` 亦可）。
       parameters:
@@ -503,10 +506,10 @@ paths:
     post:
       tags: [dispatch]
       operationId: reassignOperation
-      summary: 改派（M1 设计）
+      summary: 改派（M1）
       description: |
         允许 READY / PAUSED（含已报工）；RUNNING 返回 409 task-state-conflict，需先暂停。expectedVersion 不符 409 concurrent-modification。已有报工保留原工位与操作人。
-        M1 新增（设计见 docs/workorder-dispatch-design.md，实现前）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
+        M1 新增（设计见 docs/workorder-dispatch-design.md）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
         任务状态不允许 409 task-state-conflict；乐观锁失败 409 concurrent-modification；幂等语义同报工。
         需要 `execution:dispatch`（兼容期 `workorder:write` 亦可）。
       parameters:
@@ -545,10 +548,10 @@ paths:
     post:
       tags: [dispatch]
       operationId: cancelOperationDispatch
-      summary: 取消派工（M1 设计）
+      summary: 取消派工（M1）
       description: |
         允许已派工且无报工的 PENDING / READY 任务；未派工 409 task-not-dispatched。
-        M1 新增（设计见 docs/workorder-dispatch-design.md，实现前）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
+        M1 新增（设计见 docs/workorder-dispatch-design.md）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
         任务状态不允许 409 task-state-conflict；乐观锁失败 409 concurrent-modification；幂等语义同报工。
         需要 `execution:dispatch`（兼容期 `workorder:write` 亦可）。
       parameters:
@@ -587,10 +590,10 @@ paths:
     post:
       tags: [dispatch]
       operationId: startOperation
-      summary: 开工（M1 设计）
+      summary: 开工（M1）
       description: |
         READY 且已派工 → RUNNING；未派工 409 task-not-dispatched；工单 ON_HOLD 409 workorder-state-conflict。设备预留 M1 为占位实现。
-        M1 新增（设计见 docs/workorder-dispatch-design.md，实现前）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
+        M1 新增（设计见 docs/workorder-dispatch-design.md）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
         任务状态不允许 409 task-state-conflict；乐观锁失败 409 concurrent-modification；幂等语义同报工。
         需要 `execution:report`（兼容期 `workorder:write` 亦可）。
       parameters:
@@ -629,10 +632,10 @@ paths:
     post:
       tags: [dispatch]
       operationId: pauseOperation
-      summary: 暂停（M1 设计）
+      summary: 暂停（M1）
       description: |
         RUNNING → PAUSED，reason 必填。
-        M1 新增（设计见 docs/workorder-dispatch-design.md，实现前）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
+        M1 新增（设计见 docs/workorder-dispatch-design.md）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
         任务状态不允许 409 task-state-conflict；乐观锁失败 409 concurrent-modification；幂等语义同报工。
         需要 `execution:report`（兼容期 `workorder:write` 亦可）。
       parameters:
@@ -671,10 +674,10 @@ paths:
     post:
       tags: [dispatch]
       operationId: resumeOperation
-      summary: 恢复（M1 设计）
+      summary: 恢复（M1）
       description: |
         PAUSED → RUNNING；工单 ON_HOLD 409 workorder-state-conflict。
-        M1 新增（设计见 docs/workorder-dispatch-design.md，实现前）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
+        M1 新增（设计见 docs/workorder-dispatch-design.md）。工单须为 RELEASED / IN_PROGRESS（CREATED 404 workorder-not-released，其余 409 workorder-state-conflict / workorder-cancelled / workorder-closed）。
         任务状态不允许 409 task-state-conflict；乐观锁失败 409 concurrent-modification；幂等语义同报工。
         需要 `execution:report`（兼容期 `workorder:write` 亦可）。
       parameters:
@@ -713,7 +716,7 @@ paths:
     get:
       tags: [dispatch]
       operationId: listOperationTasks
-      summary: 按工位查询工序任务（M1 设计）
+      summary: 按工位查询工序任务（M1）
       description: 工位工作台任务列表，按计划开始时间、工单号排序。需要 `workorder:read`。
       parameters:
         - {name: station, in: query, required: false, description: 工位编码。, schema: {type: string}}
@@ -796,7 +799,7 @@ components:
       description: 十进制数量字符串，最多 6 位小数（响应中固定 6 位）。
     ReportOperationRequest:
       type: object
-      description: 工序报工请求；数量可为 JSON 数字或十进制字符串，不得为负且合计大于 0。laborHours 为 M1 新增必填字段（本次报工总工时，冲销时同步反冲），实现前服务端尚未校验。
+      description: 工序报工请求；数量可为 JSON 数字或十进制字符串，不得为负且合计大于 0。laborHours 为 M1 新增必填字段（本次报工总工时，冲销时同步反冲）；缺失、负数、超过 2 位小数均为 400 validation-error。
       required: [goodQty, defectQty, scrapQty, uom, laborHours]
       properties:
         goodQty:
@@ -878,6 +881,12 @@ components:
           type: string
           format: date-time
           description: 记录时间。
+        stationCode:
+          type: [string, 'null']
+          description: 报工当时任务所在工位（之后改派不变；未派工报工为 null）。
+        laborHours:
+          type: string
+          description: 本条工时（小时，2 位小数；冲销记录为负数）。
     OperationProgressView:
       type: object
       description: 工序累计。
@@ -902,6 +911,28 @@ components:
         effectiveReports:
           type: integer
           description: 未被冲销的报工条数。
+        laborHours:
+          type: string
+          description: 工序累计工时（小时，2 位小数，已扣除冲销）。
+        taskStatus:
+          $ref: '#/components/schemas/OperationTaskStatus'
+        stationCode:
+          type: [string, 'null']
+          description: 派工工位；null 为未派工。
+        operator:
+          type: [string, 'null']
+          description: 指派操作工（auth 用户 id）。
+        plannedStart:
+          type: [string, 'null']
+          format: date-time
+          description: 计划开始。
+        plannedEnd:
+          type: [string, 'null']
+          format: date-time
+          description: 计划结束。
+        version:
+          type: integer
+          description: 任务版本（改派时作为 expectedVersion）。
     WorkOrderProgressView:
       type: object
       description: 工单报工进度。
@@ -1196,6 +1227,9 @@ components:
         | `uom-mismatch` | 422 | 计量单位不一致 | 报工计量单位与本工单已有报工的单位不一致（`data` 含 expectedUom / requestedUom）；或下达时同一物料在 BOM 展开中计量单位不一致（`data` 含 materialCode / expectedUom / requestedUom），或 BOM 单位与库存已登记的现存量单位不一致（`data.source=inventory`） |
         | `workorder-cancelled` | 409 | 工单已取消 | 工单已取消：重复取消（换键；同键为重放）以及取消后的下达、报工、冲销、完工、冻结、恢复 |
         | `inventory-service-unavailable` | 503 | 库存服务不可用 | 库存服务不可用或拒绝服务令牌（下达预留、恢复时重新预留） |
+        | `task-state-conflict` | 409 | 工序任务状态冲突 | 动作不允许在当前任务状态下执行（RUNNING 时改派、PAUSED 时报工、重复派工等） |
+        | `task-not-dispatched` | 409 | 工序未派工 | 未派工就开工 / 暂停 / 恢复 / 改派，或取消未派工任务（报工不要求派工） |
+        | `station-not-found` | 422 | 工位不存在 | 工位不存在、已删除或不属于该工序的工作中心 |
         | `validation-error` | 400 | 请求参数无效 | 请求参数校验失败（格式、必填、范围、小数位超过 6 位等） |
         | `idempotency-key-required` | 400 | 缺少幂等键 | 缺少或格式非法的 `Idempotency-Key` |
         | `idempotency-key-conflict` | 422 | 幂等键冲突 | 同一调用方的幂等键已用于不同请求 |
@@ -1224,6 +1258,9 @@ components:
         - uom-mismatch
         - workorder-cancelled
         - inventory-service-unavailable
+        - task-state-conflict
+        - task-not-dispatched
+        - station-not-found
         - validation-error
         - idempotency-key-required
         - idempotency-key-conflict

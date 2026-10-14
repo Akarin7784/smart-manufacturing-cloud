@@ -36,6 +36,14 @@ manufacturing:
       defect-reported: DefectReported
       defect-reversed: DefectReversed
       workorder-cancelled: WorkOrderCancelled
+      # M1 工序任务事件（topic workorder-event，messageKey=工单号；消费方按 taskVersion 判断先后）
+      operation-dispatched: OperationDispatched
+      operation-dispatch-cancelled: OperationDispatchCancelled
+      operation-started: OperationStarted
+      operation-paused: OperationPaused
+      operation-resumed: OperationResumed
+      operation-completed: OperationCompleted
+      operation-cancelled: OperationCancelled
       reservation-created: ReservationCreated
       reservation-released: ReservationReleased
       reservation-consumed: ReservationConsumed

@@ -60,6 +60,10 @@ public class AuthController {
     @GetMapping("/users") @PreAuthorize("hasAuthority('user:manage')")
     public ApiResponse<List<UserView>> users() { return ApiResponse.ok(users.list()); }
 
+    /** 派工用操作工下拉：需要 execution:dispatch（计划员、管理员），不放宽 /auth/users 的 user:manage 要求。 */
+    @GetMapping("/operators") @PreAuthorize("hasAuthority('execution:dispatch')")
+    public ApiResponse<List<OperatorView>> operators() { return ApiResponse.ok(users.operators()); }
+
     /** 仅管理员可以创建账号和指定系统角色。 */
     @PostMapping("/users") @ResponseStatus(HttpStatus.CREATED) @PreAuthorize("hasAuthority('user:manage')")
     public ApiResponse<UserView> create(@Valid @RequestBody CreateUserRequest request) { return ApiResponse.ok(users.create(request)); }

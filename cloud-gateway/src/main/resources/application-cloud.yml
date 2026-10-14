@@ -37,7 +37,7 @@ spring:
             - id: workorder-service
               uri: lb://workorder-service
               predicates:
-                - Path=/api/workorders,/api/workorders/**
+                - Path=/api/workorders,/api/workorders/**,/api/operation-tasks,/api/operation-tasks/**
               filters:
                 - StripPrefix=1
             # 主数据服务：物料、工作中心、BOM、工艺路线四组资源统一路由。

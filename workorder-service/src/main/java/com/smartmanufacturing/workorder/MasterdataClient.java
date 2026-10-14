@@ -19,4 +19,7 @@ public interface MasterdataClient {
     /** 指定日期生效的已发布工艺路线。 */
     @GetMapping("/routings/{product}/effective")
     ApiResponse<Routing> effectiveRouting(@PathVariable("product") String product, @RequestParam("date") String date);
+    /** 工作中心及其工位（派工时校验工位归属；PR2 软删除后已删除的工位不再返回）。 */
+    @GetMapping("/workcenters/{code}")
+    ApiResponse<com.smartmanufacturing.api.masterdata.WorkCenter> workCenter(@PathVariable("code") String code);
 }

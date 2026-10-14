@@ -49,10 +49,12 @@ public class WorkOrderReleaseService {
     private final MaterialReservationPort materials;
     private final WorkOrderJournal journal;
     private final Clock clock;
+    private final OperationTaskStates tasks;
 
     public WorkOrderReleaseService(JdbcTemplate jdbc, TransactionTemplate tx, MasterdataClient masterdata,
-                                   MaterialReservationPort materials, WorkOrderJournal journal, Clock clock) {
+                                   MaterialReservationPort materials, WorkOrderJournal journal, Clock clock, OperationTaskStates tasks) {
         this.jdbc = jdbc; this.tx = tx; this.masterdata = masterdata; this.materials = materials; this.journal = journal; this.clock = clock;
+        this.tasks = tasks;
     }
 
     /** 下达结果：replayed=true 表示同一幂等键的重放，未产生新写入。 */
@@ -250,6 +252,8 @@ public class WorkOrderReleaseService {
         jdbc.update("insert into work_order_hold_reason (order_id, reason) values (?, ?)", orderId, reason.name());
         if (!onHold && jdbc.update("update work_order set status = 'ON_HOLD', version = version + 1 where id = ? and status = ?", orderId, order.status()) != 1)
             throw new VersionConflict();
+        // 冻结时所有 RUNNING 任务 → PAUSED（锁序：work_order 行已在上面的条件更新中锁定，再改 operation_task）；恢复工单后需人工 resume
+        if (!onHold) tasks.pauseAllRunning(orderId, operator);
         journal.statusChanged(orderId, order.status(), "ON_HOLD", reason.name(), note, operator);
         journal.event(orderId, "WorkOrderHeld", Map.of("reason", reason.name(), "resumeTarget", onHold ? lc.resumeTarget() : order.status()));
         return true;

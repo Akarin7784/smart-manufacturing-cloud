@@ -12,7 +12,9 @@
     "inventory:read",
     "inventory:write",
     "quality:read",
-    "quality:write"
+    "quality:write",
+    "execution:dispatch",
+    "execution:report"
   ],
   "OPERATOR": [
     "device:read",
@@ -21,7 +23,8 @@
     "masterdata:read",
     "inventory:read",
     "inventory:write",
-    "quality:read"
+    "quality:read",
+    "execution:report"
   ],
   "VIEWER": [
     "device:read",
@@ -37,5 +40,12 @@
     "inventory:read",
     "quality:read",
     "quality:write"
+  ],
+  "PLANNER": [
+    "device:read",
+    "workorder:read",
+    "masterdata:read",
+    "quality:read",
+    "execution:dispatch"
   ]
 }

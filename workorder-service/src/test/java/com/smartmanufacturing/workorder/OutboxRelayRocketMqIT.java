@@ -128,7 +128,7 @@ class OutboxRelayRocketMqIT {
         mvc.perform(post("/workorders/" + id + "/operations/OP10/reports")
                 .with(jwt().authorities(new SimpleGrantedAuthority("workorder:write"), new SimpleGrantedAuthority("workorder:read")))
                 .header("Idempotency-Key", "k-" + id).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"goodQty\":\"7\",\"defectQty\":\"2.5\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"lotNo\":\"LOT-9\"}"))
+                .content("{\"goodQty\":\"7\",\"defectQty\":\"2.5\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"laborHours\":\"1.00\",\"lotNo\":\"LOT-9\"}"))
             .andReturn();
         String defectEventId = jdbc.queryForObject("select event_id from outbox_event where aggregate_id = ? and event_type = 'DefectReported'", String.class, id);
 
