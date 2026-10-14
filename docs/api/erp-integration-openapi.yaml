@@ -289,7 +289,7 @@ paths:
 
         - 同键同参数：200，body 与首次相同；同键不同参数：409 / 40902；同键请求处理中：409 / 40904（MES 退避重试）。
 
-        - 请求头或 requestNo 缺失：400 / 40002；请求头与 requestNo 不一致：400 / 40003。
+        - 请求头或 requestNo 缺失、请求头与 requestNo 不一致：400 / 400（与 ERP PR #25 一致，ERP 不新增细分码）。
 
         - 数量超过 6 位小数：400 / 400，不四舍五入。
 
@@ -360,20 +360,20 @@ paths:
                 missingHeader:
                   summary: 缺 Idempotency-Key 头
                   value:
-                    code: 40002
-                    msg: 缺少请求头 Idempotency-Key
+                    code: 400
+                    msg: Idempotency-Key 不能为空
                     data: null
                 missingRequestNo:
                   summary: 缺请求体 requestNo
                   value:
-                    code: 40002
-                    msg: 缺少 requestNo
+                    code: 400
+                    msg: 'requestNo: 不能为空'
                     data: null
                 keyMismatch:
                   summary: 请求头与 requestNo 不一致
                   value:
-                    code: 40003
-                    msg: Idempotency-Key 与 requestNo 不一致
+                    code: 400
+                    msg: Idempotency-Key 必须等于 requestNo
                     data: null
                 tooManyDecimals:
                   summary: 数量超过 6 位小数
@@ -456,7 +456,7 @@ paths:
 
         - 同键同参数：200，body 与首次相同；同键不同参数：409 / 40902；同键请求处理中：409 / 40904（MES 退避重试）。
 
-        - 请求头或 requestNo 缺失：400 / 40002；请求头与 requestNo 不一致：400 / 40003。
+        - 请求头或 requestNo 缺失、请求头与 requestNo 不一致：400 / 400（与 ERP PR #25 一致，ERP 不新增细分码）。
 
         - 数量超过 6 位小数：400 / 400，不四舍五入。
 
@@ -523,20 +523,20 @@ paths:
                 missingHeader:
                   summary: 缺 Idempotency-Key 头
                   value:
-                    code: 40002
-                    msg: 缺少请求头 Idempotency-Key
+                    code: 400
+                    msg: Idempotency-Key 不能为空
                     data: null
                 missingRequestNo:
                   summary: 缺请求体 requestNo
                   value:
-                    code: 40002
-                    msg: 缺少 requestNo
+                    code: 400
+                    msg: 'requestNo: 不能为空'
                     data: null
                 keyMismatch:
                   summary: 请求头与 requestNo 不一致
                   value:
-                    code: 40003
-                    msg: Idempotency-Key 与 requestNo 不一致
+                    code: 400
+                    msg: Idempotency-Key 必须等于 requestNo
                     data: null
                 tooManyDecimals:
                   summary: 数量超过 6 位小数
@@ -619,7 +619,7 @@ paths:
 
         - 同键同参数：200，body 与首次相同；同键不同参数：409 / 40902；同键请求处理中：409 / 40904（MES 退避重试）。
 
-        - 请求头或 requestNo 缺失：400 / 40002；请求头与 requestNo 不一致：400 / 40003。
+        - 请求头或 requestNo 缺失、请求头与 requestNo 不一致：400 / 400（与 ERP PR #25 一致，ERP 不新增细分码）。
 
         - 数量超过 6 位小数：400 / 400，不四舍五入。
 
@@ -627,7 +627,9 @@ paths:
 
         - 错误体沿用 ERP 现有的 `R{code,msg,data}`（application/json），**不是** problem+json；码表见 `ErpErrorR`。
 
-        - 路径与字段以 ERP `docs/integration` 定稿为准（OQ-CB）。'
+        - 路径与字段以 ERP `docs/integration` 定稿为准（OQ-CB）。
+
+        - `warehouseCode` 必填；`reasonCode` 由 ERP 按报废原因字典校验，不在字典内 → 400 / 400（不在契约中写死枚举）。'
       parameters:
       - $ref: '#/components/parameters/CallbackIdempotencyKey'
       requestBody:
@@ -649,6 +651,7 @@ paths:
                   reasonCode: PROCESS_DEFECT
                   operationNo: OP20
                   occurredAt: '2026-10-20T11:30:00+08:00'
+                  warehouseCode: W01
       responses:
         '201':
           description: 首次受理。
@@ -686,26 +689,32 @@ paths:
                 missingHeader:
                   summary: 缺 Idempotency-Key 头
                   value:
-                    code: 40002
-                    msg: 缺少请求头 Idempotency-Key
+                    code: 400
+                    msg: Idempotency-Key 不能为空
                     data: null
                 missingRequestNo:
                   summary: 缺请求体 requestNo
                   value:
-                    code: 40002
-                    msg: 缺少 requestNo
+                    code: 400
+                    msg: 'requestNo: 不能为空'
                     data: null
                 keyMismatch:
                   summary: 请求头与 requestNo 不一致
                   value:
-                    code: 40003
-                    msg: Idempotency-Key 与 requestNo 不一致
+                    code: 400
+                    msg: Idempotency-Key 必须等于 requestNo
                     data: null
                 tooManyDecimals:
                   summary: 数量超过 6 位小数
                   value:
                     code: 400
                     msg: quantity 最多 6 位小数
+                    data: null
+                unknownReason:
+                  summary: reasonCode 不在 ERP 报废原因字典内
+                  value:
+                    code: 400
+                    msg: 'reasonCode: 报废原因 XYZ 不存在'
                     data: null
         '401':
           description: 缺令牌，或令牌无效。
@@ -801,7 +810,7 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: MES→ERP 回调的幂等键，必须等于请求体 requestNo；缺失返回 400/40002，不一致返回 400/40003。
+      description: MES→ERP 回调的幂等键，必须等于请求体 requestNo；缺失或不一致均返回 400 / 400。
       schema:
         type: string
         minLength: 1
@@ -1006,6 +1015,8 @@ components:
       - materialCode
       - quantity
       - uom
+      - warehouseCode
+      - reasonCode
       - occurredAt
       properties:
         requestNo:
@@ -1029,7 +1040,7 @@ components:
         reasonCode:
           type: string
           maxLength: 32
-          description: 报废原因码（枚举待 ERP 确认）。
+          description: 报废原因码。由 ERP 按其报废原因字典校验，不在字典内 → 400 / 400；契约**不**固定枚举，字典由 ERP 维护。
         operationNo:
           type:
           - string
@@ -1038,6 +1049,10 @@ components:
         occurredAt:
           type: string
           format: date-time
+        warehouseCode:
+          type: string
+          maxLength: 32
+          description: '报废出库仓（必填，与 ERP PR #25 一致）。'
     CallbackAck:
       type: object
       required:
@@ -1122,11 +1137,7 @@ components:
 
         | --- | --- | --- | --- | --- |
 
-        | 400 | 400 | 参数错误（含数量超过 6 位小数） | ERP 现有 | 不重试，告警 |
-
-        | 400 | 40002 | 缺 Idempotency-Key 请求头或 requestNo | **ERP 需新增** | 不重试（属于 MES 缺陷） |
-
-        | 400 | 40003 | Idempotency-Key 与 requestNo 不一致 | **ERP 需新增** | 不重试（属于 MES 缺陷） |
+        | 400 | 400 | 参数错误：字段校验、引用不存在、reasonCode 不在字典、数量超过 6 位小数、Idempotency-Key / requestNo 缺失或不一致 | ERP 现有 | 不重试，告警 |
 
         | 401 | 401 | 未认证 / 令牌无效 | ERP 现有 | 刷新令牌后重试一次 |
 
@@ -1137,6 +1148,8 @@ components:
         | 409 | 40903 | 单据状态不允许（如工单未 COMPLETED 就完工入库） | ERP 现有 | 不重试，人工处理 |
 
         | 409 | 40904 | 同一请求号正在处理 | ERP 现有 | 退避重试 |
+
+        | 409 | 40906 | 库存不足 | ERP 计划新增（PR #25） | 不重试，人工处理 |
 
         | 500 | 500 | 系统异常 | ERP 现有 | 退避重试 |
 
