@@ -53,9 +53,9 @@ describe('http 请求层', () => {
   it('401 清除登录态并跳转登录页', async () => {
     adapterReturning({ status: 401, data: { type: 'authentication-required', title: '需要登录', status: 401 }, headers: { 'content-type': 'application/problem+json' } })
     await expect(http.get('/workorders')).rejects.toBeInstanceOf(HttpError)
-    await new Promise((r) => setTimeout(r, 30))
     expect(useAuthStore().token).toBe('')
-    expect(router.currentRoute.value.name).toBe('login')
+    // 拦截器内的跳转不被调用方 await，且懒加载组件解析耗时随环境变化，用 waitFor 等待导航真正完成，而非固定延时
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('login'), { timeout: 5000 })
     expect(router.currentRoute.value.query.redirect).toBe('/reports')
     expect(ElMessage.warning).toHaveBeenCalledWith('需要登录')
   })
