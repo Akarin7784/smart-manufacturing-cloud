@@ -3,6 +3,8 @@
   接口：POST /api/workorders/{id}/operations/{opNo}/reports（需 execution:report，兼容期 workorder:write 亦可；带 Idempotency-Key）。
   所有可点控件高度 ≥48px；数量输入使用 inputmode="decimal" 以唤起数字键盘。
   工时 laborHours 为必填（小时，≥0，最多 2 位小数，以字符串发送）。
+  工单下拉为远程搜索（#77）：输入关键字后防抖 300ms，按 IN_PROGRESS、RELEASED 两种状态各请求一页（size ≤ 100），
+  关键字由后端对工单号和产品做包含匹配；只采用最后一次搜索的结果，避免慢响应覆盖新结果。
 -->
 <template>
   <div class="page">
@@ -20,16 +22,28 @@
         class="wo-select"
         size="large"
         filterable
-        placeholder="选择可报工的工单"
+        remote
+        remote-show-suffix
+        :remote-method="onSearch"
+        :loading="searching"
+        loading-text="搜索中…"
+        :no-data-text="searchKeyword ? '没有匹配的可报工工单' : '暂无可报工的工单'"
+        placeholder="输入工单号或产品搜索可报工的工单"
         @change="onWorkOrderChange"
       >
         <el-option
           v-for="w in workOrders"
           :key="w.id"
-          :label="`${w.id} · ${w.product}`"
+          :label="woLabel(w)"
           :value="w.id"
         />
       </el-select>
+      <p
+        v-if="truncated"
+        class="wo-hint"
+      >
+        仅显示前 {{ MAX_PAGE_SIZE }} 条（每种状态），请输入关键字缩小范围
+      </p>
     </section>
 
     <el-alert
@@ -170,7 +184,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getProgress, listWorkOrders, MAX_PAGE_SIZE, newIdempotencyKey, reportOperation, type WorkOrder, type WorkOrderProgressView } from '@/api/workorders'
@@ -203,6 +217,51 @@ watch([form, opNo, woId], () => { key = newIdempotencyKey() }, { deep: true, flu
 const currentOp = computed(() => progress.value?.operations.find((o) => o.operationNo === opNo.value))
 // 工序已有报工时单位已确定，锁定避免 uom-mismatch
 const uomLocked = computed(() => !!currentOp.value?.uom)
+
+// ---- 工单远程搜索 ----
+const REPORTABLE_STATUSES = ['IN_PROGRESS', 'RELEASED'] as const
+const SEARCH_DEBOUNCE_MS = 300
+const searching = ref(false)
+const searchKeyword = ref('')
+// 任一状态的总数超过本页条数时提示用户用关键字缩小范围
+const truncated = ref(false)
+let searchSeq = 0
+let debounceTimer: ReturnType<typeof setTimeout> | undefined
+
+function woLabel(w: WorkOrder) {
+  return w.product ? `${w.id} · ${w.product}` : w.id
+}
+
+/** 立即搜索：两种可报工状态并发请求；序号不是最新的响应直接丢弃。 */
+async function searchWorkOrders(kw: string) {
+  const my = ++searchSeq
+  searchKeyword.value = kw
+  searching.value = true
+  try {
+    const pages = await Promise.all(REPORTABLE_STATUSES.map((status) =>
+      listWorkOrders({ page: 0, size: MAX_PAGE_SIZE, status, keyword: kw || undefined })))
+    if (my !== searchSeq) return
+    const found = pages.flatMap((p) => p.items).filter((w) => canReport(w.status))
+    // 已选中的工单不在结果里时保留，避免下拉框只显示工单号或选中项丢失
+    const selected = workOrders.value.find((w) => w.id === woId.value)
+    workOrders.value = selected && !found.some((w) => w.id === selected.id) ? [selected, ...found] : found
+    truncated.value = pages.some((p) => p.total > p.items.length)
+  } catch (e) {
+    if (my === searchSeq) capture(e)
+  } finally {
+    if (my === searchSeq) searching.value = false
+  }
+}
+
+/** el-select 远程搜索回调：防抖后再请求，关键字去首尾空白。 */
+function onSearch(query: string) {
+  clearTimeout(debounceTimer)
+  const kw = (query ?? '').trim()
+  // 立即显示加载态，防抖期间不显示旧结果的“无数据”
+  searching.value = true
+  debounceTimer = setTimeout(() => { void searchWorkOrders(kw) }, SEARCH_DEBOUNCE_MS)
+}
+onBeforeUnmount(() => clearTimeout(debounceTimer))
 
 async function loadProgress() {
   progress.value = await getProgress(woId.value)
@@ -272,27 +331,28 @@ async function submit() {
 }
 
 onMounted(async () => {
-  try {
-    // 服务端按状态过滤：可报工的只有 RELEASED / IN_PROGRESS，各取一页（最多 MAX_PAGE_SIZE 条）
-    const pages = await Promise.all(['IN_PROGRESS', 'RELEASED'].map((status) => listWorkOrders({ status, size: MAX_PAGE_SIZE })))
-    workOrders.value = pages.flatMap((p) => p.items).filter((w) => canReport(w.status))
-  } catch (e) {
-    capture(e)
-  }
-  // 从工单详情跳转时预选工单
-  if (typeof route.query.wo === 'string' && route.query.wo) {
-    woId.value = route.query.wo
+  await searchWorkOrders('')
+  // 从工单详情跳转时预选工单；不在默认的前 100 条里时按工单号补查，使下拉框显示“工单号 · 产品”
+  const pre = typeof route.query.wo === 'string' ? route.query.wo : ''
+  if (pre) {
+    if (!workOrders.value.some((w) => w.id === pre)) {
+      const hits = await Promise.all(REPORTABLE_STATUSES.map((status) => listWorkOrders({ page: 0, size: MAX_PAGE_SIZE, status, keyword: pre })))
+        .then((ps) => ps.flatMap((p) => p.items).filter((w) => w.id === pre), () => [])
+      workOrders.value = [...hits, ...workOrders.value]
+    }
+    woId.value = pre
     await onWorkOrderChange()
   }
 })
 
-defineExpose({ woId, opNo, form, submit, selectOp, onWorkOrderChange, fe })
+defineExpose({ woId, opNo, form, submit, selectOp, onWorkOrderChange, fe, onSearch, workOrders, searching, truncated })
 </script>
 
 <style scoped>
 .page { display: flex; flex-direction: column; gap: 16px; max-width: 960px; }
 h3 { margin: 0 0 8px; }
 .wo-select { width: 100%; max-width: 480px; }
+.wo-hint { margin: 6px 0 0; color: #909399; font-size: 13px; }
 .ops { display: flex; flex-wrap: wrap; gap: 12px; }
 .op-btn { min-height: 72px; min-width: 160px; font-size: 18px; line-height: 1.4; margin-left: 0 !important; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 16px; }
