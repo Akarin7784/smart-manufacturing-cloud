@@ -5,6 +5,9 @@ import App from '@/App.vue'
 import { createAppRouter } from '@/router'
 import { useAuthStore } from '@/stores/auth'
 import * as authApi from '@/api/auth'
+
+// 页面加载时会请求工单列表，这里替换为空列表，避免真实网络请求
+vi.mock('@/api/workorders', async (orig) => ({ ...(await orig<typeof import('@/api/workorders')>()), listWorkOrders: vi.fn().mockResolvedValue([]) }))
 import { plugins, freshPinia } from './setup'
 
 async function mountAt(path: string) {
@@ -78,14 +81,14 @@ describe('主布局', () => {
     Object.defineProperty(window, 'innerWidth', { value: 800, configurable: true })
     const w = await ctx.prepare()
     expect(w.text()).toContain('op1')
-    await vi.waitFor(() => expect(w.text()).toContain('报工功能开发中'), { timeout: 5000 })
+    await vi.waitFor(() => expect(w.text()).toContain('选择工单'), { timeout: 5000 })
     expect(w.find('.logo').text()).toBe('MES')
     await w.find('[aria-label="切换菜单"]').trigger('click')
     expect(w.find('.logo').text()).toBe('智能制造系统')
     Object.defineProperty(window, 'innerWidth', { value: 1280, configurable: true })
     window.dispatchEvent(new Event('resize'))
     await ctx.router.push('/workorders')
-    await vi.waitFor(() => expect(w.text()).toContain('工单功能开发中'), { timeout: 5000 })
+    await vi.waitFor(() => expect(w.text()).toContain('暂无工单'), { timeout: 5000 })
     await w.find('.logout').trigger('click')
     expect(useAuthStore().token).toBe('')
     await vi.waitFor(() => expect(ctx.router.currentRoute.value.name).toBe('login'), { timeout: 5000 })

@@ -33,6 +33,10 @@ export const useAuthStore = defineStore('auth', {
     isAuthenticated: (s) => !!s.token && (s.expiresAt === 0 || Date.now() < s.expiresAt)
   },
   actions: {
+    /** 按令牌签发时的权限快照判断是否显示操作入口；最终授权仍由 Gateway 与业务服务校验。 */
+    can(permission: string): boolean {
+      return !!this.user?.permissions?.includes(permission)
+    },
     /** 保存 auth-service 登录响应；expiresIn 单位为秒。 */
     setSession(token: string, expiresIn: number, user: AuthUser) {
       this.token = token

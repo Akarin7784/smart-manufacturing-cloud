@@ -48,7 +48,9 @@
           退出
         </el-button>
       </el-header>
-      <el-main><router-view /></el-main>
+      <el-main class="main">
+        <router-view />
+      </el-main>
     </el-container>
   </el-container>
 </template>
@@ -88,5 +90,6 @@ defineExpose({ collapsed, logout })
 .header { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #ebeef5; background: #fff; }
 .page-title { font-size: 18px; font-weight: 600; }
 .spacer { flex: 1; }
+.main { overflow-x: hidden; }
 .touch { min-height: 48px; min-width: 48px; font-size: 16px; }
 </style>
