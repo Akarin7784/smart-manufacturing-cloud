@@ -71,7 +71,7 @@ export function percent(good: string, planned: string): number {
   return Math.min(100, Math.round((Number(good) / p) * 100))
 }
 
-/** 已知 problem type 的中文说明，未知类型使用后端 detail。 */
+/** 已知 problem type 的中文说明（工单与主数据服务共用同一 type 写法，#71），未知类型使用后端 detail。 */
 const PROBLEM_HINTS: Record<string, string> = {
   'over-report': '报工数量超过本工序可报上限',
   'uom-mismatch': '计量单位与本工序已有报工不一致',

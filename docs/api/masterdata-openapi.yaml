@@ -21,7 +21,7 @@ info:
     物料不软删除，沿用 `active` 停用。
 
     ## 引用检查（PR2）
-    被引用的主数据不能停用 / 删除，返回 409，`code = MASTERDATA_IN_USE`，`data.type = masterdata-in-use`，`data.referenceType` 取值：
+    被引用的主数据不能停用 / 删除，返回 409 problem+json，`type = masterdata-in-use`（兼容字段 `code = MASTERDATA_IN_USE`），`data.referenceType` 取值：
     - `ROUTING`：工作中心被未作废（DRAFT / RELEASED）的工艺路线工序引用；
     - `BOM`：物料作为成品或组件出现在未作废的 BOM 中（物料停用，即 `active` 由 true 改为 false 时检查）；
     - `WORK_ORDER`：工作中心 / 工位被执行中（非 COMPLETED / CLOSED / CANCELLED）工单的工序任务引用。主数据服务透传用户令牌调用工单服务
@@ -41,12 +41,16 @@ info:
     `GET /boms/{product}/effective`、`GET /routings/{product}/effective` 返回 404，工单下达因此返回 422 `RELEASE_MASTERDATA_INVALID`；
     必须新建并发布新版本后才能继续下达工单。已下达工单使用下达时冻结的快照，不受作废影响。
 
-    ## 前端冲突识别
-    在主数据错误统一为 problem+json 之前（见待办 issue），前端以 `data.type === 'masterdata-in-use'` 识别引用冲突。
+    ## 前端冲突识别（#71）
+    前端按 problem+json 顶层 `type`（最后一段）分支：`type === 'masterdata-in-use'` 即引用冲突，明细在 `data.referenceType` / `data.references`。
+    #71 起 `data.type` 不再输出，不要再按 `data.type` 或 `code` 判断。
 
-    ## 错误
-    响应统一为 `{code, message, data}`；`code` 为业务码（如 `WORK_CENTER_NOT_FOUND`、`MASTERDATA_IN_USE`），参数校验失败为 400 `INVALID_ARGUMENT`，
-    无权限 403 `ACCESS_DENIED`。
+    ## 错误（#71：RFC 9457 problem+json）
+    所有错误响应的 Content-Type 为 `application/problem+json`，字段写法与工单服务（docs/api/workorder-openapi.yaml）完全一致：
+    `type`（kebab-case 相对 URI，见 ProblemType）、`title`（每个 type 固定的中文简述）、`status`、`detail`（中文说明，不用于程序分支）、
+    `instance`（请求路径），扩展字段 `code`（历史业务码，兼容保留）与 `data`（结构化明细，如引用检查的 referenceType / references）。
+    参数校验失败（请求体字段、JSON 格式、查询参数）统一为 400 `validation-error`（`code = INVALID_ARGUMENT`）；401 / 403 为 `authentication-required` / `access-denied`。
+    HTTP 状态以各接口说明为准（同一 type 在不同接口可能不同，如 `workcenter-not-found` 单查为 404、发布工艺路线时为 422）。
 servers:
   - url: http://localhost:8080
     description: 本地经网关访问
@@ -335,7 +339,7 @@ paths:
       tags: [bom]
       operationId: deleteBomDraft
       summary: 删除 BOM 草稿（PR2）
-      description: 物理删除草稿及其行，仅限从未被任何工单引用的草稿：曾被引用 409 `MASTERDATA_IN_USE`（`data.type = masterdata-in-use`，`referenceType = WORK_ORDER`），工单服务不可用 503 `WORKORDER_SERVICE_UNAVAILABLE`；已发布 / 已作废 409 `BOM_NOT_DRAFT`；不存在 404。需要 `masterdata:write`。
+      description: 物理删除草稿及其行，仅限从未被任何工单引用的草稿：曾被引用 409 `MASTERDATA_IN_USE`（`type = masterdata-in-use`，`data.referenceType = WORK_ORDER`），工单服务不可用 503 `WORKORDER_SERVICE_UNAVAILABLE`；已发布 / 已作废 409 `BOM_NOT_DRAFT`；不存在 404。需要 `masterdata:write`。
       responses:
         '204': {description: 已删除。}
         '401': {$ref: '#/components/responses/Error'}
@@ -452,7 +456,7 @@ paths:
       tags: [routing]
       operationId: deleteRoutingDraft
       summary: 删除工艺路线草稿（PR2）
-      description: 物理删除草稿及其工序，仅限从未被任何工单引用的草稿：曾被引用 409 `MASTERDATA_IN_USE`（`data.type = masterdata-in-use`，`referenceType = WORK_ORDER`），工单服务不可用 503 `WORKORDER_SERVICE_UNAVAILABLE`；已发布 / 已作废 409 `ROUTING_NOT_DRAFT`；不存在 404。需要 `masterdata:write`。
+      description: 物理删除草稿及其工序，仅限从未被任何工单引用的草稿：曾被引用 409 `MASTERDATA_IN_USE`（`type = masterdata-in-use`，`data.referenceType = WORK_ORDER`），工单服务不可用 503 `WORKORDER_SERVICE_UNAVAILABLE`；已发布 / 已作废 409 `ROUTING_NOT_DRAFT`；不存在 404。需要 `masterdata:write`。
       responses:
         '204': {description: 已删除。}
         '401': {$ref: '#/components/responses/Error'}
@@ -506,39 +510,126 @@ components:
 
   responses:
     Error:
-      description: 业务错误（`code` 为业务码）。
-      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+      description: 错误（RFC 9457 problem+json），type 见 ProblemType。
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
     InUse:
-      description: 版本冲突或被引用（`MASTERDATA_IN_USE`，`data` 见 InUseData）。
-      content: {application/json: {schema: {$ref: '#/components/schemas/InUseResponse'}}}
+      description: 版本冲突或被引用（type 为 `masterdata-in-use` 时 `data` 见 InUseData）。
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/InUseProblem'}}}
 
   schemas:
     Envelope:
       type: object
-      description: 统一响应包装。
+      description: 成功响应包装（错误为 problem+json，见 Problem）。
       required: [code, message]
       properties:
-        code: {type: string, description: 成功为 OK，失败为业务码。}
+        code: {type: string, description: 成功为 OK（错误响应见 Problem）。}
         message: {type: string, description: 说明。}
-    ErrorResponse:
-      description: 错误响应。
-      allOf:
-        - $ref: '#/components/schemas/Envelope'
-        - type: object
-          properties:
-            data: {description: 结构化明细（可为 null）。}
+    ProblemType:
+      type: string
+      description: |
+        固定的错误类型枚举（与代码 MasterdataProblemType 一致），调用方按此分支处理，不解析 `detail`。
+        | type | title（固定中文） | code（兼容字段） |
+        | --- | --- | --- |
+        | `material-not-found` | 物料不存在 | `MATERIAL_NOT_FOUND` |
+        | `material-exists` | 物料编码已存在 | `MATERIAL_EXISTS` |
+        | `material-version-conflict` | 物料已被他人修改 | `MATERIAL_VERSION_CONFLICT` |
+        | `bom-not-found` | BOM 不存在 | `BOM_NOT_FOUND` |
+        | `bom-not-effective` | 无生效 BOM | `BOM_NOT_EFFECTIVE` |
+        | `bom-product-not-make` | 采购件不能建立 BOM | `BOM_PRODUCT_NOT_MAKE` |
+        | `bom-version-exists` | BOM 版本已存在 | `BOM_VERSION_EXISTS` |
+        | `bom-key-mismatch` | BOM 路径与请求体不一致 | `BOM_KEY_MISMATCH` |
+        | `bom-not-draft` | BOM 不是草稿 | `BOM_NOT_DRAFT` |
+        | `bom-not-released` | BOM 未发布 | `BOM_NOT_RELEASED` |
+        | `bom-release-conflict` | BOM 发布冲突 | `BOM_RELEASE_CONFLICT` |
+        | `bom-component-not-found` | BOM 组件物料不存在 | `BOM_COMPONENT_NOT_FOUND` |
+        | `bom-component-inactive` | BOM 组件物料已停用 | `BOM_COMPONENT_INACTIVE` |
+        | `bom-routing-missing` | BOM 缺少生效工艺路线 | `BOM_ROUTING_MISSING` |
+        | `bom-operation-not-found` | BOM 消耗工序不存在 | `BOM_OPERATION_NOT_FOUND` |
+        | `bom-line-duplicate` | BOM 行号重复 | `BOM_LINE_DUPLICATE` |
+        | `bom-cycle` | BOM 循环引用 | `BOM_CYCLE` |
+        | `bom-too-deep` | BOM 层级过深 | `BOM_TOO_DEEP` |
+        | `routing-not-found` | 工艺路线不存在 | `ROUTING_NOT_FOUND` |
+        | `routing-not-effective` | 无生效工艺路线 | `ROUTING_NOT_EFFECTIVE` |
+        | `routing-product-not-make` | 采购件不能建立工艺路线 | `ROUTING_PRODUCT_NOT_MAKE` |
+        | `routing-version-exists` | 工艺路线版本已存在 | `ROUTING_VERSION_EXISTS` |
+        | `routing-key-mismatch` | 工艺路线路径与请求体不一致 | `ROUTING_KEY_MISMATCH` |
+        | `routing-not-draft` | 工艺路线不是草稿 | `ROUTING_NOT_DRAFT` |
+        | `routing-not-released` | 工艺路线未发布 | `ROUTING_NOT_RELEASED` |
+        | `routing-release-conflict` | 工艺路线发布冲突 | `ROUTING_RELEASE_CONFLICT` |
+        | `operation-duplicate` | 工序号重复 | `OPERATION_DUPLICATE` |
+        | `effective-date-conflict` | 生效日冲突 | `EFFECTIVE_DATE_CONFLICT` |
+        | `workcenter-not-found` | 工作中心不存在 | `WORK_CENTER_NOT_FOUND` |
+        | `workcenter-exists` | 工作中心已存在 | `WORK_CENTER_EXISTS` |
+        | `station-not-found` | 工位不存在 | `STATION_NOT_FOUND` |
+        | `station-exists` | 工位已存在 | `STATION_EXISTS` |
+        | `masterdata-in-use` | 主数据被引用 | `MASTERDATA_IN_USE` |
+        | `workorder-service-unavailable` | 工单服务不可用 | `WORKORDER_SERVICE_UNAVAILABLE` |
+        | `validation-error` | 请求参数无效 | `INVALID_ARGUMENT` |
+        | `authentication-required` | 需要认证 | `AUTHENTICATION_REQUIRED` |
+        | `access-denied` | 没有访问权限 | `ACCESS_DENIED` |
+        | `internal-error` | 内部错误 | `INTERNAL_ERROR` |
+      enum:
+        - material-not-found
+        - material-exists
+        - material-version-conflict
+        - bom-not-found
+        - bom-not-effective
+        - bom-product-not-make
+        - bom-version-exists
+        - bom-key-mismatch
+        - bom-not-draft
+        - bom-not-released
+        - bom-release-conflict
+        - bom-component-not-found
+        - bom-component-inactive
+        - bom-routing-missing
+        - bom-operation-not-found
+        - bom-line-duplicate
+        - bom-cycle
+        - bom-too-deep
+        - routing-not-found
+        - routing-not-effective
+        - routing-product-not-make
+        - routing-version-exists
+        - routing-key-mismatch
+        - routing-not-draft
+        - routing-not-released
+        - routing-release-conflict
+        - operation-duplicate
+        - effective-date-conflict
+        - workcenter-not-found
+        - workcenter-exists
+        - station-not-found
+        - station-exists
+        - masterdata-in-use
+        - workorder-service-unavailable
+        - validation-error
+        - authentication-required
+        - access-denied
+        - internal-error
+    Problem:
+      type: object
+      description: RFC 9457 错误。
+      required: [type, title, status]
+      properties:
+        type: {$ref: '#/components/schemas/ProblemType'}
+        title: {type: string, description: 固定中文简述，每个 type 唯一对应一个 title。, example: 主数据被引用}
+        status: {type: integer, description: HTTP 状态码。}
+        detail: {type: string, description: 人类可读说明（中文），不用于程序分支。}
+        instance: {type: string, description: 请求路径。}
+        code: {type: string, description: 历史业务码（兼容字段）。}
+        data: {description: 结构化明细（可缺省）。}
     InUseData:
       type: object
-      description: 引用检查失败明细。
-      required: [type, referenceType, references]
+      description: 引用检查失败明细（#71 起不再包含 type，类型见顶层 Problem.type）。
+      required: [referenceType, references]
       properties:
-        type: {type: string, const: masterdata-in-use, description: 固定类型标识。}
         referenceType: {type: string, enum: [WORK_ORDER, BOM, ROUTING], description: 引用方类型。}
         references: {type: array, description: 前 10 个引用方（工单号或 产品/版本）。, items: {type: string}}
-    InUseResponse:
-      description: 被引用错误响应。
+    InUseProblem:
+      description: 被引用 / 冲突错误响应。
       allOf:
-        - $ref: '#/components/schemas/Envelope'
+        - $ref: '#/components/schemas/Problem'
         - type: object
           properties:
             data: {$ref: '#/components/schemas/InUseData'}

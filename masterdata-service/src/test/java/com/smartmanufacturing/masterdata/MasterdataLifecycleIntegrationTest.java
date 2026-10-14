@@ -27,7 +27,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * M1 PR2 主数据收口（H2）：工作中心 / 工位修改与软删除（默认列表隐藏）、BOM / 工艺路线作废与删除草稿、
- * 工艺路线工序仅草稿可改，以及三类引用检查（WORK_ORDER / BOM / ROUTING）返回 409 MASTERDATA_IN_USE（data.type = masterdata-in-use）。
+ * 工艺路线工序仅草稿可改，以及三类引用检查（WORK_ORDER / BOM / ROUTING）返回 409 MASTERDATA_IN_USE（problem+json type = masterdata-in-use）。
  * 工单服务引用检查以 Mock 替代；每个用例使用独立编码。
  */
 @SpringBootTest
@@ -133,7 +133,7 @@ class MasterdataLifecycleIntegrationTest {
         when(workOrders.references(null, "ST-L2-01")).thenReturn(ApiResponse.ok(new WorkOrderReferenceView(2, List.of("WO-1", "WO-2"))));
         del("/workcenters/WC-L2/stations/ST-L2-01", writer()).andExpect(status().isConflict())
             .andExpect(jsonPath("$.code").value("MASTERDATA_IN_USE"))
-            .andExpect(jsonPath("$.data.type").value("masterdata-in-use"))
+            .andExpect(jsonPath("$.type").value("masterdata-in-use")).andExpect(content().contentTypeCompatibleWith("application/problem+json")).andExpect(jsonPath("$.data.type").doesNotExist())
             .andExpect(jsonPath("$.data.referenceType").value("WORK_ORDER"))
             .andExpect(jsonPath("$.data.references[1]").value("WO-2"));
         when(workOrders.references("WC-L2", null)).thenReturn(ApiResponse.ok(new WorkOrderReferenceView(1, List.of("WO-3"))));
@@ -163,7 +163,7 @@ class MasterdataLifecycleIntegrationTest {
         material("L4-FG", "FG", "MAKE");
         post("/routings", routingBody("L4-FG", "R01", "2026-10-01", "WC-L4", "装配"), admin()).andExpect(status().isCreated());
         del("/workcenters/WC-L4", writer()).andExpect(status().isConflict())
-            .andExpect(jsonPath("$.data.type").value("masterdata-in-use"))
+            .andExpect(jsonPath("$.type").value("masterdata-in-use")).andExpect(content().contentTypeCompatibleWith("application/problem+json")).andExpect(jsonPath("$.data.type").doesNotExist())
             .andExpect(jsonPath("$.data.referenceType").value("ROUTING"))
             .andExpect(jsonPath("$.data.references[0]").value("L4-FG/R01"));
         verifyNoInteractions(workOrders);
@@ -181,7 +181,7 @@ class MasterdataLifecycleIntegrationTest {
         post("/boms", bomBody("L5-FG", "A01", "2026-10-01", "L5-RM"), admin()).andExpect(status().isCreated());
         putJson("/materials/L5-RM", materialUpdate(false, 0), writer()).andExpect(status().isConflict())
             .andExpect(jsonPath("$.code").value("MASTERDATA_IN_USE"))
-            .andExpect(jsonPath("$.data.type").value("masterdata-in-use"))
+            .andExpect(jsonPath("$.type").value("masterdata-in-use")).andExpect(content().contentTypeCompatibleWith("application/problem+json")).andExpect(jsonPath("$.data.type").doesNotExist())
             .andExpect(jsonPath("$.data.referenceType").value("BOM"))
             .andExpect(jsonPath("$.data.references[0]").value("L5-FG/A01"));
         putJson("/materials/L5-FG", materialUpdate(false, 0), writer()).andExpect(status().isConflict())
@@ -242,11 +242,11 @@ class MasterdataLifecycleIntegrationTest {
         when(workOrders.versionReferences("ROUTING", "L8-FG", "R01")).thenReturn(ApiResponse.ok(new WorkOrderReferenceView(2, List.of("WO-9", "WO-10"))));
         del("/boms/L8-FG/A01", writer()).andExpect(status().isConflict())
             .andExpect(jsonPath("$.code").value("MASTERDATA_IN_USE"))
-            .andExpect(jsonPath("$.data.type").value("masterdata-in-use"))
+            .andExpect(jsonPath("$.type").value("masterdata-in-use")).andExpect(content().contentTypeCompatibleWith("application/problem+json")).andExpect(jsonPath("$.data.type").doesNotExist())
             .andExpect(jsonPath("$.data.referenceType").value("WORK_ORDER"))
             .andExpect(jsonPath("$.data.references[0]").value("WO-9"));
         del("/routings/L8-FG/R01", writer()).andExpect(status().isConflict())
-            .andExpect(jsonPath("$.data.type").value("masterdata-in-use"))
+            .andExpect(jsonPath("$.type").value("masterdata-in-use")).andExpect(content().contentTypeCompatibleWith("application/problem+json")).andExpect(jsonPath("$.data.type").doesNotExist())
             .andExpect(jsonPath("$.data.references[1]").value("WO-10"));
         when(workOrders.versionReferences("BOM", "L8-FG", "A01")).thenThrow(new IllegalStateException("connection refused"));
         del("/boms/L8-FG/A01", writer()).andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value("WORKORDER_SERVICE_UNAVAILABLE"));
