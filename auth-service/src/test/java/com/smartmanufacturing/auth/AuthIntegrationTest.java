@@ -214,12 +214,24 @@ class AuthIntegrationTest {
         assertFalse(body.contains("\"employeeNo\":\"viewer\""));
         // 管理员也可以查
         mvc.perform(get("/auth/operators").header("Authorization", "Bearer " + login("admin", ADMIN_PASSWORD))).andExpect(status().isOk());
-        // 没有 execution:dispatch：操作工、查看者 403；未登录 401
-        mvc.perform(get("/auth/operators").header("Authorization", "Bearer " + login("worker", USER_PASSWORD))).andExpect(status().isForbidden());
+        // 兼容期：只有 workorder:write（操作工角色，无 execution:dispatch）也能取下拉；查看者 403；未登录 401
+        mvc.perform(get("/auth/operators").header("Authorization", "Bearer " + login("worker", USER_PASSWORD))).andExpect(status().isOk());
         mvc.perform(get("/auth/operators").header("Authorization", "Bearer " + login("viewer", USER_PASSWORD))).andExpect(status().isForbidden());
         mvc.perform(get("/auth/operators")).andExpect(status().isUnauthorized());
         // 不放宽 /auth/users
         mvc.perform(get("/auth/users").header("Authorization", "Bearer " + planner)).andExpect(status().isForbidden());
+    }
+
+    /** 兼容期：令牌只有 workorder:write 一个权限也能取操作工下拉（与派工接口一致）。 */
+    @Test void operatorsAllowWorkorderWriteOnlyDuringTransition() throws Exception {
+        org.springframework.test.web.servlet.request.RequestPostProcessor writerOnly =
+            org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt()
+                .authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("workorder:write"));
+        mvc.perform(get("/auth/operators").with(writerOnly)).andExpect(status().isOk()).andExpect(jsonPath("$.data[0].id").exists());
+        org.springframework.test.web.servlet.request.RequestPostProcessor readOnly =
+            org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt()
+                .authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("workorder:read"));
+        mvc.perform(get("/auth/operators").with(readOnly)).andExpect(status().isForbidden());
     }
 
     /** PLANNER 令牌带 execution:dispatch 与工单只读，不含 workorder:write。 */

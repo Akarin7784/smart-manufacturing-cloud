@@ -50,8 +50,8 @@ public class GatewaySecurityConfiguration {
                 .pathMatchers("/actuator/**").hasAuthority("metrics:read")
                 .pathMatchers("/api/auth/users", "/api/auth/users/**").hasAuthority("user:manage")
                 .pathMatchers(HttpMethod.GET, "/api/auth/me").authenticated()
-                // 派工用操作工下拉（M1）：计划员 / 管理员
-                .pathMatchers(HttpMethod.GET, "/api/auth/operators").hasAuthority("execution:dispatch")
+                // 派工用操作工下拉（M1）：计划员 / 管理员；兼容期与派工接口一致，workorder:write 亦可
+                .pathMatchers(HttpMethod.GET, "/api/auth/operators").hasAnyAuthority("execution:dispatch", "workorder:write")
                 .pathMatchers("/api/devices/config").hasAuthority("config:read")
                 .pathMatchers(HttpMethod.GET, "/api/devices", "/api/devices/**").hasAuthority("device:read")
                 .pathMatchers(HttpMethod.GET, "/api/workorders", "/api/workorders/**", "/api/operation-tasks", "/api/operation-tasks/**").hasAuthority("workorder:read")

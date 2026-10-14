@@ -334,13 +334,16 @@ class GatewayRoutingTest {
     static final List<String> PLANNER = role("PLANNER");
     static final List<String> VIEWER = role("VIEWER");
 
-    /** 操作工下拉 /api/auth/operators：PLANNER、ADMIN 放行并去前缀转发到认证服务；OPERATOR、VIEWER 403；匿名 401。 */
+    /** 操作工下拉 /api/auth/operators：PLANNER、ADMIN 放行并去前缀转发；兼容期只有 workorder:write 也放行；VIEWER、只读令牌 403；匿名 401。 */
     @Test void operatorsDropdownRequiresDispatchPermission() {
         for (List<String> role : List.of(PLANNER, ADMIN))
             client().get().uri("/api/auth/operators").headers(h -> h.setBearerAuth(as(role))).exchange()
                 .expectStatus().isOk().expectBody(String.class).value(b -> org.junit.jupiter.api.Assertions.assertTrue(b.startsWith("/auth/operators|")));
-        for (List<String> role : List.of(OPERATOR, VIEWER))
-            client().get().uri("/api/auth/operators").headers(h -> h.setBearerAuth(as(role))).exchange().expectStatus().isForbidden();
+        String writerOnly = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("workorder:write"));
+        client().get().uri("/api/auth/operators").headers(h -> h.setBearerAuth(writerOnly)).exchange().expectStatus().isOk();
+        String readOnly = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("workorder:read"));
+        client().get().uri("/api/auth/operators").headers(h -> h.setBearerAuth(readOnly)).exchange().expectStatus().isForbidden();
+        client().get().uri("/api/auth/operators").headers(h -> h.setBearerAuth(as(VIEWER))).exchange().expectStatus().isForbidden();
         client().get().uri("/api/auth/operators").exchange().expectStatus().isUnauthorized();
     }
 

@@ -25,7 +25,7 @@
 | 查询质检（`quality:read`） | 允许 | 允许 | 允许 | 允许 | 允许 |
 | NCR 评审、处置、关闭（`quality:write`） | 允许 | 拒绝 | 拒绝 | 允许 | 拒绝 |
 | 查看当前身份 | 允许 | 允许 | 允许 | 允许 | 允许 |
-| 派工、改派、取消派工；操作工下拉（`execution:dispatch`） | 允许 | 派工接口兼容期允许（`workorder:write`），操作工下拉拒绝 | 拒绝 | 拒绝 | 允许 |
+| 派工、改派、取消派工；操作工下拉（`execution:dispatch`） | 允许 | 兼容期允许（`workorder:write`） | 拒绝 | 拒绝 | 允许 |
 | 开工、暂停、恢复、报工、冲销（`execution:report`，兼容期 `workorder:write` 亦可） | 允许 | 允许 | 拒绝 | 拒绝 | 拒绝 |
 
 `PLANNER`（M1 新增）只能派工与查看，不含 `workorder:write`，不能下达、冻结、取消或报工。
@@ -83,7 +83,7 @@ Invoke-RestMethod http://localhost:8080/api/devices -Headers $headers
 | GET /api/auth/jwks | 公钥发现，允许匿名访问 |
 | GET /api/auth/me | 当前令牌身份 |
 | GET /api/auth/users | 管理员查询用户 |
-| GET /api/auth/operators | 派工用操作工下拉（`execution:dispatch`）：只返回启用账号的 id、employeeNo、name；工号未登记时为 null（不回退），姓名为空时回退为用户名 |
+| GET /api/auth/operators | 派工用操作工下拉（`execution:dispatch`，兼容期 `workorder:write` 亦可）：只返回启用账号的 id、employeeNo、name；工号未登记时为 null（不回退），姓名为空时回退为用户名 |
 | POST /api/auth/users | 管理员创建用户，body 为 username、password、role |
 | PATCH /api/auth/users/{id} | 管理员修改 role 和 enabled |
 
