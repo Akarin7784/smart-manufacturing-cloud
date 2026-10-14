@@ -676,7 +676,9 @@ describe('报工页', () => {
     expect(api.reportOperation).not.toHaveBeenCalled()
     w.unmount()
 
+    // 补查也失败（无法判断是否可报工）：保持原行为，预选并加载进度，进度接口的错误照常显示
     api.listWorkOrders.mockRejectedValueOnce(new Error('列表失败'))
+    api.listWorkOrders.mockImplementation(async (q) => { if (q?.keyword === 'WOX') throw new Error('补查失败'); return serverList(q) })
     api.getProgress.mockRejectedValueOnce(problem(404, 'workorder-not-found', '工单不存在'))
     const m = await mountAs('/reports?wo=WOX', WRITE)
     await vi.waitFor(() => expect(m.w.text()).toContain('工单不存在'))
@@ -760,6 +762,52 @@ describe('报工页', () => {
     const m2 = await mountAs('/reports?wo=WO88', WRITE)
     await vi.waitFor(() => expect(searchVm(m2.w).woId).toBe('WO88'))
     await vi.waitFor(() => expect(api.getProgress).toHaveBeenCalledWith('WO88'))
+  })
+
+  it('?wo= 补查不到（已完工 / 不存在）时不预选并提示不可报工；选了别的工单后提示消失', async () => {
+    const { w } = await mountAs('/reports?wo=WO404', WRITE)
+    const vm = searchVm(w) as SearchVm & { preUnavailable: string; onWorkOrderChange: () => Promise<void> }
+    await vi.waitFor(() => expect(w.find('.wo-unavailable').exists()).toBe(true))
+    expect(w.find('.wo-unavailable').text()).toContain('该工单当前不可报工')
+    expect(vm.woId).toBe('')
+    expect(api.getProgress).not.toHaveBeenCalled()
+    // 补查使用精确工单号，在两种可报工状态下查询
+    expect(api.listWorkOrders.mock.calls.slice(2).map((c) => c[0])).toEqual([
+      { page: 0, size: 100, status: 'IN_PROGRESS', keyword: 'WO404' }, { page: 0, size: 100, status: 'RELEASED', keyword: 'WO404' }])
+    vm.woId = 'WO2'
+    await vm.onWorkOrderChange()
+    await vi.waitFor(() => expect(w.find('.wo-unavailable').exists()).toBe(false))
+  })
+
+  it('?wo= 补查返回前用户已开始搜索：丢弃补查结果，不插入选项也不预选', async () => {
+    let resolveLookup: (v: unknown) => void = () => {}
+    api.listWorkOrders.mockImplementation(async (q) => q?.keyword === 'WO77'
+      ? new Promise((r) => { resolveLookup = r }) as never
+      : serverList(q))
+    const { w } = await mountAs('/reports?wo=WO77', WRITE)
+    const vm = searchVm(w)
+    await vi.waitFor(() => expect(api.listWorkOrders).toHaveBeenCalledWith(expect.objectContaining({ keyword: 'WO77' })))
+    vm.onSearch('齿轮')
+    await vi.waitFor(() => expect(vm.workOrders.map((o) => o.id)).toEqual(['WO2']))
+    resolveLookup({ items: [{ id: 'WO77', deviceId: 'D', product: '壳体', quantity: 1, status: 'RELEASED' }], page: 0, size: 100, total: 1 })
+    await flushPromises()
+    expect(vm.workOrders.map((o) => o.id)).toEqual(['WO2'])
+    expect(vm.woId).toBe('')
+    expect(w.find('.wo-unavailable').exists()).toBe(false)
+    expect(api.getProgress).not.toHaveBeenCalled()
+  })
+
+  it('默认列表返回前用户已开始搜索：不再补查也不预选', async () => {
+    let resolveFirst: (v: unknown) => void = () => {}
+    api.listWorkOrders.mockImplementationOnce(() => new Promise((r) => { resolveFirst = r }) as never)
+    const { w } = await mountAs('/reports?wo=WO77', WRITE)
+    const vm = searchVm(w)
+    vm.onSearch('轴')
+    resolveFirst({ items: [], page: 0, size: 100, total: 0 })
+    await vi.waitFor(() => expect(vm.workOrders.map((o) => o.id)).toEqual(['WO1', 'WO3']))
+    await flushPromises()
+    expect(api.listWorkOrders).not.toHaveBeenCalledWith(expect.objectContaining({ keyword: 'WO77' }))
+    expect(vm.woId).toBe('')
   })
 
   it('无预选工单时只列出可报工的工单', async () => {

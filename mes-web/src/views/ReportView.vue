@@ -38,6 +38,14 @@
           :value="w.id"
         />
       </el-select>
+      <el-alert
+        v-if="preUnavailable && !woId"
+        class="wo-unavailable"
+        :title="`该工单当前不可报工（${preUnavailable}）`"
+        type="warning"
+        show-icon
+        :closable="false"
+      />
       <p
         v-if="truncated"
         class="wo-hint"
@@ -226,6 +234,9 @@ const searchKeyword = ref('')
 // 任一状态的总数超过本页条数时提示用户用关键字缩小范围
 const truncated = ref(false)
 let searchSeq = 0
+let userSearched = false
+// ?wo= 指定的工单当前不可报工（补查不到）时记录工单号，用于提示
+const preUnavailable = ref('')
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
 
 function woLabel(w: WorkOrder) {
@@ -256,6 +267,8 @@ async function searchWorkOrders(kw: string) {
 /** el-select 远程搜索回调：防抖后再请求，关键字去首尾空白。 */
 function onSearch(query: string) {
   clearTimeout(debounceTimer)
+  // 用户已开始搜索：之后返回的 ?wo= 补查结果作废
+  userSearched = true
   const kw = (query ?? '').trim()
   // 立即显示加载态，防抖期间不显示旧结果的“无数据”
   searching.value = true
@@ -330,22 +343,34 @@ async function submit() {
   }
 }
 
+/**
+ * 从工单详情跳转（?wo=）时预选工单（#82）：
+ * - 默认列表里有：直接预选；
+ * - 不在默认列表：按工单号补查（可报工状态内精确匹配），查到才预选并插到选项最前；
+ *   补查成功但没有该工单（已完工、不存在等）：不预选，提示「该工单当前不可报工」；
+ *   补查请求失败（网络 / 5xx）：无法判断，保持原行为——预选并加载进度，进度区会显示真实状态，
+ *   不可报工时提交按钮被禁用、加载失败时显示错误；
+ * - 补查返回前用户已开始搜索：丢弃补查结果，不插入选项也不预选，以用户的搜索为准。
+ */
 onMounted(async () => {
   await searchWorkOrders('')
-  // 从工单详情跳转时预选工单；不在默认的前 100 条里时按工单号补查，使下拉框显示“工单号 · 产品”
   const pre = typeof route.query.wo === 'string' ? route.query.wo : ''
-  if (pre) {
-    if (!workOrders.value.some((w) => w.id === pre)) {
-      const hits = await Promise.all(REPORTABLE_STATUSES.map((status) => listWorkOrders({ page: 0, size: MAX_PAGE_SIZE, status, keyword: pre })))
-        .then((ps) => ps.flatMap((p) => p.items).filter((w) => w.id === pre), () => [])
-      workOrders.value = [...hits, ...workOrders.value]
+  if (!pre || userSearched) return
+  if (!workOrders.value.some((w) => w.id === pre)) {
+    const hits = await Promise.all(REPORTABLE_STATUSES.map((status) => listWorkOrders({ page: 0, size: MAX_PAGE_SIZE, status, keyword: pre })))
+      .then((ps) => ps.flatMap((p) => p.items).filter((w) => w.id === pre), () => null)
+    if (userSearched) return
+    if (hits && hits.length === 0) {
+      preUnavailable.value = pre
+      return
     }
-    woId.value = pre
-    await onWorkOrderChange()
+    if (hits) workOrders.value = [...hits, ...workOrders.value]
   }
+  woId.value = pre
+  await onWorkOrderChange()
 })
 
-defineExpose({ woId, opNo, form, submit, selectOp, onWorkOrderChange, fe, onSearch, workOrders, searching, truncated })
+defineExpose({ preUnavailable, woId, opNo, form, submit, selectOp, onWorkOrderChange, fe, onSearch, workOrders, searching, truncated })
 </script>
 
 <style scoped>
