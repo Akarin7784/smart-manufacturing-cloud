@@ -1,7 +1,7 @@
 // 保护工单展示与校验工具：状态映射、可执行动作、数量/工时格式、批次号规范化、problem 提示与字段错误解析。
 import { describe, it, expect } from 'vitest'
 import * as u from '@/utils/workorder'
-import { canDispatchWith, canListOperatorsWith, canReportWith } from '@/utils/permissions'
+import { canDispatchWith, canReportWith } from '@/utils/permissions'
 
 describe('工单工具', () => {
   it('状态中文与标签颜色，未知状态原样', () => {
@@ -58,8 +58,5 @@ describe('工单工具', () => {
     expect(canReportWith(has(['workorder:read']))).toBe(false)
     expect(canDispatchWith(has(['execution:dispatch']))).toBe(true)
     expect(canDispatchWith(has(['execution:report']))).toBe(false)
-    // 操作工下拉不接受 workorder:write 兼容
-    expect(canListOperatorsWith(has(['workorder:write']))).toBe(false)
-    expect(canListOperatorsWith(has(['execution:dispatch']))).toBe(true)
   })
 })

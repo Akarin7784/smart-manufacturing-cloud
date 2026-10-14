@@ -36,6 +36,7 @@ npm run dev               # 开发服务器，/api 代理到 Gateway
 | `npm run test:coverage` | 单测 + 覆盖率（`coverage/lcov.info`，门槛 80%） |
 
 ## 约定
+- ⚠️ 不要在 `.env.local` 中设置 `VITE_DISPATCH_MOCK=false`：Vitest 也会读取该文件，导致派工模拟相关单测失败。联调真实接口时改用进程环境变量，如 `VITE_DISPATCH_MOCK=false npm run dev`。
 - 代码中不得出现账号、密码、令牌等敏感信息；环境差异只通过 `.env`（不入库）注入。
 - 新增代码须配中文注释，单测覆盖率不低于 80%。
 - 生产部署时由反向代理把 `/api` 转发到 Gateway。

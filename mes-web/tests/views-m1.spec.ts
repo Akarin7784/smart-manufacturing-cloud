@@ -234,17 +234,17 @@ describe('派工面板（模拟实现）', () => {
     await panel.confirmAssign()
     await vi.waitFor(() => expect(document.body.textContent).toContain('工位不存在'))
   })
-  it('仅 workorder:write 时可派工但不请求操作工下拉；工号为空只显示姓名', async () => {
+  it('兼容 workorder:write 与 execution:dispatch 均请求操作工下拉；工号为空只显示姓名', async () => {
     const mock = createMockDispatchApi()
     const spy = vi.spyOn(mock, 'listOperators')
     setDispatchApi(mock)
     md.listStations.mockResolvedValue([])
     const a = await mountAs('/workorders/WO1', WRITE)
     await vi.waitFor(() => expect(a.w.find('.t-dispatch').exists()).toBe(true))
-    expect(spy).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1))
     a.w.unmount()
     const b = await mountAs('/workorders/WO1', ['workorder:read', 'execution:dispatch'])
-    await vi.waitFor(() => expect(spy).toHaveBeenCalled())
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(2))
     await click(b.w, '.t-dispatch')
     await vi.waitFor(() => expect(document.body.querySelector('.r-person')).not.toBeNull())
     const panel = b.w.findComponent({ name: 'OperationTaskPanel' }).vm as unknown as { assignForm: Record<string, string>; confirmAssign: () => Promise<void> }

@@ -179,7 +179,7 @@ import { listStations, type Station } from '@/api/masterdata'
 import { newIdempotencyKey } from '@/api/workorders'
 import { useProblem } from '@/composables/useProblem'
 import { useAuthStore } from '@/stores/auth'
-import { canDispatchWith, canListOperatorsWith, canReportWith } from '@/utils/permissions'
+import { canDispatchWith, canReportWith } from '@/utils/permissions'
 
 const props = defineProps<{ workOrderNo: string }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -219,8 +219,8 @@ async function load() {
   } catch (e) {
     capture(e)
   }
-  // 操作工列表只认 execution:dispatch（仅持 workorder:write 的兼容账号请求会 403 并弹「无权限」），故不满足时不请求
-  operators.value = canListOperatorsWith(auth.can) ? await api.listOperators().catch(() => []) : []
+  // 操作工下拉与派工同权限（execution:dispatch，兼容期 workorder:write 亦可），无派工权限时不请求；失败只影响下拉
+  operators.value = canDispatch.value ? await api.listOperators().catch(() => []) : []
 }
 
 /** 执行任务动作；busy 防止重复点击，失败显示 problem+json 中文提示。 */
