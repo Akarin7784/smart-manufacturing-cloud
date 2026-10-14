@@ -4,7 +4,9 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import java.time.LocalDate;
 import java.util.*;
 
@@ -16,10 +18,11 @@ public class RoutingService {
     private final MaterialRepository materials;
     private final WorkCenterService workCenters;
     private final MasterdataReferences references;
+    private final TransactionTemplate tx;
 
-    RoutingService(JdbcTemplate jdbc, MaterialRepository materials, WorkCenterService workCenters, MasterdataReferences references) {
+    RoutingService(JdbcTemplate jdbc, MaterialRepository materials, WorkCenterService workCenters, MasterdataReferences references, PlatformTransactionManager txManager) {
         this.jdbc = jdbc; this.headers = new VersionedHeaderDao(jdbc, "routing_header");
-        this.materials = materials; this.workCenters = workCenters; this.references = references;
+        this.materials = materials; this.workCenters = workCenters; this.references = references; this.tx = new TransactionTemplate(txManager);
     }
 
     @Transactional(readOnly = true)
@@ -81,16 +84,24 @@ public class RoutingService {
         return get(product, version);
     }
 
-    /** 删除草稿（PR2）：先删明细再删版本头；已发布 / 作废版本 409 ROUTING_NOT_DRAFT；曾被工单引用 409 MASTERDATA_IN_USE。 */
-    @Transactional
+    /**
+     * 删除草稿（PR2）：先删明细再删版本头；已发布 / 作废版本 409 ROUTING_NOT_DRAFT；曾被工单引用 409 MASTERDATA_IN_USE。
+     * #74：远程引用检查在事务外、加锁前执行；之后与 retire 一样先取产品行锁（与发布 / 作废串行），复核仍是草稿再删除。
+     */
     public void deleteDraft(String product, String version) {
-        Routing current = get(product, version);
+        requireDraft(get(product, version), product, version);
+        references.requireVersionNeverReferenced("ROUTING", product, version);
+        tx.executeWithoutResult(s -> {
+            if (!materials.lockForUpdate(product)) throw Errors.notFound("ROUTING_NOT_FOUND", "工艺路线不存在: " + product + "/" + version);
+            requireDraft(get(product, version), product, version);
+            jdbc.update("delete from routing_operation where product_code = ? and version = ?", product, version);
+            headers.deleteDraft(product, version);
+        });
+    }
+
+    private static void requireDraft(Routing current, String product, String version) {
         if (current.status() != LifecycleStatus.DRAFT)
             throw Errors.conflict("ROUTING_NOT_DRAFT", "只有草稿工艺路线可以删除: " + product + "/" + version);
-        references.requireVersionNeverReferenced("ROUTING", product, version);
-        jdbc.update("delete from routing_operation where product_code = ? and version = ?", product, version);
-        if (headers.deleteDraft(product, version) == 0)
-            throw Errors.conflict("ROUTING_NOT_DRAFT", "工艺路线已被并发发布: " + product + "/" + version);
     }
 
     /** 发布：工作中心必须存在；生效日须晚于最新已发布版本；发布后截断上一版本。 */

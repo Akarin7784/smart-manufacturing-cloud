@@ -43,6 +43,10 @@ public class ServiceClientRegistry {
                 throw new IllegalStateException("服务客户端 " + id + " 缺少 audience");
             if (client.getScopes().isEmpty() || !client.getScopes().stream().allMatch(s -> SCOPE.matcher(s).matches()))
                 throw new IllegalStateException("服务客户端 " + id + " 的 scopes 为空或含非法字符");
+            client.getScopeAudiences().forEach((scope, aud) -> {
+                if (!client.getScopes().contains(scope) || aud == null || aud.isBlank())
+                    throw new IllegalStateException("服务客户端 " + id + " 的 scope-audiences 含未授权的 scope 或空受众：" + scope);
+            });
             String hash = client.getSecretHash();
             if (hash == null || hash.isBlank()) {
                 if (requireSecrets) throw new IllegalStateException("服务客户端 " + id + " 缺少密钥散列，请运行 scripts/init-env.sh 生成");

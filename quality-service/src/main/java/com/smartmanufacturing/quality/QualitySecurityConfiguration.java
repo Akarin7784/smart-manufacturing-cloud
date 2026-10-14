@@ -40,6 +40,61 @@ public class QualitySecurityConfiguration {
         this.jwks = jwks; this.issuer = issuer; this.audience = audience;
     }
 
+    /**
+     * NCR 列表查询链（#74，优先于通用链）：只匹配 {@code GET /quality/ncrs}。除用户令牌外，还接受工单服务的服务令牌
+     * （aud=quality-service、token_type=service、scope 含 quality:read），供关闭工单前统计未结案 NCR；
+     * 服务令牌的 scope 映射为同名权限，仍由控制器上的 @PreAuthorize("hasAuthority('quality:read')") 把关。其他接口只认用户令牌。
+     */
+    @Bean
+    @org.springframework.core.annotation.Order(0)
+    SecurityFilterChain ncrQueryChain(HttpSecurity http, ObjectMapper mapper,
+            @Value("${manufacturing.security.service-audience:quality-service}") String serviceAudience) throws Exception {
+        http.securityMatcher(request -> "GET".equals(request.getMethod()) && "/quality/ncrs".equals(request.getRequestURI()))
+            .csrf(csrf -> csrf.disable())
+            .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .formLogin(form -> form.disable()).httpBasic(basic -> basic.disable()).logout(logout -> logout.disable())
+            .exceptionHandling(errors -> errors
+                .authenticationEntryPoint((req, res, e) -> write(mapper, req, res, 401, "请登录或重新获取令牌"))
+                .accessDeniedHandler((req, res, e) -> write(mapper, req, res, 403, "没有访问权限")))
+            .authorizeHttpRequests(rules -> rules.anyRequest().authenticated())
+            .oauth2ResourceServer(resource -> resource
+                .jwt(jwt -> jwt.decoder(userOrServiceDecoder(serviceAudience)).jwtAuthenticationConverter(userOrServiceConverter()))
+                .authenticationEntryPoint((req, res, e) -> write(mapper, req, res, 401, "请登录或重新获取令牌")));
+        return http.build();
+    }
+
+    /** 用户令牌（aud=manufacturing-api）或服务令牌（aud=quality-service 且 token_type=service）任一通过即可。 */
+    JwtDecoder userOrServiceDecoder(String serviceAudience) {
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withJwkSetUri(jwks).jwsAlgorithm(SignatureAlgorithm.RS256).build();
+        decoder.setJwtValidator(userOrService(issuer, audience, serviceAudience));
+        return decoder;
+    }
+
+    static org.springframework.security.oauth2.core.OAuth2TokenValidator<org.springframework.security.oauth2.jwt.Jwt> userOrService(
+            String issuer, String userAudience, String serviceAudience) {
+        var user = SecurityClaims.validators(issuer, userAudience);
+        var service = SecurityClaims.validators(issuer, serviceAudience);
+        return token -> {
+            var u = user.validate(token);
+            if (!u.hasErrors()) return u;
+            var s = service.validate(token);
+            if (s.hasErrors()) return u;
+            return "service".equals(token.getClaimAsString("token_type")) ? s
+                : org.springframework.security.oauth2.core.OAuth2TokenValidatorResult.failure(
+                    new org.springframework.security.oauth2.core.OAuth2Error("invalid_token", "不是服务身份令牌（token_type 必须为 service）", null));
+        };
+    }
+
+    /** 服务令牌：scope 原样作为权限（quality:read）；用户令牌：沿用 permissions 声明。 */
+    static org.springframework.core.convert.converter.Converter<org.springframework.security.oauth2.jwt.Jwt, org.springframework.security.authentication.AbstractAuthenticationToken> userOrServiceConverter() {
+        var users = SecurityClaims.authenticationConverter();
+        var services = new org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter();
+        var scopes = new org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter();
+        scopes.setAuthorityPrefix("");
+        services.setJwtGrantedAuthoritiesConverter(scopes);
+        return jwt -> "service".equals(jwt.getClaimAsString("token_type")) ? services.convert(jwt) : users.convert(jwt);
+    }
+
     /** 唯一过滤链：健康探针公开，管理端口上的 Prometheus 匿名可抓，其余 actuator 需 metrics:read，业务接口需认证后由 @PreAuthorize 细分。 */
     @Bean
     SecurityFilterChain qualityChain(HttpSecurity http, ObjectMapper mapper, Environment environment, JwtDecoder decoder) throws Exception {

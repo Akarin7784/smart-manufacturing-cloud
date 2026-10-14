@@ -404,10 +404,12 @@ paths:
       operationId: closeWorkOrder
       summary: 关闭工单（PR2）
       description: |
-        COMPLETED → CLOSED，发布 WorkOrderClosed。关闭前（事务外）向质量服务查询该工单 OPEN / UNDER_REVIEW / DISPOSED 的 NCR：
-        存在则 409 `open-ncr-exists`（`data.openNcrCount`）；质量服务不可用（超时、5xx、网络错误）一律 503 `quality-service-unavailable`，不放行；
-        质量服务 403 返回 403 `access-denied`（调用者需同时具备 `quality:read`）。已关闭 409 `workorder-closed`，已取消 409 `workorder-cancelled`，
-        其他状态 409 `workorder-state-conflict`。同键重放直接返回首次结果。需要 `workorder:write`。
+        COMPLETED → CLOSED，发布 WorkOrderClosed。先校验状态（#74）：已关闭 409 `workorder-closed`，已取消 409 `workorder-cancelled`，
+        其他非 COMPLETED 状态 409 `workorder-state-conflict`，均不调用质量服务；工单不存在 404。
+        状态通过后（事务外）以**工单服务的服务身份**（client_credentials，scope `quality:read`，不透传用户令牌）向质量服务查询该工单
+        OPEN / UNDER_REVIEW / DISPOSED 的 NCR：存在则 409 `open-ncr-exists`（`data.openNcrCount`）；质量服务不可用（超时、5xx、网络错误）
+        或拒绝服务身份（401 / 403）一律 503 `quality-service-unavailable`，不放行。事务内加锁后再次复核状态。同键重放直接返回首次结果。
+        只需要 `workorder:write`（调用者无需 `quality:read`）。
       parameters:
         - $ref: '#/components/parameters/WorkOrderNo'
         - $ref: '#/components/parameters/IdempotencyKey'

@@ -205,8 +205,10 @@ workorder-service 的每个 `type` 对应唯一固定的中文 `title`（`WorkOr
 | client-id | scopes | audience | 调用的接口 | 密钥变量 |
 | --- | --- | --- | --- | --- |
 | `workorder-service` | `inventory:reserve` | `inventory-service` | `/inventory/reservations/**`（物料预留） | `WORKORDER_CLIENT_SECRET` |
+| `workorder-service` | `quality:read`（#74） | `quality-service` | `GET /quality/ncrs`（关闭工单前统计未结案 NCR） | `WORKORDER_CLIENT_SECRET` |
 | `quality-service` | `inventory:qc-hold` | `inventory-service` | `/inventory/qc-hold/**`（QC-HOLD 入库、放行、报废） | `QUALITY_CLIENT_SECRET` |
 
+- 受众按 scope 决定（`scope-audiences`）：一个令牌只有一个受众，混合申请不同受众的 scope 返回 `invalid_scope`；不带 scope 时只签发默认受众的 scope。质量服务只在 `GET /quality/ncrs` 的过滤链上接受 aud=`quality-service`、`token_type=service` 的令牌，scope 映射为同名权限；其他质量接口仍只认用户令牌。关闭工单因此只需 `workorder:write`。
 - 每个客户端一把独立密钥、scope 互不包含：认证服务拒绝跨客户端申请对方 scope（`invalid_scope`）；库存服务按路径校验 scope（`/inventory/qc-hold/**` 的过滤链由库存实现 PR 落地）。
 - 认证服务只保存 BCrypt（cost 10）散列；cloud profile 下任一散列缺失即启动失败，compose 用 `${VAR:?}` 提前报错。明文与散列都不进入仓库或 Nacos。
 - 这两类接口都是内部接口，调用方经 Nacos 服务发现直连库存服务；网关按 `manufacturing.gateway.internal-paths` 清单（`/api/inventory/reservations/**`、`/api/inventory/qc-hold/**`）在认证之前一律返回 404 problem+json（`type=gateway-not-found`，`InternalPathDenyFilter`；无令牌、任意令牌结果相同，不暴露接口存在；路径先解码、去矩阵参数、合并斜杠再匹配）。另外，任何含 `.`/`..` 点段（含 `%2e`、`.%2e`、`..;/` 变体）、反斜杠或双重编码（路径只解码一次，解码后仍含 `%`，如 `%252e`）的请求，在整个网关一律返回 404 `gateway-not-found`，防止下游规范化后绕过清单。

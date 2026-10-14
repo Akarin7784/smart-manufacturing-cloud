@@ -5,7 +5,9 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import java.util.*;
 
 /**
@@ -18,7 +20,10 @@ import java.util.*;
 public class WorkCenterService {
     private final JdbcTemplate jdbc;
     private final MasterdataReferences references;
-    WorkCenterService(JdbcTemplate jdbc, MasterdataReferences references) { this.jdbc = jdbc; this.references = references; }
+    private final TransactionTemplate tx;
+    WorkCenterService(JdbcTemplate jdbc, MasterdataReferences references, PlatformTransactionManager txManager) {
+        this.jdbc = jdbc; this.references = references; this.tx = new TransactionTemplate(txManager);
+    }
 
     /** 列出工作中心及工位（演示工厂规模下无需分页）；includeDeleted=false 时隐藏已删除的工作中心与工位。 */
     @Transactional(readOnly = true)
@@ -79,13 +84,19 @@ public class WorkCenterService {
     /**
      * 软删除工作中心（连同其工位）：被未作废的工艺路线引用 409（ROUTING），被执行中的工单引用 409（WORK_ORDER），
      * 工单服务不可用 503。工位上的工单任务必然属于该工作中心，所以按工作中心检查即可覆盖其工位。
+     * <p>#74：远程（工单服务）检查在事务外、加锁前执行，避免持有 FOR UPDATE 行锁等待 Feign；
+     * 之后在短事务内加锁、复核存在性与本地 ROUTING 引用再删除。远程检查到删除之间存在空窗（尽力而为，见 masterdata-openapi.yaml）。
      */
-    @Transactional
     public void delete(String code) {
-        lockWorkCenter(code);
-        references.requireWorkCenterUnused(code);
-        jdbc.update("update station set deleted = true where work_center_code = ?", code);
-        jdbc.update("update work_center set deleted = true where code = ?", code);
+        get(code);
+        references.requireNoRoutingUsing(code);
+        references.requireNoWorkOrderUsingWorkCenter(code);
+        tx.executeWithoutResult(s -> {
+            lockWorkCenter(code);
+            references.requireNoRoutingUsing(code);
+            jdbc.update("update station set deleted = true where work_center_code = ?", code);
+            jdbc.update("update work_center set deleted = true where code = ?", code);
+        });
     }
 
     /** 修改工位名称；工位不存在、已删除或不属于该工作中心 404。 */
@@ -96,13 +107,22 @@ public class WorkCenterService {
         return get(workCenterCode);
     }
 
-    /** 软删除工位：被执行中的工单引用 409（WORK_ORDER），工单服务不可用 503。 */
-    @Transactional
+    /**
+     * 软删除工位：被执行中的工单引用 409（WORK_ORDER），工单服务不可用 503。
+     * #74：先（无锁）确认存在并做远程检查，再在短事务内加锁复核存在后删除，不在持锁时调用 Feign。
+     */
     public void deleteStation(String workCenterCode, String code) {
-        if (jdbc.queryForList("select code from station where code = ? and work_center_code = ? and deleted = false for update", String.class, code, workCenterCode).isEmpty())
-            throw Errors.notFound("STATION_NOT_FOUND", "工位不存在: " + workCenterCode + "/" + code);
+        requireStation(workCenterCode, code, "");
         references.requireStationUnused(code);
-        jdbc.update("update station set deleted = true where code = ?", code);
+        tx.executeWithoutResult(s -> {
+            requireStation(workCenterCode, code, " for update");
+            jdbc.update("update station set deleted = true where code = ?", code);
+        });
+    }
+
+    private void requireStation(String workCenterCode, String code, String lock) {
+        if (jdbc.queryForList("select code from station where code = ? and work_center_code = ? and deleted = false" + lock, String.class, code, workCenterCode).isEmpty())
+            throw Errors.notFound("STATION_NOT_FOUND", "工位不存在: " + workCenterCode + "/" + code);
     }
 
     private void lockWorkCenter(String code) {

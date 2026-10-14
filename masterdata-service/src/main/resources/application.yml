@@ -28,6 +28,10 @@ feign:
 spring.cloud.openfeign.client.config.default:
   connectTimeout: 2000
   readTimeout: 3000
+# #74：删除前的工单引用检查是同步调用，给工单服务单独配更短的超时（失败按 503 不放行）。
+spring.cloud.openfeign.client.config.workorder-service:
+  connectTimeout: 1000
+  readTimeout: 2000
 spring.cloud.sentinel:
   transport:
     dashboard: ${SENTINEL_DASHBOARD:localhost:8858}

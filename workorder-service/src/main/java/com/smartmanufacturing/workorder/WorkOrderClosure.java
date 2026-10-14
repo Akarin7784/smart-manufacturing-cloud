@@ -36,8 +36,11 @@ class WorkOrderClosure {
     private final Clock clock;
     private final QualityClient quality;
 
-    WorkOrderClosure(JdbcTemplate jdbc, WorkOrderJournal journal, Clock clock, QualityClient quality) {
-        this.jdbc = jdbc; this.journal = journal; this.clock = clock; this.quality = quality;
+    private final QualityServiceToken serviceToken;
+
+    WorkOrderClosure(JdbcTemplate jdbc, WorkOrderJournal journal, Clock clock, QualityClient quality,
+                     org.springframework.beans.factory.ObjectProvider<QualityServiceToken> serviceToken) {
+        this.jdbc = jdbc; this.journal = journal; this.clock = clock; this.quality = quality; this.serviceToken = serviceToken.getIfAvailable();
     }
 
     /** 撤回释放的库存幂等键。 */
@@ -45,7 +48,7 @@ class WorkOrderClosure {
 
     /**
      * 查询质量服务：存在未结案 NCR 时 409 open-ncr-exists（data.openNcrCount）；调用失败时 503。
-     * 403 原样返回 access-denied（调用者缺少 quality:read，属于权限配置问题而非服务故障）。
+     * 以工单服务的服务身份调用（#74，调用者无需 quality:read）；质量服务 401 / 403 表示服务身份配置问题，同样 503 不放行。
      */
     void requireNoOpenNcr(String orderId) {
         long open = 0;
@@ -53,8 +56,11 @@ class WorkOrderClosure {
             QualityClient.NcrPage page;
             try {
                 page = quality.ncrs(orderId, status, 0, 1);
-            } catch (FeignException.Forbidden e) {
-                throw WorkOrderProblemType.ACCESS_DENIED.exception("没有查询 NCR 的权限（需要 quality:read），不能关闭工单");
+            } catch (FeignException.Unauthorized | FeignException.Forbidden e) {
+                // 服务身份被拒（密钥 / scope 配置问题，不是调用者的权限问题）：401 丢弃缓存令牌；一律 503 不放行
+                if (e instanceof FeignException.Unauthorized && serviceToken != null) serviceToken.invalidate();
+                LOG.error("质量服务拒绝工单服务的服务身份（HTTP {}），拒绝关闭工单 {}", e.status(), orderId);
+                throw WorkOrderProblemType.QUALITY_SERVICE_UNAVAILABLE.exception("质量服务拒绝工单服务的服务身份，无法确认 NCR 状态，工单未关闭");
             } catch (BusinessException e) {
                 throw e;
             } catch (RuntimeException e) {
@@ -70,13 +76,18 @@ class WorkOrderClosure {
                 Map.of("openNcrCount", open));
     }
 
-    WorkOrderCloseView closeInTx(String orderId, String status, String note, String operator) {
+    /** 只有 COMPLETED 可以关闭：已关闭 409 workorder-closed，已取消 409 workorder-cancelled，其他 409 workorder-state-conflict。 */
+    static void requireClosable(String orderId, String status) {
         switch (status) {
             case "COMPLETED" -> { }
             case "CLOSED" -> throw WorkOrderProblemType.WORKORDER_CLOSED.exception("工单已关闭：" + orderId);
             case "CANCELLED" -> throw WorkOrderProblemType.WORKORDER_CANCELLED.exception("工单已取消，不能关闭：" + orderId);
             default -> throw WorkOrderProblemType.WORK_ORDER_STATE_CONFLICT.exception("只有 COMPLETED 状态的工单可以关闭，当前为 " + status);
         }
+    }
+
+    WorkOrderCloseView closeInTx(String orderId, String status, String note, String operator) {
+        requireClosable(orderId, status);
         Instant now = clock.instant();
         if (jdbc.update("update work_order set status = 'CLOSED', version = version + 1 where id = ? and status = ?", orderId, status) != 1)
             throw WorkOrderProblemType.CONCURRENT_MODIFICATION.exception("工单状态已变化，请重试");
