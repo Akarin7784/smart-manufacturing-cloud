@@ -4,12 +4,16 @@ import { vi, expect } from 'vitest'
 import App from '@/App.vue'
 import { createAppRouter } from '@/router'
 import { useAuthStore } from '@/stores/auth'
+import { resetHttpForTest, setupHttp } from '@/api/http'
 import { plugins, freshPinia } from './setup'
 
 export async function mountAs(path: string, permissions: string[]) {
   const pinia = freshPinia()
   useAuthStore().setSession('t', 900, { username: 'u1', role: 'X', permissions })
   const router = createAppRouter(true)
+  // 安装真实请求层拦截器（Bearer、problem+json 解析、401/403 处理），每次用例绑定新的路由
+  resetHttpForTest()
+  setupHttp(router)
   await router.push(path)
   await router.isReady()
   const w = mount(App, { global: { plugins: [...plugins, pinia, router] }, attachTo: document.body })

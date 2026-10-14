@@ -1,8 +1,9 @@
 // 保护 M1 页面：工单列表筛选/分页/新建、详情动作与冲销区分、派工面板、报工页校验/幂等/防重复/错误回显/平板触控尺寸。
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
+import { AxiosHeaders } from 'axios'
 import { HttpError } from '@/api/http'
-import { createMockDispatchApi, setDispatchApi } from '@/api/dispatch'
+import { installFakeDispatchBackend, type FakeBackend } from './fake-dispatch-backend'
 import { mountAs } from './helpers'
 
 vi.mock('@/api/workorders', async (orig) => {
@@ -42,10 +43,23 @@ const progress = (status = 'IN_PROGRESS', uom: string | null = null) => ({
 })
 const orders = Array.from({ length: 12 }, (_, i) => ({ id: `WO${i + 1}`, deviceId: `D${i}`, product: i % 2 ? '齿轮' : '轴', quantity: 10, status: i < 3 ? 'IN_PROGRESS' : 'CREATED' }))
 
+let fake: FakeBackend
+/** 安装新的后端替身，并让 getProgress 返回带替身派工信息的进度（每条用例独立状态）。 */
+function useFake(...args: Parameters<typeof installFakeDispatchBackend>) {
+  fake = installFakeDispatchBackend(...args)
+  api.getProgress.mockReset().mockImplementation(async (wo: string) => {
+    const p = progress()
+    const extra = fake.progress(wo).operations
+    return { ...p, operations: extra.map((e, i) => ({ ...p.operations[0], seq: i + 1, ...e })) } as never
+  })
+  return fake
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true, writable: true })
-  setDispatchApi(createMockDispatchApi())
+  // 派工相关请求由 HTTP 层替身应答；进度接口（工单详情与任务面板共用）合并替身中的派工信息
+  useFake()
   api.listWorkOrders.mockResolvedValue(orders)
   api.getProgress.mockResolvedValue(progress())
   api.getRelease.mockResolvedValue({ orderId: 'WO1', status: 'IN_PROGRESS', version: 1, productCode: 'P', bomVersion: 'B1', routingVersion: 'R1', releasedAt: null, resumeTarget: null, holdReasons: [], bomLineCount: 1, operations: [], reservation: { reservationId: 'r', status: 'ACTIVE', expiresAt: null, lines: [] } })
@@ -140,7 +154,7 @@ describe('工单详情', () => {
     await vi.waitFor(() => expect(router.currentRoute.value.query.wo).toBe('WO1'))
   })
   it('CREATED 可下达；ON_HOLD 显示解除原因；只读用户无按钮', async () => {
-    api.getProgress.mockResolvedValueOnce(progress('CREATED'))
+    api.getProgress.mockResolvedValue(progress('CREATED'))
     const a = await mountAs('/workorders/WO1', WRITE)
     await vi.waitFor(() => expect(a.w.find('.act-release').exists()).toBe(true))
     api.releaseWorkOrder.mockResolvedValueOnce({} as never)
@@ -164,24 +178,31 @@ describe('工单详情', () => {
     expect(c.w.find('.t-start').exists()).toBe(false)
   })
   it('快照不可用时局部提示；403 显示无权限', async () => {
-    api.getRelease.mockRejectedValueOnce(problem(404, 'workorder-not-released', '工单未下达'))
+    api.getRelease.mockRejectedValue(problem(404, 'workorder-not-released', '工单未下达'))
     api.getReports.mockRejectedValueOnce(new Error('x'))
     const a = await mountAs('/workorders/WO1', WRITE)
     await vi.waitFor(() => expect(a.w.text()).toContain('工单未下达'))
     a.w.unmount()
-    api.getProgress.mockRejectedValueOnce(problem(403, 'access-denied'))
+    api.getProgress.mockRejectedValue(problem(403, 'access-denied'))
     const b = await mountAs('/workorders/WO1', READ)
     await vi.waitFor(() => expect(b.w.find('.forbidden').exists()).toBe(true))
   })
 })
 
-describe('派工面板（模拟实现）', () => {
-  it('派工→开工→暂停→改派→恢复，按钮按状态与权限显示', async () => {
+describe('派工面板（真实 HTTP 实现 + 后端替身）', () => {
+  type PanelVm = {
+    act: (t: unknown, a: string) => Promise<unknown>; onPause: (t: unknown) => Promise<unknown>; tasks: { status: string; version: number }[]
+    openAssign: (t: unknown, m: string) => Promise<void>; confirmAssign: () => Promise<void>; assignForm: Record<string, string>
+  }
+  const panelOf = (w: { findComponent: (q: { name: string }) => { vm: unknown } }) => w.findComponent({ name: 'OperationTaskPanel' }).vm as PanelVm
+  const posts = (fake: { calls: { method?: string; url?: string }[] }) => fake.calls.filter((c) => c.method === 'post').map((c) => c.url)
+
+  it('派工→开工→暂停→改派→恢复：路径、幂等键、expectedVersion 与按钮状态', async () => {
+    const fake = useFake()
     md.listStations.mockResolvedValue([{ code: 'S1', name: '一号位', workCenterCode: 'WC' }, { code: 'S2', name: '二号位', workCenterCode: 'WC' }])
     const { w } = await mountAs('/workorders/WO1', ['workorder:read', 'execution:dispatch', 'execution:report'])
     await vi.waitFor(() => expect(w.find('.t-dispatch').exists()).toBe(true))
-    expect(w.text()).toContain('模拟数据')
-    const panel = w.findComponent({ name: 'OperationTaskPanel' }).vm as unknown as { assignForm: Record<string, string>; confirmAssign: () => Promise<void> }
+    const panel = panelOf(w)
     await click(w, '.t-dispatch')
     await vi.waitFor(() => expect(md.listStations).toHaveBeenCalled())
     panel.assignForm.stationCode = 'S1'
@@ -196,70 +217,81 @@ describe('派工面板（模拟实现）', () => {
     prompt.mockResolvedValueOnce({ value: '换模', action: 'confirm' } as never)
     await click(w, '.t-pause')
     await vi.waitFor(() => expect(w.find('.t-resume').exists()).toBe(true))
-    expect(w.find('.t-reassign').attributes('disabled')).toBeUndefined()
     await click(w, '.t-reassign')
     panel.assignForm.stationCode = 'S2'
     await panel.confirmAssign()
     await vi.waitFor(() => expect(w.text()).toContain('S2'))
     await click(w, '.t-resume')
     await vi.waitFor(() => expect(w.find('.t-pause').exists()).toBe(true))
+    expect(posts(fake)).toEqual(['dispatch', 'start', 'pause', 'reassign', 'resume'].map((a) => `/workorders/WO1/operations/10/${a}`))
+    const writes = fake.calls.filter((c) => c.method === 'post')
+    for (const c of writes) expect(AxiosHeaders.from(c.headers).get('Idempotency-Key')).toBeTruthy()
+    const reassign = JSON.parse(writes[3].data)
+    expect(reassign).toMatchObject({ stationCode: 'S2', expectedVersion: 3 })
+    expect(JSON.parse(writes[2].data)).toEqual({ reason: '换模' })
   })
-  it('取消派工、暂停取消、错误中文提示与工位加载失败', async () => {
+
+  it('取消派工、problem+json 中文提示（task-not-dispatched / station-not-found / concurrent-modification）与工位加载 403', async () => {
+    const fake = useFake()
+    fake.tasks[0].stationCode = 'S1'
     md.listStations.mockRejectedValueOnce(problem(403, 'access-denied'))
-    const mock = createMockDispatchApi()
-    await mock.dispatch('WO1', '10', { stationCode: 'S1' }, 'k')
-    setDispatchApi(mock)
     const { w } = await mountAs('/workorders/WO1', WRITE)
     await vi.waitFor(() => expect(w.find('.t-cancel').exists()).toBe(true))
-    const panel = w.findComponent({ name: 'OperationTaskPanel' }).vm as unknown as {
-      act: (t: unknown, a: string) => Promise<unknown>; onPause: (t: unknown) => Promise<unknown>; tasks: { status: string }[]; openAssign: (t: unknown, m: string) => Promise<void>; confirmAssign: () => Promise<void>; assignForm: Record<string, string>
-    }
+    const panel = panelOf(w)
     await click(w, '.t-reassign')
     await vi.waitFor(() => expect(document.body.textContent).toContain('无权限'))
+    // 版本过期 → concurrent-modification
+    md.listStations.mockResolvedValue([])
+    fake.tasks[0].version = 7
+    panel.assignForm.stationCode = 'S2'
+    await panel.confirmAssign()
+    await vi.waitFor(() => expect(document.body.textContent).toContain('数据已被他人修改'))
     prompt.mockRejectedValueOnce('cancel')
     await click(w, '.t-cancel')
     await flushPromises()
     prompt.mockResolvedValueOnce({ value: '错派', action: 'confirm' } as never)
     await click(w, '.t-cancel')
     await vi.waitFor(() => expect(w.find('.t-dispatch').exists()).toBe(true))
-    // 未派工开工 → task-not-dispatched 中文提示（先等上一动作结束）
+    expect(JSON.parse(fake.calls.filter((c) => c.url?.endsWith('/cancel-dispatch'))[0].data)).toEqual({ reason: '错派' })
     await vi.waitFor(() => expect(w.find('.t-dispatch').attributes('disabled')).toBeUndefined())
     await panel.act(panel.tasks[0], 'start')
     await vi.waitFor(() => expect(w.find('.task-err').text()).toContain('请先派工'))
     prompt.mockRejectedValueOnce('cancel')
     await panel.onPause(panel.tasks[0])
-    // 派工到空工位 → station-not-found 显示在对话框
     await panel.openAssign(panel.tasks[0], 'dispatch')
-    panel.assignForm.stationCode = ''
+    panel.assignForm.stationCode = 'NOPE'
     await panel.confirmAssign()
-    await vi.waitFor(() => expect(document.body.textContent).toContain('工位不存在'))
+    await vi.waitFor(() => expect(document.body.textContent).toContain('工位不存在、已删除或不属于该工序的工作中心'))
   })
-  it('兼容 workorder:write 与 execution:dispatch 均请求操作工下拉；工号为空只显示姓名', async () => {
-    const mock = createMockDispatchApi()
-    const spy = vi.spyOn(mock, 'listOperators')
-    setDispatchApi(mock)
+
+  it('workorder:write 与 execution:dispatch 均请求操作工下拉；工号为 null 只显示姓名；仅 execution:report 不请求', async () => {
+    const fake = useFake()
     md.listStations.mockResolvedValue([])
+    const operatorCalls = () => fake.calls.filter((c) => c.url === '/auth/operators').length
     const a = await mountAs('/workorders/WO1', WRITE)
-    await vi.waitFor(() => expect(a.w.find('.t-dispatch').exists()).toBe(true))
-    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(operatorCalls()).toBe(1))
     a.w.unmount()
     const b = await mountAs('/workorders/WO1', ['workorder:read', 'execution:dispatch'])
-    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(operatorCalls()).toBe(2))
     await click(b.w, '.t-dispatch')
-    await vi.waitFor(() => expect(document.body.querySelector('.r-person')).not.toBeNull())
-    const panel = b.w.findComponent({ name: 'OperationTaskPanel' }).vm as unknown as { assignForm: Record<string, string>; confirmAssign: () => Promise<void> }
+    const panel = panelOf(b.w)
     panel.assignForm.stationCode = 'S9'
     panel.assignForm.operator = 'op3'
     await panel.confirmAssign()
     await vi.waitFor(() => expect(b.w.find('.assign').text()).toBe('S9 · worker3'))
+    b.w.unmount()
+    const before = operatorCalls()
+    const c = await mountAs('/workorders/WO1', ['workorder:read', 'execution:report'])
+    await vi.waitFor(() => expect(c.w.find('.task').exists()).toBe(true))
+    expect(operatorCalls()).toBe(before)
+    expect(c.w.find('.t-dispatch').exists()).toBe(false)
   })
-    it('任务加载失败与无派工权限时操作工为空', async () => {
-    const mock = createMockDispatchApi()
-    mock.listTasks = () => Promise.reject(problem(500, 'internal-error', '服务异常'))
-    setDispatchApi(mock)
+
+  it('任务加载失败时显示错误', async () => {
+    useFake()
+    api.getProgress.mockRejectedValue(problem(500, 'internal-error', '服务异常'))
     const { w } = await mountAs('/workorders/WO1', ['workorder:read', 'execution:report'])
     await vi.waitFor(() => expect(w.find('.task-err').text()).toContain('服务异常'))
-    expect(w.find('.t-dispatch').exists()).toBe(false)
   })
 })
 

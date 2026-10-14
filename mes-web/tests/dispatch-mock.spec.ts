@@ -1,6 +1,6 @@
-// 保护派工模拟实现的状态机（设计稿 §3）与错误类型，确保页面在后端上线前后行为一致。
+// 保护派工动作规则与操作工显示规则（与 PR #68 状态机一致）。
 import { describe, it, expect } from 'vitest'
-import { operatorLabel, createMockDispatchApi, taskActions, reassignBlockedReason, isDispatched, setDispatchApi, dispatchApi, type OperationTask } from '@/api/dispatch'
+import { operatorLabel, taskActions, reassignBlockedReason, isDispatched, dispatchApi, type OperationTask } from '@/api/dispatch'
 
 const t = (o: Partial<OperationTask>): OperationTask => ({ workOrderNo: 'A', operationNo: '10', name: '', workCenterCode: '', status: 'READY', stationCode: null, operator: null, plannedStart: null, plannedEnd: null, dispatchedAt: null, dispatchedBy: null, version: 0, ...o })
 
@@ -12,11 +12,10 @@ describe('派工动作规则', () => {
     expect(taskActions(t({ stationCode: 'S', status: 'PAUSED' }))).toMatchObject({ resume: true, reassign: true, cancelDispatch: false })
     expect(isDispatched(t({ stationCode: 'S' }))).toBe(true)
   })
-  it('操作工显示：工号为空只显示姓名', () => {
+  it('操作工显示：工号为 null / 空白只显示姓名', () => {
     expect(operatorLabel({ id: '1', employeeNo: 'E1', name: '张三' })).toBe('E1 张三')
     expect(operatorLabel({ id: '2', employeeNo: null, name: 'worker' })).toBe('worker')
     expect(operatorLabel({ id: '3', employeeNo: '  ', name: '李四' })).toBe('李四')
-    // 后端回退：工号=用户名=姓名时不重复显示
     expect(operatorLabel({ id: '4', employeeNo: 'admin', name: 'admin' })).toBe('admin')
   })
   it('改派不可用原因', () => {
@@ -24,43 +23,8 @@ describe('派工动作规则', () => {
     expect(reassignBlockedReason(t({ stationCode: 'S', status: 'RUNNING' }))).toContain('先暂停')
     expect(reassignBlockedReason(t({ stationCode: 'S', status: 'DONE' }))).toContain('仅待开工或已暂停')
   })
-})
-
-describe('模拟实现', () => {
-  it('完整流程：派工→开工→暂停→改派→恢复→并发冲突', async () => {
-    const api = createMockDispatchApi()
-    await expect(api.start('A', '10', 'k')).rejects.toMatchObject({ parsed: { problem: { type: 'task-not-dispatched' } } })
-    await expect(api.reassign('A', '10', { stationCode: 'S', expectedVersion: 0 }, 'k')).rejects.toMatchObject({ status: 409 })
-    await expect(api.cancelDispatch('A', '10', 'r', 'k')).rejects.toMatchObject({ parsed: { problem: { type: 'task-not-dispatched' } } })
-    await expect(api.dispatch('A', '10', { stationCode: '' }, 'k')).rejects.toMatchObject({ parsed: { problem: { type: 'station-not-found' } } })
-    let r = await api.dispatch('A', '10', { stationCode: 'S1', operator: 'op1' }, 'k')
-    expect(r).toMatchObject({ stationCode: 'S1', version: 1 })
-    await expect(api.dispatch('A', '10', { stationCode: 'S1' }, 'k')).rejects.toMatchObject({ parsed: { problem: { type: 'task-state-conflict' } } })
-    r = await api.start('A', '10', 'k'); expect(r.status).toBe('RUNNING')
-    await expect(api.start('A', '10', 'k')).rejects.toMatchObject({ status: 409 })
-    await expect(api.resume('A', '10', 'k')).rejects.toMatchObject({ status: 409 })
-    await expect(api.reassign('A', '10', { stationCode: 'S2', expectedVersion: r.version }, 'k')).rejects.toMatchObject({ parsed: { problem: { type: 'task-state-conflict' } } })
-    await expect(api.cancelDispatch('A', '10', 'r', 'k')).rejects.toMatchObject({ status: 409 })
-    r = await api.pause('A', '10', '换模', 'k'); expect(r.status).toBe('PAUSED')
-    await expect(api.pause('A', '10', 'x', 'k')).rejects.toMatchObject({ status: 409 })
-    await expect(api.reassign('A', '10', { stationCode: 'S2', expectedVersion: 0 }, 'k')).rejects.toMatchObject({ parsed: { problem: { type: 'concurrent-modification' } } })
-    r = await api.reassign('A', '10', { stationCode: 'S2', expectedVersion: r.version }, 'k'); expect(r.stationCode).toBe('S2')
-    r = await api.resume('A', '10', 'k'); expect(r.status).toBe('RUNNING')
-    expect(await api.queryTasks({ station: 'S2', status: ['RUNNING'], operator: undefined })).toHaveLength(1)
-    expect(await api.queryTasks({ operator: 'nobody' })).toHaveLength(0)
-    await expect(api.start('A', '99', 'k')).rejects.toMatchObject({ status: 404 })
-  })
-  it('取消派工与操作工筛选', async () => {
-    const api = createMockDispatchApi((wo) => [{ operationNo: '10', name: wo }])
-    expect((await api.listTasks('B'))[0]).toMatchObject({ status: 'PENDING', name: 'B' })
-    await api.dispatch('B', '10', { stationCode: 'S' }, 'k')
-    expect((await api.cancelDispatch('B', '10', 'r', 'k')).stationCode).toBeNull()
-    expect(await api.listOperators('E002')).toHaveLength(1)
-    expect(await api.listOperators()).toHaveLength(3)
-  })
-  it('可替换实现', () => {
-    const api = createMockDispatchApi()
-    setDispatchApi(api)
-    expect(dispatchApi()).toBe(api)
+  it('默认实例为真实 HTTP 实现（单例）', () => {
+    expect(dispatchApi()).toBe(dispatchApi())
+    expect(typeof dispatchApi().reassign).toBe('function')
   })
 })

@@ -1,19 +1,12 @@
 <!--
   工序任务（派工）面板：派工 / 改派 / 取消派工（需 execution:dispatch）、开工 / 暂停 / 恢复（需 execution:report），
-  兼容期 workorder:write 均可。接口见 api/dispatch.ts；后端上线前为【模拟数据】。
-  工位下拉来自主数据工作中心（按工序 workCenterCode 过滤），操作工下拉来自 /auth/operators（模拟）。
+  兼容期 workorder:write 均可。接口见 api/dispatch.ts。
+  工位下拉来自主数据工作中心（按工序 workCenterCode 过滤），操作工下拉来自 /auth/operators。
 -->
 <template>
   <el-card>
     <template #header>
       工序任务
-      <el-tag
-        v-if="isMock"
-        class="mock-tag"
-        type="warning"
-      >
-        模拟数据（后端派工接口待上线）
-      </el-tag>
     </template>
     <el-alert
       v-if="error"
@@ -172,7 +165,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import {
-  dispatchApi, DISPATCH_IS_MOCK, isDispatched, operatorLabel, reassignBlockedReason, taskActions,
+  dispatchApi, isDispatched, operatorLabel, reassignBlockedReason, taskActions,
   type Operator, type OperationTask, type OperationTaskStatus
 } from '@/api/dispatch'
 import { listStations, type Station } from '@/api/masterdata'
@@ -187,7 +180,6 @@ const emit = defineEmits<{ changed: [] }>()
 const TASK_LABELS: Record<OperationTaskStatus, string> = {
   PENDING: '待流入', READY: '待开工', RUNNING: '进行中', PAUSED: '已暂停', DONE: '已完成', CANCELLED: '已取消'
 }
-const isMock = DISPATCH_IS_MOCK
 const auth = useAuthStore()
 const canDispatch = computed(() => canDispatchWith(auth.can))
 const canExec = computed(() => canReportWith(auth.can))
@@ -298,7 +290,6 @@ defineExpose({ load, tasks, act, onPause, cancelDispatch, openAssign, confirmAss
 </script>
 
 <style scoped>
-.mock-tag { margin-left: 8px; }
 .task { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 6px 0; }
 .op-no { font-weight: 600; min-width: 120px; }
 .assign, .hint { color: #606266; }

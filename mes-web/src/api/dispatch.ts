@@ -1,12 +1,8 @@
 /**
- * 派工 / 工序任务接口，按契约草案 feat/m1-workorder-dispatch（73e5629）的
- * docs/workorder-dispatch-design.md 与 docs/api/workorder-openapi.yaml 定义。
- *
- * 【MOCK】后端实现（PR1）尚未合入，默认使用内存模拟实现 createMockDispatchApi，不发网络请求。
- * 后端上线后设置 VITE_DISPATCH_MOCK=false 即切换到 createHttpDispatchApi，页面无需改动。
- * 操作工下拉 GET /api/auth/operators 同样尚未实现，一并模拟。
+ * 派工 / 工序任务接口（PR #68 已实现，契约见 docs/workorder-dispatch-design.md 与 docs/api/workorder-openapi.yaml）。
+ * 写操作经 Gateway 调用 workorder-service，必须带 Idempotency-Key；操作工下拉为 GET /api/auth/operators。
  */
-import { http, HttpError } from './http'
+import { http } from './http'
 import { getProgress, getRelease } from './workorders'
 
 /** 工序任务状态；是否已派工看 stationCode 是否为空（契约 OperationTaskStatus）。 */
@@ -43,8 +39,8 @@ export interface ReassignRequest extends DispatchRequest {
 }
 
 /**
- * 操作工（GET /api/auth/operators，PR #68 OperatorView）。id 为令牌 sub，派工 operator 传该值；
- * 后端在工号 / 姓名为空时回退为用户名，前端仍按可空处理以防历史数据。
+ * 操作工（GET /api/auth/operators，OperatorView）。id 为令牌 sub，派工 operator 传该值；
+ * 工号为空时后端返回 null，姓名为空时回退为用户名。
  */
 export interface Operator {
   id: string
@@ -53,8 +49,8 @@ export interface Operator {
 }
 
 /**
- * 下拉显示：有工号显示「工号 姓名」，工号为空只显示姓名。
- * PR #68 在工号为空时把 employeeNo 回退成用户名，此时常与 name 相同（如 "admin"），也只显示姓名，避免「admin admin」。
+ * 下拉显示：有工号显示「工号 姓名」；工号为 null / 空白只显示姓名。
+ * 历史数据中工号可能等于姓名（旧实现回退为用户名），同样只显示一次，避免「admin admin」。
  */
 export function operatorLabel(o: Operator): string {
   const no = (o.employeeNo ?? '').trim()
@@ -146,115 +142,9 @@ export function createHttpDispatchApi(): DispatchApi {
   }
 }
 
-/** 模拟 problem+json 错误，使页面走与真实接口相同的错误展示路径。 */
-function problem(status: number, type: string, title: string): HttpError {
-  return new HttpError({ status, message: title, problem: { type, title, status } })
-}
+const api = createHttpDispatchApi()
 
-export interface MockSeedOp {
-  operationNo: string
-  name?: string
-  workCenterCode?: string
-  status?: OperationTaskStatus
-}
-
-/**
- * 【MOCK】内存模拟实现，状态机按设计稿 §3；不记录幂等，仅模拟状态冲突与版本冲突。
- * seed 提供工单的工序（默认 10 READY、20 PENDING）。
- */
-export function createMockDispatchApi(seed: (wo: string) => MockSeedOp[] = () => [
-  { operationNo: '10', status: 'READY' }, { operationNo: '20', status: 'PENDING' }
-]): DispatchApi {
-  const store = new Map<string, OperationTask[]>()
-  const tasks = (wo: string) => {
-    if (!store.has(wo)) {
-      store.set(wo, seed(wo).map((s) => ({
-        workOrderNo: wo, operationNo: s.operationNo, name: s.name ?? '', workCenterCode: s.workCenterCode ?? '',
-        status: s.status ?? 'PENDING', stationCode: null, operator: null, plannedStart: null, plannedEnd: null,
-        dispatchedAt: null, dispatchedBy: null, version: 0
-      })))
-    }
-    return store.get(wo) as OperationTask[]
-  }
-  const find = (wo: string, op: string) => {
-    const t = tasks(wo).find((x) => x.operationNo === op)
-    if (!t) throw problem(404, 'operation-not-found', '工序不存在')
-    return t
-  }
-  const conflict = () => problem(409, 'task-state-conflict', '工序任务状态冲突')
-  const bump = (t: OperationTask) => { t.version += 1; return { ...t } }
-  const assign = (t: OperationTask, r: DispatchRequest) => {
-    if (!r.stationCode) throw problem(422, 'station-not-found', '工位不存在')
-    t.stationCode = r.stationCode
-    t.operator = r.operator ?? null
-    t.plannedStart = r.plannedStart ?? null
-    t.plannedEnd = r.plannedEnd ?? null
-    t.dispatchedAt = new Date().toISOString()
-  }
-  return {
-    listTasks: async (wo) => tasks(wo).map((t) => ({ ...t })),
-    queryTasks: async (q) => [...store.values()].flat()
-      .filter((t) => (!q.station || t.stationCode === q.station) && (!q.status?.length || q.status.includes(t.status)) && (!q.operator || t.operator === q.operator))
-      .map((t) => ({ ...t })),
-    async dispatch(wo, op, req) {
-      const t = find(wo, op)
-      if (!taskActions(t).dispatch) throw conflict()
-      assign(t, req)
-      return bump(t)
-    },
-    async reassign(wo, op, req) {
-      const t = find(wo, op)
-      if (!isDispatched(t)) throw problem(409, 'task-not-dispatched', '工序未派工')
-      if (!taskActions(t).reassign) throw conflict()
-      if (req.expectedVersion !== t.version) throw problem(409, 'concurrent-modification', '数据已被修改')
-      assign(t, req)
-      return bump(t)
-    },
-    async cancelDispatch(wo, op) {
-      const t = find(wo, op)
-      if (!isDispatched(t)) throw problem(409, 'task-not-dispatched', '工序未派工')
-      if (!taskActions(t).cancelDispatch) throw conflict()
-      t.stationCode = null; t.operator = null; t.plannedStart = null; t.plannedEnd = null
-      return bump(t)
-    },
-    async start(wo, op) {
-      const t = find(wo, op)
-      if (!isDispatched(t)) throw problem(409, 'task-not-dispatched', '工序未派工')
-      if (t.status !== 'READY') throw conflict()
-      t.status = 'RUNNING'
-      return bump(t)
-    },
-    async pause(wo, op) {
-      const t = find(wo, op)
-      if (t.status !== 'RUNNING') throw conflict()
-      t.status = 'PAUSED'
-      return bump(t)
-    },
-    async resume(wo, op) {
-      const t = find(wo, op)
-      if (t.status !== 'PAUSED') throw conflict()
-      t.status = 'RUNNING'
-      return bump(t)
-    },
-    listOperators: async (q) => [
-      { id: 'op1', employeeNo: 'E001', name: '操作员一' },
-      { id: 'op2', employeeNo: 'E002', name: '操作员二' },
-      { id: 'op3', employeeNo: null, name: 'worker3' }
-    ].filter((o) => !q || o.name.includes(q) || (o.employeeNo ?? '').includes(q))
-  }
-}
-
-/** 是否使用模拟实现（默认是；VITE_DISPATCH_MOCK=false 时切换真实接口）。 */
-export const DISPATCH_IS_MOCK = import.meta.env.VITE_DISPATCH_MOCK !== 'false'
-
-let current: DispatchApi = DISPATCH_IS_MOCK ? createMockDispatchApi() : createHttpDispatchApi()
-
-/** 当前派工实现。 */
+/** 派工接口实例（始终调用真实后端）。 */
 export function dispatchApi(): DispatchApi {
-  return current
-}
-
-/** 替换派工实现（测试或按工单种子数据时使用）。 */
-export function setDispatchApi(api: DispatchApi) {
-  current = api
+  return api
 }

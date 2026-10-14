@@ -12,7 +12,7 @@
 ## M1 页面
 - **工单列表** `/workorders`：`GET /api/workorders`，按状态 / 关键字筛选、前端分页（后端暂无分页参数），新建工单 `POST /api/workorders`（Idempotency-Key）。
 - **工单详情** `/workorders/:id`：`/progress` 报工进度、`/release` 下达快照、`/reports` 报工流水（冲销记录与被冲销记录区分显示）；下达 / 冻结 / 解除冻结 / 手工完工。
-- **工序任务（派工）面板**：派工 / 改派 / 取消派工 / 开工 / 暂停 / 恢复，按契约草案 `docs/workorder-dispatch-design.md`。**后端未上线前使用前端模拟实现**（`src/api/dispatch.ts`，界面有「模拟数据」标识），上线后设置 `VITE_DISPATCH_MOCK=false` 即切换。
+- **工序任务（派工）面板**：派工 / 改派 / 取消派工 / 开工 / 暂停 / 恢复，调用真实后端接口（`src/api/dispatch.ts`，契约见 `docs/workorder-dispatch-design.md`）。
 - **报工页** `/reports`（车间平板）：选工单 → 选工序 → 录入合格 / 不良 / 报废 / 工时（小时，2 位小数）/ 批次 / 备注；批次去首尾空白，留空由后端回退为工单号；每次提交生成 Idempotency-Key，失败重试复用同一个键，提交中防重复点击；problem+json 按 type 显示中文提示，validation-error 字段错误回显到对应输入框。
 
 权限：报工 / 开工 / 暂停 / 恢复需 `execution:report`，派工类需 `execution:dispatch`；兼容期持有 `workorder:write` 亦可。
@@ -36,7 +36,6 @@ npm run dev               # 开发服务器，/api 代理到 Gateway
 | `npm run test:coverage` | 单测 + 覆盖率（`coverage/lcov.info`，门槛 80%） |
 
 ## 约定
-- ⚠️ 不要在 `.env.local` 中设置 `VITE_DISPATCH_MOCK=false`：Vitest 也会读取该文件，导致派工模拟相关单测失败。联调真实接口时改用进程环境变量，如 `VITE_DISPATCH_MOCK=false npm run dev`。
 - 代码中不得出现账号、密码、令牌等敏感信息；环境差异只通过 `.env`（不入库）注入。
 - 新增代码须配中文注释，单测覆盖率不低于 80%。
 - 生产部署时由反向代理把 `/api` 转发到 Gateway。
