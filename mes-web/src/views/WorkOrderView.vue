@@ -1,6 +1,7 @@
 <!--
-  工单列表：后端 GET /api/workorders 返回全量列表（暂无分页/筛选参数），
-  因此按状态、关键字筛选与分页在前端完成；数据量增大后需后端补分页接口。
+  工单列表：服务端分页与过滤（#70 GET /api/workorders?page&size&status&keyword，page 从 0 开始，size ≤ 100）。
+  筛选条件与页码同步到 URL 查询参数（?page=1&status=...&keyword=...，URL 中页码从 1 开始），刷新或分享链接可还原。
+  关键字在回车、点击查询或清空时生效，避免每次按键都请求后端。
 -->
 <template>
   <div class="page">
@@ -10,7 +11,9 @@
         class="kw"
         size="large"
         clearable
-        placeholder="工单号 / 产品 / 设备"
+        placeholder="工单号 / 产品"
+        @keyup.enter="applyKeyword"
+        @clear="applyKeyword"
       />
       <el-select
         v-model="status"
@@ -18,6 +21,7 @@
         size="large"
         clearable
         placeholder="全部状态"
+        @change="applyStatus"
       >
         <el-option
           v-for="(label, value) in STATUS_LABELS"
@@ -30,9 +34,9 @@
         class="touch"
         size="large"
         :loading="loading"
-        @click="load"
+        @click="applyKeyword"
       >
-        刷新
+        查询
       </el-button>
       <el-button
         v-if="canWrite"
@@ -124,7 +128,7 @@
     />
     <el-table
       v-loading="loading"
-      :data="paged"
+      :data="rows"
       row-class-name="row"
       empty-text="暂无工单"
       @row-click="open"
@@ -161,54 +165,94 @@
       </el-table-column>
     </el-table>
     <el-pagination
-      v-model:current-page="page"
       class="pager"
       layout="total, prev, pager, next"
+      :current-page="page"
       :page-size="pageSize"
-      :total="filtered.length"
+      :total="total"
+      @current-change="goPage"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter, type LocationQuery } from 'vue-router'
 import { createWorkOrder, listWorkOrders, newIdempotencyKey, type WorkOrder } from '@/api/workorders'
 import { useAuthStore } from '@/stores/auth'
 import { PERM_WORKORDER_WRITE } from '@/utils/permissions'
 import { STATUS_LABELS, statusLabel, statusTag } from '@/utils/workorder'
 import { useProblem } from '@/composables/useProblem'
 
+const route = useRoute()
 const router = useRouter()
 const rows = ref<WorkOrder[]>([])
+const total = ref(0)
 const loading = ref(false)
+// 输入框里的关键字（未提交）；生效的筛选条件以 URL 为准
 const keyword = ref('')
 const status = ref('')
 const page = ref(1)
 const pageSize = 10
 const { error, forbidden, capture, reset } = useProblem()
 
-const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  return rows.value.filter((r) =>
-    (!status.value || r.status === status.value) &&
-    (!kw || [r.id, r.product, r.deviceId].some((f) => (f ?? '').toLowerCase().includes(kw))))
-})
-const paged = computed(() => filtered.value.slice((page.value - 1) * pageSize, page.value * pageSize))
-// 筛选条件变化后回到第一页，避免停留在已不存在的页码
-watch([keyword, status], () => { page.value = 1 })
+const str = (v: unknown) => (typeof v === 'string' ? v : '')
+/** 从 URL 解析筛选条件；非法页码回退到第 1 页，未知状态忽略。 */
+function parseQuery(q: LocationQuery) {
+  const p = Number(str(q.page))
+  const st = str(q.status)
+  return {
+    page: Number.isInteger(p) && p >= 1 ? p : 1,
+    status: st in STATUS_LABELS ? st : '',
+    keyword: str(q.keyword).trim()
+  }
+}
 
+/** 写入 URL（replace，不产生历史堆积）；空值不出现在 URL 中。由 URL 变化触发加载。 */
+function pushQuery(next: { page: number; status: string; keyword: string }) {
+  const query: Record<string, string> = {}
+  if (next.page > 1) query.page = String(next.page)
+  if (next.status) query.status = next.status
+  if (next.keyword) query.keyword = next.keyword
+  return router.replace({ query })
+}
+
+function applyKeyword() {
+  return pushQuery({ page: 1, status: status.value, keyword: keyword.value.trim() })
+}
+function applyStatus() {
+  return pushQuery({ page: 1, status: status.value ?? '', keyword: parseQuery(route.query).keyword })
+}
+function goPage(p: number) {
+  const q = parseQuery(route.query)
+  return pushQuery({ ...q, page: p })
+}
+
+let seq = 0
 async function load() {
+  const q = parseQuery(route.query)
+  keyword.value = q.keyword; status.value = q.status; page.value = q.page
+  const my = ++seq
   loading.value = true
   reset()
   try {
-    rows.value = await listWorkOrders()
+    const res = await listWorkOrders({ page: q.page - 1, size: pageSize, status: q.status || undefined, keyword: q.keyword || undefined })
+    // 只采用最后一次请求的结果，避免快速翻页时旧响应覆盖新页
+    if (my !== seq) return
+    rows.value = res.items
+    total.value = res.total
+    // 页码越界（如删除后总数变少）时跳到最后一页
+    const last = Math.max(1, Math.ceil(res.total / pageSize))
+    if (res.items.length === 0 && q.page > last) await pushQuery({ ...q, page: last })
   } catch (e) {
-    capture(e)
+    if (my === seq) capture(e)
   } finally {
-    loading.value = false
+    if (my === seq) loading.value = false
   }
 }
+
+// 仅在本页时响应查询变化（离开到详情页时 query 也会变，不应再请求列表）
+watch(() => route.query, () => { if (route.name === 'workorders') return load() }, { immediate: true })
 
 const auth = useAuthStore()
 const canWrite = computed(() => auth.can(PERM_WORKORDER_WRITE))
@@ -240,7 +284,6 @@ async function submitCreate() {
   try {
     const wo = await createWorkOrder({ deviceId: createForm.deviceId.trim(), product: createForm.product.trim(), quantity: qty }, createKey)
     createVisible.value = false
-    await load()
     open(wo)
   } catch (e) {
     cp.capture(e)
@@ -253,8 +296,7 @@ function open(row: WorkOrder) {
   router.push({ name: 'workorder-detail', params: { id: row.id } })
 }
 
-onMounted(load)
-defineExpose({ keyword, status, page, filtered, paged, open, openCreate, submitCreate, createForm })
+defineExpose({ keyword, status, page, rows, total, load, applyKeyword, applyStatus, goPage, open, openCreate, submitCreate, createForm })
 </script>
 
 <style scoped>

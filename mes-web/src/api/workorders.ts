@@ -76,8 +76,6 @@ export interface OperationProgressView {
   limit: string
   effectiveReports: number
   /** 以下为 M1 派工信息（#68）；旧数据或未下达时可能缺失。 */
-  name?: string
-  workCenterCode?: string
   taskStatus?: string
   stationCode?: string | null
   operator?: string | null
@@ -85,6 +83,9 @@ export interface OperationProgressView {
   plannedEnd?: string | null
   version?: number
   laborHours?: string
+  /** 工序名称与工作中心（#70 起由 /progress 返回，取自下达时的工艺快照）；旧数据可能为 null。 */
+  operationName?: string | null
+  workCenterCode?: string | null
 }
 
 export interface WorkOrderProgressView {
@@ -142,8 +143,34 @@ export function newIdempotencyKey(): string {
 const enc = encodeURIComponent
 
 /** 工单列表（后端当前返回全量列表，无分页与筛选参数）。 */
-export async function listWorkOrders(): Promise<WorkOrder[]> {
-  return (await http.get<ApiResponse<WorkOrder[]>>('/workorders')).data.data
+/** 工单分页结果（#70 PageView）：page 从 0 开始，total 为满足条件的总条数。 */
+export interface WorkOrderPage {
+  items: WorkOrder[]
+  page: number
+  size: number
+  total: number
+}
+
+/** 工单列表查询条件：page 从 0 开始；size 1–100（超出后端返回 400）；status 精确匹配；keyword 对工单号与产品做包含匹配。 */
+export interface WorkOrderQuery {
+  page?: number
+  size?: number
+  status?: string
+  keyword?: string
+}
+
+/** 后端允许的最大每页条数。 */
+export const MAX_PAGE_SIZE = 100
+
+/** 服务端分页查询工单（#70 起 data 为分页对象）；空的 status / keyword 不传，避免后端按空串过滤。 */
+export async function listWorkOrders(q: WorkOrderQuery = {}): Promise<WorkOrderPage> {
+  const params: Record<string, string | number> = {}
+  if (q.page !== undefined) params.page = q.page
+  if (q.size !== undefined) params.size = Math.min(q.size, MAX_PAGE_SIZE)
+  if (q.status) params.status = q.status
+  const kw = q.keyword?.trim()
+  if (kw) params.keyword = kw
+  return (await http.get<ApiResponse<WorkOrderPage>>('/workorders', { params })).data.data
 }
 
 /** 下达快照（工序任务、预留、冻结原因）。 */
@@ -199,4 +226,21 @@ export interface CreateWorkOrderRequest {
 /** 幂等创建工单（需 workorder:write）：首次 201，同键重放 200。 */
 export async function createWorkOrder(req: CreateWorkOrderRequest, key: string): Promise<WorkOrder> {
   return (await http.post<ApiResponse<WorkOrder>>('/workorders', req, { headers: { 'Idempotency-Key': key } })).data.data
+}
+
+/** 关闭结果（#70 WorkOrderCloseView）。 */
+export interface WorkOrderCloseView { workOrderNo: string; status: string; previousStatus: string; closedAt: string }
+/** 撤回下达结果（#70 WorkOrderWithdrawView）：有库存预留时 releaseStatus 为 PENDING，由后台异步释放。 */
+export interface WorkOrderWithdrawView {
+  workOrderNo: string; status: string; previousStatus: string; reservationId: string | null; releaseStatus: string | null; withdrawnAt: string
+}
+
+/** 关闭工单 COMPLETED → CLOSED。质量服务不可用时后端 503 拒绝；存在未结案 NCR 时 409 open-ncr-exists。 */
+export async function closeWorkOrder(id: string, note: string | undefined, key: string): Promise<WorkOrderCloseView> {
+  return (await http.post<ApiResponse<WorkOrderCloseView>>(`/workorders/${enc(id)}/close`, { note: note || null }, { headers: { 'Idempotency-Key': key } })).data.data
+}
+
+/** 撤回下达 RELEASED → CREATED；已有报工或已开工的任务时 409 workorder-state-conflict。 */
+export async function withdrawRelease(id: string, note: string | undefined, key: string): Promise<WorkOrderWithdrawView> {
+  return (await http.post<ApiResponse<WorkOrderWithdrawView>>(`/workorders/${enc(id)}/withdraw-release`, { note: note || null }, { headers: { 'Idempotency-Key': key } })).data.data
 }

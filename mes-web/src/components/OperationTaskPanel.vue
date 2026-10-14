@@ -235,7 +235,8 @@ async function run(actionKey: string, fn: (key: string) => Promise<unknown>) {
   } catch (e) {
     if (isBusinessRejection(e)) {
       keys.delete(actionKey)
-      await load()
+      // 刷新失败也不能吞掉原冲突：吞掉刷新异常，随后展示动作本身的错误
+      await load().catch(() => {})
     }
     // 刷新本身的错误不覆盖动作错误，动作失败原因优先展示
     capture(e)
