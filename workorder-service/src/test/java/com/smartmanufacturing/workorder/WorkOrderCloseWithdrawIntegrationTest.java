@@ -152,7 +152,25 @@ class WorkOrderCloseWithdrawIntegrationTest {
         assertThat(events(id)).doesNotContain("WorkOrderClosed");
     }
 
-    /** 质量服务不可用（异常或空响应）：503 quality-service-unavailable，不放行；403 原样返回 access-denied。 */
+    /** #74：非 COMPLETED 先按状态 409，不调用质量服务；不存在 404。 */
+    @Test void closeValidatesStateBeforeCallingQuality() throws Exception {
+        String id = released(5);
+        assertProblem(call("/workorders/" + id + "/close", null), 409, "workorder-state-conflict");
+        assertProblem(call("/workorders/NOPE-74/close", null), 404, "workorder-not-found");
+        verifyNoInteractions(quality);
+        assertThat(status(id)).isEqualTo("RELEASED");
+    }
+
+    /** #74：关闭只需 workorder:write；质量服务以服务身份调用，调用者无需 quality:read。 */
+    @Test void closeNeedsOnlyWorkorderWrite() throws Exception {
+        String id = completed(5);
+        MvcResult r = call(user("closer-1", "workorder:read", "workorder:write"), "/workorders/" + id + "/close", null, "close74-" + id);
+        assertOk(r, 200);
+        assertThat(status(id)).isEqualTo("CLOSED");
+        assertOk(call(user("viewer-1", "workorder:read"), "/workorders/" + id + "/close", null, "close74b-" + id), 403);
+    }
+
+    /** 质量服务不可用（异常或空响应）或拒绝服务身份（401 / 403）：503 quality-service-unavailable，不放行。 */
     @Test void closeRefusedWhenQualityUnavailable() throws Exception {
         String id = completed(5);
         when(quality.ncrs(anyString(), anyString(), anyInt(), anyInt())).thenThrow(new feign.RetryableException(503, "timeout", feign.Request.HttpMethod.GET, (Long) null,
@@ -166,7 +184,10 @@ class WorkOrderCloseWithdrawIntegrationTest {
 
         reset(quality);
         when(quality.ncrs(anyString(), anyString(), anyInt(), anyInt())).thenThrow(mock(FeignException.Forbidden.class));
-        assertProblem(call("/workorders/" + id + "/close", null), 403, "access-denied");
+        assertProblem(call("/workorders/" + id + "/close", null), 503, "quality-service-unavailable");
+        reset(quality);
+        when(quality.ncrs(anyString(), anyString(), anyInt(), anyInt())).thenThrow(mock(FeignException.Unauthorized.class));
+        assertProblem(call("/workorders/" + id + "/close", null), 503, "quality-service-unavailable");
 
         reset(quality);
         when(quality.ncrs(anyString(), anyString(), anyInt(), anyInt())).thenThrow(WorkOrderProblemType.QUALITY_SERVICE_UNAVAILABLE.exception("熔断"));

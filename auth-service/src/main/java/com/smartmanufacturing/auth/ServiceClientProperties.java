@@ -27,6 +27,11 @@ public class ServiceClientProperties {
         private List<String> scopes = new ArrayList<>();
         /** 令牌受众，即唯一允许接受该令牌的资源服务（如 inventory-service）。 */
         private String audience;
+        /**
+         * 按 scope 指定受众（#74）：未列出的 scope 使用 {@link #audience}。一个令牌只有一个受众，
+         * 因此一次申请的 scope 必须映射到同一受众；未带 scope 时只签发默认受众的 scope。
+         */
+        private java.util.Map<String, String> scopeAudiences = new java.util.LinkedHashMap<>();
 
         public String getClientId() { return clientId; }
         public void setClientId(String clientId) { this.clientId = clientId; }
@@ -36,5 +41,9 @@ public class ServiceClientProperties {
         public void setScopes(List<String> scopes) { this.scopes = scopes; }
         public String getAudience() { return audience; }
         public void setAudience(String audience) { this.audience = audience; }
+        public java.util.Map<String, String> getScopeAudiences() { return scopeAudiences; }
+        public void setScopeAudiences(java.util.Map<String, String> scopeAudiences) { this.scopeAudiences = scopeAudiences; }
+        /** scope 对应的令牌受众。 */
+        public String audienceOf(String scope) { return scopeAudiences.getOrDefault(scope, audience); }
     }
 }

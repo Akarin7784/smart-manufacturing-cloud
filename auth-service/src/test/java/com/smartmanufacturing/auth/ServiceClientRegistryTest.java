@@ -49,4 +49,21 @@ class ServiceClientRegistryTest {
         String cost4 = new BCryptPasswordEncoder(4).encode("s3cret");
         assertThrows(IllegalStateException.class, () -> new ServiceClientRegistry(props(cost4), encoder, false));
     }
+
+    /** #74：scope-audiences 只能引用已授权的 scope，受众不能为空。 */
+    @Test void scopeAudiencesValidated() {
+        ServiceClientProperties p = props(null);
+        p.getClients().get(0).setScopeAudiences(java.util.Map.of("quality:read", "quality-service"));
+        assertThrows(IllegalStateException.class, () -> new ServiceClientRegistry(p, encoder, false));
+        ServiceClientProperties blank = props(null);
+        blank.getClients().get(0).setScopes(List.of("inventory:reserve", "quality:read"));
+        blank.getClients().get(0).setScopeAudiences(java.util.Map.of("quality:read", " "));
+        assertThrows(IllegalStateException.class, () -> new ServiceClientRegistry(blank, encoder, false));
+        ServiceClientProperties ok = props(null);
+        ok.getClients().get(0).setScopes(List.of("inventory:reserve", "quality:read"));
+        ok.getClients().get(0).setScopeAudiences(java.util.Map.of("quality:read", "quality-service"));
+        assertDoesNotThrow(() -> new ServiceClientRegistry(ok, encoder, false));
+        assertEquals("quality-service", ok.getClients().get(0).audienceOf("quality:read"));
+        assertEquals("inventory-service", ok.getClients().get(0).audienceOf("inventory:reserve"));
+    }
 }

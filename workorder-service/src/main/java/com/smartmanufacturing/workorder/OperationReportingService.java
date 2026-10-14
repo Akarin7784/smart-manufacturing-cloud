@@ -321,6 +321,9 @@ public class OperationReportingService {
         String hash = hash("CLOSE", orderNo, note);
         Optional<CommandResult> prior = replay(operator, key, hash);
         if (prior.isPresent()) return prior.get();
+        // #74：先校验状态（不加锁）再查质量服务：非 COMPLETED 直接 409，不发起远程调用；事务内加锁后 closeInTx 仍会复核
+        WorkOrderClosure.requireClosable(orderNo, jdbc.queryForList("select status from work_order where id = ?", String.class, orderNo)
+            .stream().findFirst().orElseThrow(() -> WorkOrderProblemType.WORK_ORDER_NOT_FOUND.exception("工单不存在：" + orderNo)));
         closure.requireNoOpenNcr(orderNo);
         return idempotent(operator, key, "CLOSE", orderNo, hash, 200, order -> closure.closeInTx(order.id(), order.status(), note, operator));
     }
