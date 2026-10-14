@@ -58,6 +58,18 @@ class ReleaseRulesTest {
         assertThat(MasterdataFallbackFactory.map(new RuntimeException("timeout")).status()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
     }
 
+    /** #71：主数据错误改为 problem+json 后，映射只看 HTTP 状态、不解析响应体（type / code），新旧响应体映射结果相同。 */
+    @Test void mapsMasterdataProblemJsonByStatusOnly() {
+        Request req = Request.create(Request.HttpMethod.GET, "/x", new HashMap<>(), null, StandardCharsets.UTF_8, null);
+        var headers = java.util.Map.<String, java.util.Collection<String>>of("Content-Type", List.of("application/problem+json"));
+        byte[] notEffective = "{\"type\":\"bom-not-effective\",\"title\":\"无生效 BOM\",\"status\":404,\"code\":\"BOM_NOT_EFFECTIVE\"}".getBytes(StandardCharsets.UTF_8);
+        byte[] cycle = "{\"type\":\"bom-cycle\",\"status\":422,\"code\":\"BOM_CYCLE\"}".getBytes(StandardCharsets.UTF_8);
+        byte[] internal = "{\"type\":\"internal-error\",\"status\":500}".getBytes(StandardCharsets.UTF_8);
+        assertThat(MasterdataFallbackFactory.map(new FeignException.NotFound("", req, notEffective, headers)).code()).isEqualTo("RELEASE_MASTERDATA_INVALID");
+        assertThat(MasterdataFallbackFactory.map(new FeignException.UnprocessableEntity("", req, cycle, headers)).code()).isEqualTo("RELEASE_MASTERDATA_INVALID");
+        assertThat(MasterdataFallbackFactory.map(new FeignException.InternalServerError("", req, internal, headers)).code()).isEqualTo("MASTERDATA_SERVICE_UNAVAILABLE");
+    }
+
     /** 本地预留替身：同一幂等键得到同一预留单号，到期时间为 now + 15 分钟。 */
     @Test void localReservationIsDeterministic() {
         var clock = java.time.Clock.fixed(java.time.Instant.parse("2026-10-12T00:00:00Z"), java.time.ZoneOffset.UTC);

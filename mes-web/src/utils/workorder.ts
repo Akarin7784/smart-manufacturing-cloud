@@ -1,3 +1,4 @@
+import { isProblemType } from '@/utils/problem'
 /** 工单相关的展示与校验工具：状态中文名、可执行动作、数量格式、批次号规范化。 */
 import type { WorkOrderStatus } from '@/api/workorders'
 
@@ -71,7 +72,7 @@ export function percent(good: string, planned: string): number {
   return Math.min(100, Math.round((Number(good) / p) * 100))
 }
 
-/** 已知 problem type 的中文说明，未知类型使用后端 detail。 */
+/** 已知 problem type 的中文说明（工单与主数据服务共用同一 type 写法，#71），未知类型使用后端 detail。 */
 const PROBLEM_HINTS: Record<string, string> = {
   'over-report': '报工数量超过本工序可报上限',
   'uom-mismatch': '计量单位与本工序已有报工不一致',
@@ -93,8 +94,8 @@ const PROBLEM_HINTS: Record<string, string> = {
 /** 根据 problem type 的最后一段匹配中文说明。 */
 export function problemHint(type: unknown): string | undefined {
   if (typeof type !== 'string') return undefined
-  const key = type.split('/').pop() as string
-  return PROBLEM_HINTS[key]
+  const key = Object.keys(PROBLEM_HINTS).find((k) => isProblemType({ type }, k))
+  return key ? PROBLEM_HINTS[key] : undefined
 }
 
 /**

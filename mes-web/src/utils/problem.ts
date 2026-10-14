@@ -42,3 +42,11 @@ export function defaultMessage(status: number): string {
   if (status >= 500) return '服务器异常，请稍后重试'
   return '请求失败'
 }
+
+/**
+ * 按 problem type 的最后一段判断错误类别（type 为相对 URI，如 `masterdata-in-use`，兼容带前缀的绝对 URI）。
+ * 主数据被引用（#71 起为 problem+json 顶层 type，不再读 data.type）：`isProblemType(e.parsed.problem, 'masterdata-in-use')`。
+ */
+export function isProblemType(problem: Problem | undefined, type: string): boolean {
+  return typeof problem?.type === 'string' && problem.type.split('/').pop() === type
+}

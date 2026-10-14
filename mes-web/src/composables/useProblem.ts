@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { HttpError } from '@/api/http'
 import { parseFieldErrors, problemHint } from '@/utils/workorder'
+import { isProblemType } from '@/utils/problem'
 
 /**
  * 页面级错误状态：把请求层抛出的 HttpError（problem+json 已解析）转换成可展示文本。
@@ -14,8 +15,8 @@ export function useProblem() {
   function capture(e: unknown) {
     fieldErrors.value = {}
     if (e instanceof HttpError) {
-      if (typeof e.parsed.problem?.type === 'string' && e.parsed.problem.type.endsWith('validation-error')) {
-        fieldErrors.value = parseFieldErrors(e.parsed.problem.detail)
+      if (isProblemType(e.parsed.problem, 'validation-error')) {
+        fieldErrors.value = parseFieldErrors(e.parsed.problem?.detail)
       }
       forbidden.value = e.status === 403
       const hint = problemHint(e.parsed.problem?.type)

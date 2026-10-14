@@ -13,12 +13,11 @@ final class Errors {
     static BusinessException rule(String code, String message) { return new BusinessException(code, message, HttpStatus.UNPROCESSABLE_ENTITY); }
 
     /**
-     * 主数据仍被引用，不能停用 / 删除：409 MASTERDATA_IN_USE。data 中 type 固定为 masterdata-in-use（与 PM 约定的 Problem type 一致），
-     * referenceType 为 WORK_ORDER / BOM / ROUTING，references 列出前若干个引用方。
+     * 主数据仍被引用，不能停用 / 删除：409，problem+json 顶层 type = masterdata-in-use（#71 起不再放在 data.type），
+     * data.referenceType 为 WORK_ORDER / BOM / ROUTING，data.references 列出前若干个引用方。
      */
     static BusinessException inUse(String referenceType, String message, java.util.List<String> references) {
         var data = new java.util.LinkedHashMap<String, Object>();
-        data.put("type", "masterdata-in-use");
         data.put("referenceType", referenceType);
         data.put("references", references);
         return new BusinessException("MASTERDATA_IN_USE", message, HttpStatus.CONFLICT, data);

@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 
 /**
- * 主数据引用检查：停用 / 删除前确认没有被引用，被引用返回 409 MASTERDATA_IN_USE（data.type = masterdata-in-use）。
+ * 主数据引用检查：停用 / 删除前确认没有被引用，被引用返回 409 MASTERDATA_IN_USE（problem type = masterdata-in-use）。
  * <ul>
  *   <li>ROUTING：工作中心被未作废（DRAFT / RELEASED）的工艺路线工序引用；</li>
  *   <li>BOM：物料作为成品或组件出现在未作废的 BOM 中；</li>

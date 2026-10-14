@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 /**
  * 用途：MasterdataClient 的 Feign / Sentinel 降级工厂，把主数据调用失败翻译为下达接口的业务错误。
  * 保留真实失败语义，任何情况下都不伪造主数据（降级时工单一律不下达）。
+ * 只按 HTTP 状态映射，不解析主数据响应体（#71 起主数据错误为 problem+json，type 见 masterdata-openapi.yaml ProblemType）。
  * 404/422（无生效版本、循环 BOM 等）→ 422 RELEASE_MASTERDATA_INVALID，工单不能下达；
  * 401/403 原样映射；超时、5xx、熔断 → 503，提示稍后重试。
  */
