@@ -239,11 +239,18 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           pip install --quiet 'diff-cover==9.*'
-          # diff-cover 按扩展名识别 lcov；lcov 中的路径相对 mes-web，用 --src-roots 对齐到仓库路径。
-          diff-cover mes-web/coverage/lcov.info --src-roots mes-web \
+          # Vitest 的 lcov 里 SF 路径相对 mes-web（如 SF:src/api/http.ts），diff-cover 按仓库根路径匹配，
+          # --src-roots 对 lcov 不生效，会导致匹配不到任何行而空过。这里先把 SF 改写成仓库相对路径。
+          sed 's#^SF:#SF:mes-web/#' mes-web/coverage/lcov.info > lcov-web.info
+          diff-cover lcov-web.info \
             --compare-branch="origin/${BASE_REF}" --fail-under=80 \
-            --markdown-report diff-coverage-web.md
+            --markdown-report diff-coverage-web.md | tee diff-coverage-web.txt
           cat diff-coverage-web.md >> "$GITHUB_STEP_SUMMARY"
+          # 防空过：PR 改了 mes-web/src 下的源码，diff-cover 却一行都没匹配上，说明路径又对不上了。
+          if git diff --name-only "origin/${BASE_REF}...HEAD" -- 'mes-web/src/*.ts' 'mes-web/src/*.vue' | grep -q . \
+             && grep -q 'No lines with coverage information' diff-coverage-web.txt; then
+            echo "::error::mes-web/src 有改动但 diff-cover 未匹配到任何覆盖率行，请检查 lcov 路径"; exit 1
+          fi
       - name: Upload frontend coverage
         if: always() && steps.gate.outputs.run == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
