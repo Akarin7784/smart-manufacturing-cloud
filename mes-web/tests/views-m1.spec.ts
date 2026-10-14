@@ -764,7 +764,7 @@ describe('报工页', () => {
     await vi.waitFor(() => expect(api.getProgress).toHaveBeenCalledWith('WO88'))
   })
 
-  it('?wo= 补查不到（已完工 / 不存在）时不预选并提示不可报工；选了别的工单后提示消失', async () => {
+  it('?wo= 补查不到（已完工 / 不存在）时不预选并提示不可报工；选了别的工单后提示消失，清空下拉也不再出现', async () => {
     const { w } = await mountAs('/reports?wo=WO404', WRITE)
     const vm = searchVm(w) as SearchVm & { preUnavailable: string; onWorkOrderChange: () => Promise<void> }
     await vi.waitFor(() => expect(w.find('.wo-unavailable').exists()).toBe(true))
@@ -777,6 +777,12 @@ describe('报工页', () => {
     vm.woId = 'WO2'
     await vm.onWorkOrderChange()
     await vi.waitFor(() => expect(w.find('.wo-unavailable').exists()).toBe(false))
+    expect(vm.preUnavailable).toBe('')
+    // 清空下拉后提示也不再出现（#84 审查）
+    vm.woId = ''
+    await vm.onWorkOrderChange()
+    await flushPromises()
+    expect(w.find('.wo-unavailable').exists()).toBe(false)
   })
 
   it('?wo= 补查返回前用户已开始搜索：丢弃补查结果，不插入选项也不预选', async () => {

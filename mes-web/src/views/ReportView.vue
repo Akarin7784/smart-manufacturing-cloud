@@ -28,8 +28,10 @@
         :loading="searching"
         loading-text="搜索中…"
         :no-data-text="searchKeyword ? '没有匹配的可报工工单' : '暂无可报工的工单'"
+        clearable
         placeholder="输入工单号或产品搜索可报工的工单"
         @change="onWorkOrderChange"
+        @clear="preUnavailable = ''"
       >
         <el-option
           v-for="w in workOrders"
@@ -281,6 +283,8 @@ async function loadProgress() {
 }
 
 async function onWorkOrderChange() {
+  // 一旦选过工单，?wo= 不可报工的提示即作废，清空下拉后不再出现
+  if (woId.value) preUnavailable.value = ''
   opNo.value = ''
   reset()
   try {
