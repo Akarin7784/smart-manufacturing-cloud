@@ -1,6 +1,6 @@
 // 保护 problem+json 解析与中文兜底提示的行为。
 import { describe, it, expect } from 'vitest'
-import { parseError, isProblemJson, defaultMessage, isProblemType } from '@/utils/problem'
+import { parseError, isProblemJson, defaultMessage, isProblemType, parseInUse, formatInUse, IN_USE_REFERENCE_LIMIT } from '@/utils/problem'
 
 describe('problem+json 解析', () => {
   it('识别带 charset 的 problem+json', () => {
@@ -37,5 +37,17 @@ describe('problem+json 解析', () => {
     // 旧格式 {code,message,data:{type}} 不再被识别为引用冲突
     const legacy = parseError(409, 'application/json', { code: 'MASTERDATA_IN_USE', message: 'x', data: { type: 'masterdata-in-use' } })
     expect(isProblemType(legacy.problem, 'masterdata-in-use')).toBe(false)
+    // 解析引用明细；data 缺失或畸形时降级
+    expect(parseInUse(parsed.problem)).toEqual({ referenceType: 'ROUTING', references: ['FG/R01'] })
+    expect(parseInUse({ type: 'masterdata-in-use', data: { referenceType: '  ', references: [1, '', ' WO1 '] } })).toEqual({ referenceType: null, references: ['WO1'] })
+    expect(parseInUse({ type: 'masterdata-in-use' })).toEqual({ referenceType: null, references: [] })
+    expect(parseInUse({ type: 'masterdata-in-use', data: null })).toEqual({ referenceType: null, references: [] })
+    expect(parseInUse({ type: 'validation-error', data: { referenceType: 'BOM', references: ['x'] } })).toBeNull()
+    expect(formatInUse({ referenceType: 'WORK_ORDER', references: ['WO1', 'WO2'] })).toBe('被工单引用：WO1、WO2')
+    expect(formatInUse({ referenceType: 'BOM', references: ['A', 'B', 'C', 'D'] })).toBe('被BOM引用：A、B、C 等4 个')
+    expect(formatInUse({ referenceType: 'ROUTING', references: Array.from({ length: IN_USE_REFERENCE_LIMIT }, (_, i) => `R${i}`) })).toBe(
+      `被工艺路线引用：R0、R1、R2 等至少 ${IN_USE_REFERENCE_LIMIT} 个`)
+    expect(formatInUse({ referenceType: null, references: [] })).toBe('')
+    expect(formatInUse({ referenceType: 'X', references: [] })).toBe('被X引用')
   })
 })
