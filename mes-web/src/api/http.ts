@@ -65,3 +65,8 @@ export function resetHttpForTest() {
   http.interceptors.request.clear()
   http.interceptors.response.clear()
 }
+
+/** 是否为业务拒绝（409 冲突 / 422 不可处理）：同键重试无意义，调用方应作废幂等键并刷新数据。 */
+export function isBusinessRejection(e: unknown): boolean {
+  return e instanceof HttpError && (e.status === 409 || e.status === 422)
+}

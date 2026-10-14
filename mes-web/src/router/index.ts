@@ -10,6 +10,7 @@ export const routes: RouteRecordRaw[] = [
     redirect: '/workorders',
     children: [
       { path: 'workorders', name: 'workorders', component: () => import('@/views/WorkOrderView.vue'), meta: { title: '工单' } },
+      { path: 'workorders/:id', name: 'workorder-detail', component: () => import('@/views/WorkOrderDetailView.vue'), meta: { title: '工单详情' } },
       { path: 'reports', name: 'reports', component: () => import('@/views/ReportView.vue'), meta: { title: '报工' } }
     ]
   },
