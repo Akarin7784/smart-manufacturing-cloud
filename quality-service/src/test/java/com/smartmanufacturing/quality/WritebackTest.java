@@ -493,6 +493,34 @@ class WritebackTest {
         assertThat(registry.get("mes.quality.inventory.auth.failure").tag("operation", "release").counter().count()).isEqualTo(before + 1);
     }
 
+    /** 令牌端点明确拒绝（TOKEN_AUTH）：FAILED 不重试，auth_failure 按 operation=token 计数。 */
+    @Test void tokenRejectionFailsAndCountsTokenAuthFailure() {
+        String ncr = open(rid(), "1");
+        inventory.script("qc:" + ncr + ":hold", new Rejected("令牌申请被拒（HTTP 401）", true, InventoryQcHoldClient.Signal.TOKEN_AUTH));
+        double before = registry.get("mes.quality.inventory.auth.failure").tag("operation", "token").counter().count();
+        worker.runBatch();
+        assertThat(task(ncr, Action.HOLD).status()).isEqualTo(WritebackStatus.FAILED);
+        assertThat(registry.get("mes.quality.inventory.auth.failure").tag("operation", "token").counter().count()).isEqualTo(before + 1);
+    }
+
+    /** 栅栏：调用期间任务被重新领取（attempts 已变），旧结果被丢弃，任务保持 RUNNING、不记 DONE。 */
+    @Test void staleResultAfterReclaimIsDiscarded() {
+        String ncr = open(rid(), "1");
+        String key = "qc:" + ncr + ":hold";
+        inventory.during(c -> jdbc.update("update inventory_writeback set attempts = attempts + 1 where idempotency_key = ?", key));
+        worker.runBatch();
+        WritebackTask t = task(ncr, Action.HOLD);
+        assertThat(t.status()).isEqualTo(WritebackStatus.RUNNING);
+        assertThat(t.attempts()).isEqualTo(2);
+    }
+
+    /** pendingCount 与 PENDING + RUNNING 的任务数口径一致。 */
+    @Test void pendingCountMatchesPendingAndRunningTasks() {
+        open(rid(), "1");
+        Long expected = jdbc.queryForObject("select count(*) from inventory_writeback where status in ('PENDING', 'RUNNING')", Long.class);
+        assertThat(writebacks.pendingCount()).isEqualTo(expected).isPositive();
+    }
+
     @Test void allResultSeriesArePreRegistered() {
         for (String op : QualityMetrics.INVENTORY_AUTH_OPERATIONS)
             assertThat(registry.find("mes.quality.inventory.auth.failure").tag("operation", op).counter()).as(op).isNotNull();

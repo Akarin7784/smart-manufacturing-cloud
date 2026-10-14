@@ -30,16 +30,27 @@ class OperationReportLotNoTest {
         assertThat(validator.validate(req(null))).isEmpty();
     }
 
-    @Test void blankLotNoIsRejected() {
-        // 空串、纯空格、纯换行都视为空白
-        assertThat(validator.validate(req(""))).isNotEmpty();
-        assertThat(validator.validate(req("   "))).isNotEmpty();
-        assertThat(validator.validate(req("\n"))).isNotEmpty();
+    @Test void lotNoIsTrimmedAtEntry() {
+        assertThat(req(" LOT 1 ").lotNo()).isEqualTo("LOT 1");
+        assertThat(req("\tLOT-2\n").lotNo()).isEqualTo("LOT-2");
+        assertThat(OperationReportingService.effectiveLotNo(req(" LOT 1 ").lotNo(), "WO-001")).isEqualTo("LOT 1");
     }
 
-    @Test void lotNoLengthMatchesColumn() {
+    @Test void blankLotNoFallsBackToWorkOrderNo() {
+        // 空串、纯空格、纯换行 trim 后为空，视同未传，缺省为工单号
+        for (String blank : new String[] {"", "   ", "\n"}) {
+            ReportOperationRequest r = req(blank);
+            assertThat(r.lotNo()).isNull();
+            assertThat(validator.validate(r)).isEmpty();
+            assertThat(OperationReportingService.effectiveLotNo(r.lotNo(), "WO-001")).isEqualTo("WO-001");
+        }
+    }
+
+    @Test void lotNoLengthIsCheckedAfterTrim() {
         assertThat(validator.validate(req("L".repeat(64)))).isEmpty();
         assertThat(validator.validate(req("L".repeat(65)))).isNotEmpty();
+        // 首尾空白不计入长度
+        assertThat(validator.validate(req("  " + "L".repeat(64) + "  "))).isEmpty();
         assertThat(validator.validate(req(" LOT 1 "))).isEmpty();
     }
 }

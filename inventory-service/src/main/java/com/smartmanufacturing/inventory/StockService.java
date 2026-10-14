@@ -187,6 +187,23 @@ public class StockService {
         return applyDelta(row, material, registered, qty.negate(), type, "NCR", ncrNo, operator);
     }
 
+    /**
+     * 入库预校验：必须在 {@link #prepareRows} <b>之前</b>调用。库位不存在、停用或为系统库位时直接返回 400 validation-error，
+     * 单位与已登记单位不一致时返回 422 uom-mismatch，避免预建出数量 0 的空行或触发外键错误（500）。
+     * 主事务内仍会再次校验（并发下以事务内结果为准）。
+     */
+    public void precheckInbound(Movement r) {
+        Quantities.parsePositive("qty", r.qty());
+        locations.requireGeneral(r.locationCode());
+        requireUom(r.materialCode(), r.uom());
+    }
+
+    /** 入隔离预校验：必须在 {@link #prepareRows} 之前调用。QC-HOLD 缺失或停用返回 404 location-not-found，单位不一致返回 422。 */
+    public void precheckQcHoldIn(String material, String uom) {
+        requireQcHoldLocation();
+        requireUom(material, uom);
+    }
+
     /** QC-HOLD 系统库位必须存在且启用（迁移 V2 种子），否则 404 location-not-found。 */
     private void requireQcHoldLocation() {
         Integer n = jdbc.queryForObject("select count(*) from warehouse_location where code = ? and enabled = TRUE", Integer.class, QC_HOLD);

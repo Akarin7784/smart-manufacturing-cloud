@@ -229,13 +229,20 @@ class OperationReportingMySqlIT {
         assertThat(jdbc.queryForObject("select count(*) from wo_operation_report where reversed_report_id = ?", Integer.class, rid)).isEqualTo(1);
     }
 
-    /** 报工未带 lotNo 时缺省为工单号：落库、响应、DefectReported 与 DefectReversed 均使用工单号；空白 lotNo 返回 400。 */
+    /** 报工未带 lotNo 时缺省为工单号：落库、响应、DefectReported 与 DefectReversed 均使用工单号；lotNo 入口 trim，空白视同未传。 */
     @Test void lotNoDefaultsToWorkOrderNo() throws Exception {
-        String id = released(10);
+        String id = released(20);
         String path = "/workorders/" + id + "/operations/OP10/reports";
-        // 空白批次号被拒绝，避免空串批次流入库存
-        assertProblem(call(path, UUID.randomUUID().toString(),
-            "{\"goodQty\":\"1\",\"defectQty\":\"0\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"lotNo\":\"  \"}"), 400, "validation-error");
+        // 纯空白批次号 trim 后为空，视同未传，缺省为工单号（不再 400）
+        MvcResult blank = call(path, UUID.randomUUID().toString(),
+            "{\"goodQty\":\"1\",\"defectQty\":\"0\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"lotNo\":\"  \"}");
+        assertThat(blank.getResponse().getStatus()).isEqualTo(201);
+        assertThat(jdbc.queryForObject("select lot_no from wo_operation_report where report_id = ?", String.class, reportId(blank))).isEqualTo(id);
+        // 首尾空白被去掉后落库
+        MvcResult trimmed = call(path, UUID.randomUUID().toString(),
+            "{\"goodQty\":\"1\",\"defectQty\":\"0\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"lotNo\":\" LOT 1 \"}");
+        assertThat(trimmed.getResponse().getStatus()).isEqualTo(201);
+        assertThat(jdbc.queryForObject("select lot_no from wo_operation_report where report_id = ?", String.class, reportId(trimmed))).isEqualTo("LOT 1");
         // 超长批次号（> 64，与 lot_no 列宽一致）被拒绝
         assertProblem(call(path, UUID.randomUUID().toString(),
             "{\"goodQty\":\"1\",\"defectQty\":\"0\",\"scrapQty\":\"0\",\"uom\":\"PCS\",\"lotNo\":\"" + "L".repeat(65) + "\"}"), 400, "validation-error");
