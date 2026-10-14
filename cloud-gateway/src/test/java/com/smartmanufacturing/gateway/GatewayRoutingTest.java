@@ -330,4 +330,40 @@ class GatewayRoutingTest {
                 client().post().uri("/api/quality/ncrs/NCR-1/" + action).headers(h -> h.setBearerAuth(as(role))).exchange().expectStatus().isOk();
         }
     }
+
+    static final List<String> PLANNER = role("PLANNER");
+    static final List<String> VIEWER = role("VIEWER");
+
+    /** 操作工下拉 /api/auth/operators：PLANNER、ADMIN 放行并去前缀转发到认证服务；OPERATOR、VIEWER 403；匿名 401。 */
+    @Test void operatorsDropdownRequiresDispatchPermission() {
+        for (List<String> role : List.of(PLANNER, ADMIN))
+            client().get().uri("/api/auth/operators").headers(h -> h.setBearerAuth(as(role))).exchange()
+                .expectStatus().isOk().expectBody(String.class).value(b -> org.junit.jupiter.api.Assertions.assertTrue(b.startsWith("/auth/operators|")));
+        for (List<String> role : List.of(OPERATOR, VIEWER))
+            client().get().uri("/api/auth/operators").headers(h -> h.setBearerAuth(as(role))).exchange().expectStatus().isForbidden();
+        client().get().uri("/api/auth/operators").exchange().expectStatus().isUnauthorized();
+    }
+
+    /**
+     * 派工路由：PLANNER（execution:dispatch）放行，OPERATOR 走 workorder:write 兼容也放行，VIEWER 403；
+     * 开工需要 execution:report（或 workorder:write），PLANNER 403；任务列表 /api/operation-tasks 转发到工单服务。
+     */
+    @Test void dispatchRoutesUseExecutionPermissions() {
+        String dispatch = "/api/workorders/WO1/operations/OP10/dispatch";
+        client().post().uri(dispatch).headers(h -> h.setBearerAuth(as(PLANNER))).exchange()
+            .expectStatus().isOk().expectBody(String.class).value(b -> org.junit.jupiter.api.Assertions.assertTrue(b.startsWith("/workorders/WO1/operations/OP10/dispatch|")));
+        client().post().uri(dispatch).headers(h -> h.setBearerAuth(as(OPERATOR))).exchange().expectStatus().isOk();
+        client().post().uri(dispatch).headers(h -> h.setBearerAuth(as(VIEWER))).exchange().expectStatus().isForbidden();
+        // 只有 workorder:read 的令牌不能派工
+        String readOnly = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("workorder:read"));
+        client().post().uri(dispatch).headers(h -> h.setBearerAuth(readOnly)).exchange().expectStatus().isForbidden();
+        // PLANNER 不能修改工单：创建、下达、冻结、恢复、取消、完工、报工均 403
+        for (String uri : List.of("/api/workorders", "/api/workorders/WO1/release", "/api/workorders/WO1/hold", "/api/workorders/WO1/resume",
+                "/api/workorders/WO1/cancel", "/api/workorders/WO1/complete", "/api/workorders/WO1/operations/OP10/reports"))
+            client().post().uri(uri).headers(h -> h.setBearerAuth(as(PLANNER))).exchange().expectStatus().isForbidden();
+        client().post().uri("/api/workorders/WO1/operations/OP10/start").headers(h -> h.setBearerAuth(as(PLANNER))).exchange().expectStatus().isForbidden();
+        client().post().uri("/api/workorders/WO1/operations/OP10/start").headers(h -> h.setBearerAuth(as(OPERATOR))).exchange().expectStatus().isOk();
+        client().get().uri("/api/operation-tasks?station=ST-1").headers(h -> h.setBearerAuth(as(PLANNER))).exchange()
+            .expectStatus().isOk().expectBody(String.class).value(b -> org.junit.jupiter.api.Assertions.assertTrue(b.startsWith("/operation-tasks|")));
+    }
 }

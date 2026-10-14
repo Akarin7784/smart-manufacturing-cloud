@@ -68,6 +68,9 @@ stateDiagram-v2
 | --- | --- | --- |
 | POST …/dispatch | execution:dispatch | `{stationCode, operator?, plannedStart?, plannedEnd?, note?}` |
 | POST …/reassign | execution:dispatch | 同 dispatch，另加 `expectedVersion` 必填 |
+
+`expectedVersion` 只在改派时必填：首次派工只允许未派工的任务，并发首派由锁工单行（SELECT … FOR UPDATE）串行化，后到者看到已派工返回 409 `task-state-conflict`，因此派工请求不带版本（带了也忽略）。
+
 | POST …/cancel-dispatch | execution:dispatch | `{reason}` |
 | POST …/start / pause / resume | execution:report | `{reason?}`（pause 的 reason 必填） |
 | GET /api/operation-tasks?station=&status=&operator= | workorder:read | 工位工作台的任务列表，按 planned_start、工单号排序，分页（page、size ≤ 200） |
@@ -76,7 +79,7 @@ stateDiagram-v2
 
 **下拉数据来源**
 - 工位：`GET /api/workcenters`（已有，返回结果里包含 stations），按任务的 `workCenterCode` 过滤。
-- 操作工（Q3 已定）：新增 `GET /api/auth/operators`，需要 `execution:dispatch`；`/auth/users` 权限不放宽。只返回启用状态的用户，字段只有 `{id, employeeNo, name}`，不返回角色、手机号等。`id` 即派工请求的 `operator` 取值；`employeeNo` / `name` 取 auth_user.employee_no / display_name（V3 新增，可空），为空时回退为用户名。
+- 操作工（Q3 已定）：新增 `GET /api/auth/operators`，需要 `execution:dispatch`；`/auth/users` 权限不放宽。只返回启用状态的用户，字段只有 `{id, employeeNo, name}`，不返回角色、手机号等。`id` 即派工请求的 `operator` 取值；`employeeNo` / `name` 取 auth_user.employee_no / display_name（V3 新增，可空）；employeeNo 为空时返回 null（不回退），name 为空时回退为用户名。
 
 ## 5. 权限
 

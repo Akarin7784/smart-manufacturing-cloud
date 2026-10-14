@@ -83,7 +83,7 @@ Invoke-RestMethod http://localhost:8080/api/devices -Headers $headers
 | GET /api/auth/jwks | 公钥发现，允许匿名访问 |
 | GET /api/auth/me | 当前令牌身份 |
 | GET /api/auth/users | 管理员查询用户 |
-| GET /api/auth/operators | 派工用操作工下拉（`execution:dispatch`）：只返回启用账号的 id、employeeNo、name；工号 / 姓名为空时回退为用户名 |
+| GET /api/auth/operators | 派工用操作工下拉（`execution:dispatch`）：只返回启用账号的 id、employeeNo、name；工号未登记时为 null（不回退），姓名为空时回退为用户名 |
 | POST /api/auth/users | 管理员创建用户，body 为 username、password、role |
 | PATCH /api/auth/users/{id} | 管理员修改 role 和 enabled |
 

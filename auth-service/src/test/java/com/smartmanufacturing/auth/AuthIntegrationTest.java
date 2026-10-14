@@ -181,7 +181,7 @@ class AuthIntegrationTest {
 
     /**
      * 操作工下拉（M1）：PLANNER 与 ADMIN 可查；只返回启用账号；每项只有 id、employeeNo、name 三个字段（不带角色、启用状态、手机号）；
-     * 工号 / 姓名为空时回退为用户名；没有 execution:dispatch 的用户 403；/auth/users 对 PLANNER 仍是 403（未放宽）。
+     * 工号为空时为 null、姓名为空时回退为用户名；没有 execution:dispatch 的用户 403；/auth/users 对 PLANNER 仍是 403（未放宽）。
      */
     @Test void operatorsEndpointReturnsOnlyEnabledUsersWithMinimalFields() throws Exception {
         users.create(new CreateUserRequest("planner", USER_PASSWORD, Role.PLANNER));
@@ -209,8 +209,9 @@ class AuthIntegrationTest {
         assertTrue(ids.contains(worker.id()));
         assertFalse(ids.contains(gone.id()), "禁用账号不应出现在下拉中");
         assertFalse(body.contains("role") || body.contains("phone") || body.contains("enabled") || body.contains("password"));
-        // 历史账号工号 / 姓名为空时回退为用户名
-        assertTrue(body.contains("\"employeeNo\":\"viewer\"") && body.contains("\"name\":\"viewer\""));
+        // 历史账号：工号为空时返回 null（不回退为用户名），姓名回退为用户名
+        assertTrue(body.contains("\"employeeNo\":null,\"name\":\"viewer\""), body);
+        assertFalse(body.contains("\"employeeNo\":\"viewer\""));
         // 管理员也可以查
         mvc.perform(get("/auth/operators").header("Authorization", "Bearer " + login("admin", ADMIN_PASSWORD))).andExpect(status().isOk());
         // 没有 execution:dispatch：操作工、查看者 403；未登录 401

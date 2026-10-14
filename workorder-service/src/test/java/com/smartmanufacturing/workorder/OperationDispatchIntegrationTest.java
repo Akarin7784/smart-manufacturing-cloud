@@ -172,6 +172,25 @@ class OperationDispatchIntegrationTest {
         assertThat(json(report(worker("op-1"), id, "OP10", "1", "\"0\"")).at("/data/report/stationCode").asText()).isEqualTo("ST-CNC-01");
     }
 
+    /** 未派工的老任务：报工自动开工后（RUNNING）和冲销暂停后（PAUSED）都可以补派工，状态不变。 */
+    @Test void legacyRunningAndPausedTasksCanBeDispatched() throws Exception {
+        String id = released(10);
+        assertOk(report(legacyWriter(), id, "OP10", "2", "\"1\""), 201);
+        assertThat(taskStatus(id, "OP10")).isEqualTo("RUNNING");
+        MvcResult running = dispatch(id, "OP10", "ST-CNC-01", null);
+        assertOk(running, 200);
+        assertThat(json(running).at("/data/status").asText()).isEqualTo("RUNNING");
+
+        String other = released(10);
+        String rid = json(report(legacyWriter(), other, "OP10", "10", "\"1\"")).at("/data/report/reportId").asText();
+        assertOk(reverse(other, rid), 201);
+        assertThat(taskStatus(other, "OP10")).isEqualTo("PAUSED");
+        MvcResult paused = dispatch(other, "OP10", "ST-CNC-02", "op-a");
+        assertOk(paused, 200);
+        assertThat(json(paused).at("/data/status").asText()).isEqualTo("PAUSED");
+        assertThat(json(paused).at("/data/stationCode").asText()).isEqualTo("ST-CNC-02");
+    }
+
     /** 未派工时显式开工 / 暂停 / 恢复返回 409 task-not-dispatched；改派也要求先派工。 */
     @Test void startPauseResumeRequireDispatch() throws Exception {
         String id = released(10);
