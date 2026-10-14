@@ -116,7 +116,39 @@ describe('工单列表', () => {
     expect(vm.status).toBe('CREATED')
     expect(vm.keyword).toBe('WO1')
     await router.replace('/workorders?page=abc&status=BOGUS')
+    await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({ page: '1', status: 'BOGUS' }))
     await vi.waitFor(() => expect(api.listWorkOrders).toHaveBeenLastCalledWith({ page: 0, size: 10, status: undefined, keyword: undefined }))
+  })
+  it('条件未变时点“查询”直接重新加载', async () => {
+    const { w, router } = await mountAs('/workorders?status=CREATED', WRITE)
+    await vi.waitFor(() => expect(w.findAll('.row').length).toBe(9))
+    const n = api.listWorkOrders.mock.calls.length
+    await w.find('.toolbar .touch').trigger('click')
+    await vi.waitFor(() => expect(api.listWorkOrders.mock.calls.length).toBe(n + 1))
+    expect(api.listWorkOrders).toHaveBeenLastCalledWith({ page: 0, size: 10, status: 'CREATED', keyword: undefined })
+    expect(router.currentRoute.value.query).toEqual({ status: 'CREATED' })
+  })
+  it('切换状态时使用输入框中当前的关键字', async () => {
+    const { w, router } = await mountAs('/workorders', WRITE)
+    await vi.waitFor(() => expect(w.findAll('.row').length).toBe(10))
+    const vm = w.findComponent({ name: 'WorkOrderView' }).vm as unknown as { status: string; keyword: string; applyStatus: () => Promise<void> }
+    // 输入了关键字但未回车，随后切换状态
+    vm.keyword = ' 齿轮 '
+    vm.status = 'CREATED'
+    await vm.applyStatus()
+    await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({ status: 'CREATED', keyword: '齿轮' }))
+    await vi.waitFor(() => expect(api.listWorkOrders).toHaveBeenLastCalledWith({ page: 0, size: 10, status: 'CREATED', keyword: '齿轮' }))
+  })
+  it('URL 页码非法时地址栏改写为 page=1 并保留其他条件', async () => {
+    const { w, router } = await mountAs('/workorders?page=abc&status=CREATED', WRITE)
+    await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({ page: '1', status: 'CREATED' }))
+    await vi.waitFor(() => expect(w.findAll('.row').length).toBe(9))
+    // 非法页码不会发出请求，只有改写后的那一次
+    expect(api.listWorkOrders.mock.calls.every((c) => c[0]?.page === 0)).toBe(true)
+    await router.replace('/workorders?page=0')
+    await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({ page: '1' }))
+    await router.replace('/workorders?page=-3')
+    await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({ page: '1' }))
   })
   it('快速翻页时只采用最后一次请求的结果', async () => {
     let releaseFirst: (v: unknown) => void = () => {}
