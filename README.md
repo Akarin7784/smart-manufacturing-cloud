@@ -2,7 +2,7 @@
 
 [![Build and test](https://github.com/Akarin7784/smart-manufacturing-cloud/actions/workflows/build.yml/badge.svg)](https://github.com/Akarin7784/smart-manufacturing-cloud/actions/workflows/build.yml)
 
-项目长期开发约定见 [AGENTS.md](AGENTS.md)：后续新增或修改的代码必须添加并维护中文注释。
+代码约定：新增或修改的代码须添加并维护中文注释。
 
 基于 Spring Cloud Alibaba 的 Maven 多模块项目，提供可运行的认证服务、网关、设备服务、工单服务及基础设施。核心功能已实现；这是业务开发起点，不是完整的 MES 产品。
 
@@ -251,15 +251,3 @@ powershell -ExecutionPolicy Bypass -File .\scripts\security-smoke-test.ps1
   `reason=WORK_ORDER_CANCELLED`、`Idempotency-Key: cancel-{工单号}-{预留单号}` 释放；库存不可用时退避重试，恢复后自动完成。重复取消返回 409 `workorder-cancelled`。
 - 事件：生命周期事件与业务变更同事务写入 `outbox_event`，由中继投递到 RocketMQ；订阅库存预留事件（`CG_WORKORDER_RESERVATION`），按 `eventId` 去重、按 `aggregateVersion` 丢弃过时事件。
 - 表结构：`db/migration/V2__workorder_release.sql`、`V3__operation_reporting.sql`、`V4__inventory_client_and_cancel.sql`（V1 由运维维护）。
-
-## 开发组
-
-本项目由 Eva 带领的一组 AI Agent 协作开发，每项工作都开分支、提 PR，评审通过后合入。
-
-| 图标 | 名字 | 职责 |
-|---|---|---|
-| 🐟 | 蓝色大肥鱼 | 架构设计与技术拍板 |
-| ⚙️ | 工单阿匠 | 主数据、生产工单、报工，以及工单侧的物料预留 |
-| 📦 | 质检阿库 | 库存（预留、出入库、QC-HOLD）与质检（缺陷处置、回写库存） |
-| 🔍 | 把关阿审 | 代码评审、合入、集成测试与端到端测试 |
-| 🚀 | 流水线阿运 | 部署、CI、监控告警与网关 |
