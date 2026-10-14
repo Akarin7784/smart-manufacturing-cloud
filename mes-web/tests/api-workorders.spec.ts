@@ -21,9 +21,16 @@ const key = () => AxiosHeaders.from(last().headers).get('Idempotency-Key')
 
 describe('工单 API', () => {
   it('查询类接口', async () => {
-    reply = () => [{ id: 'WO1' }]
-    expect(await wo.listWorkOrders()).toEqual([{ id: 'WO1' }])
+    const pageBody = { items: [{ id: 'WO1' }], page: 0, size: 20, total: 1 }
+    reply = () => pageBody
+    expect(await wo.listWorkOrders()).toEqual(pageBody)
     expect(last().url).toBe('/workorders')
+    expect(last().params).toEqual({})
+    // 空状态 / 空白关键字不传；size 超过 100 截断到 100（后端会对 >100 返回 400）
+    await wo.listWorkOrders({ page: 2, size: 500, status: '', keyword: '  ' })
+    expect(last().params).toEqual({ page: 2, size: 100 })
+    await wo.listWorkOrders({ page: 0, size: 10, status: 'RELEASED', keyword: ' 轴 ' })
+    expect(http.getUri(last())).toContain('page=0&size=10&status=RELEASED&keyword=%E8%BD%B4')
     reply = () => ({ orderId: 'WO 1' })
     await wo.getRelease('WO 1')
     expect(last().url).toBe('/workorders/WO%201/release')
@@ -34,6 +41,10 @@ describe('工单 API', () => {
   })
   it('写接口带幂等键与正确请求体', async () => {
     reply = () => ({})
+    await wo.closeWorkOrder('A', '质检完毕', 'kc')
+    expect(last().url).toBe('/workorders/A/close'); expect(JSON.parse(last().data)).toEqual({ note: '质检完毕' }); expect(key()).toBe('kc')
+    await wo.withdrawRelease('A B', undefined, 'kw')
+    expect(last().url).toBe('/workorders/A%20B/withdraw-release'); expect(JSON.parse(last().data)).toEqual({ note: null }); expect(key()).toBe('kw')
     await wo.reportOperation('A', '10', { goodQty: '1', defectQty: '0', scrapQty: '0', laborHours: '0.50', uom: 'PCS', lotNo: null, note: null }, 'k1')
     expect(last().url).toBe('/workorders/A/operations/10/reports')
     expect(JSON.parse(last().data).laborHours).toBe('0.50')
@@ -85,19 +96,15 @@ describe('派工 HTTP 实现（契约对齐）', () => {
     await api.listOperators()
     expect(last().params).toEqual({})
   })
-  it('任务列表：派工信息取自 progress，工序名称与工作中心由 release 补齐', async () => {
-    reply = (c) => c.url?.endsWith('/release')
-      ? { operations: [{ opNo: '10', name: '车削', workCenterCode: 'WC1' }] }
-      : { operations: [{ operationNo: '10', taskStatus: 'RUNNING', stationCode: 'S1', operator: 'op1', version: 2, laborHours: '1.50' }, { operationNo: '20' }] }
+  it('任务列表：派工信息、工序名称与工作中心都取自 progress（#70），不再请求 release', async () => {
+    reply = () => ({ operations: [
+      { operationNo: '10', taskStatus: 'RUNNING', stationCode: 'S1', operator: 'op1', version: 2, laborHours: '1.50', operationName: '车削', workCenterCode: 'WC1' },
+      { operationNo: '20', operationName: null, workCenterCode: null }
+    ] })
+    const n = calls.length
     const ts = await api.listTasks('A')
+    expect(calls.slice(n).map((c) => c.url)).toEqual(['/workorders/A/progress'])
     expect(ts[0]).toMatchObject({ status: 'RUNNING', stationCode: 'S1', version: 2, name: '车削', workCenterCode: 'WC1' })
     expect(ts[1]).toMatchObject({ status: 'PENDING', stationCode: null, version: 0, name: '', workCenterCode: '' })
-  })
-  it('release 不可用（未下达 404）时任务列表降级', async () => {
-    http.defaults.adapter = async (config) => {
-      if (config.url?.endsWith('/release')) throw Object.assign(new Error('404'), { config })
-      return { status: 200, statusText: '', headers: {}, config, data: { data: { operations: [{ operationNo: '10' }] } } }
-    }
-    expect((await api.listTasks('A'))[0]).toMatchObject({ operationNo: '10', workCenterCode: '' })
   })
 })

@@ -3,7 +3,7 @@
  * 写操作经 Gateway 调用 workorder-service，必须带 Idempotency-Key；操作工下拉为 GET /api/auth/operators。
  */
 import { http } from './http'
-import { getProgress, getRelease } from './workorders'
+import { getProgress } from './workorders'
 
 /** 工序任务状态；是否已派工看 stationCode 是否为空（契约 OperationTaskStatus）。 */
 export type OperationTaskStatus = 'PENDING' | 'READY' | 'RUNNING' | 'PAUSED' | 'DONE' | 'CANCELLED'
@@ -116,13 +116,11 @@ export function createHttpDispatchApi(): DispatchApi {
     (await http.post<Envelope<OperationTask>>(opPath(wo, op, action), body, { headers: { 'Idempotency-Key': key } })).data.data
   return {
     async listTasks(wo) {
-      // /progress 带派工信息但不含工序名称与工作中心（PR #68 的 OperationProgressView），
-      // 这两项从下达快照 /release 补齐；快照不可用时降级为空，工位下拉不过滤
-      const [p, rel] = await Promise.all([getProgress(wo), getRelease(wo).catch(() => null)])
-      const ops = new Map((rel?.operations ?? []).map((o) => [o.opNo, o]))
+      // #70 起 /progress 直接带工序名称与工作中心，不再额外请求 /release
+      const p = await getProgress(wo)
       return p.operations.map((o) => ({
         workOrderNo: wo, operationNo: o.operationNo,
-        name: ops.get(o.operationNo)?.name ?? '', workCenterCode: ops.get(o.operationNo)?.workCenterCode ?? '',
+        name: o.operationName ?? '', workCenterCode: o.workCenterCode ?? '',
         status: (o.taskStatus ?? 'PENDING') as OperationTaskStatus, stationCode: o.stationCode ?? null, operator: o.operator ?? null,
         plannedStart: o.plannedStart ?? null, plannedEnd: o.plannedEnd ?? null, dispatchedAt: null, dispatchedBy: null, version: o.version ?? 0
       }))

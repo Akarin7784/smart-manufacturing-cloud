@@ -11,7 +11,8 @@ vi.mock('@/api/workorders', async (orig) => {
   return {
     ...m,
     listWorkOrders: vi.fn(), getRelease: vi.fn(), getProgress: vi.fn(), getReports: vi.fn(), reportOperation: vi.fn(),
-    releaseWorkOrder: vi.fn(), holdWorkOrder: vi.fn(), resumeWorkOrder: vi.fn(), completeWorkOrder: vi.fn(), createWorkOrder: vi.fn()
+    releaseWorkOrder: vi.fn(), holdWorkOrder: vi.fn(), resumeWorkOrder: vi.fn(), completeWorkOrder: vi.fn(), createWorkOrder: vi.fn(),
+    closeWorkOrder: vi.fn(), withdrawRelease: vi.fn()
   }
 })
 vi.mock('@/api/masterdata', () => ({ listStations: vi.fn() }))
@@ -43,6 +44,13 @@ const progress = (status = 'IN_PROGRESS', uom: string | null = null) => ({
 })
 const orders = Array.from({ length: 12 }, (_, i) => ({ id: `WO${i + 1}`, deviceId: `D${i}`, product: i % 2 ? '齿轮' : '轴', quantity: 10, status: i < 3 ? 'IN_PROGRESS' : 'CREATED' }))
 
+/** 模拟 #70 服务端分页过滤：page 从 0 开始，keyword 匹配工单号与产品。 */
+async function serverList(q: { page?: number; size?: number; status?: string; keyword?: string } = {}) {
+  const page = q.page ?? 0, size = q.size ?? 20
+  const hit = orders.filter((o) => (!q.status || o.status === q.status) && (!q.keyword || o.id.includes(q.keyword) || o.product.includes(q.keyword)))
+  return { items: hit.slice(page * size, page * size + size), page, size, total: hit.length }
+}
+
 let fake: FakeBackend
 /** 安装新的后端替身，并让 getProgress 返回带替身派工信息的进度（每条用例独立状态）。 */
 function useFake(...args: Parameters<typeof installFakeDispatchBackend>) {
@@ -60,7 +68,7 @@ beforeEach(() => {
   Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true, writable: true })
   // 派工相关请求由 HTTP 层替身应答；进度接口（工单详情与任务面板共用）合并替身中的派工信息
   useFake()
-  api.listWorkOrders.mockResolvedValue(orders)
+  api.listWorkOrders.mockImplementation(serverList)
   api.getProgress.mockResolvedValue(progress())
   api.getRelease.mockResolvedValue({ orderId: 'WO1', status: 'IN_PROGRESS', version: 1, productCode: 'P', bomVersion: 'B1', routingVersion: 'R1', releasedAt: null, resumeTarget: null, holdReasons: [], bomLineCount: 1, operations: [], reservation: { reservationId: 'r', status: 'ACTIVE', expiresAt: null, lines: [] } })
   api.getReports.mockResolvedValue([])
@@ -68,19 +76,61 @@ beforeEach(() => {
 afterEach(() => { document.body.innerHTML = '' })
 
 describe('工单列表', () => {
-  it('分页、按状态与关键字筛选、点击进入详情', async () => {
+  it('服务端分页与过滤：参数传给后端、同步到 URL、点击进入详情', async () => {
     const { w, router } = await mountAs('/workorders', WRITE)
     await vi.waitFor(() => expect(w.findAll('.row').length).toBe(10))
-    const vm = w.findComponent({ name: 'WorkOrderView' }).vm as unknown as { status: string; keyword: string; page: number; filtered: unknown[]; open: (r: unknown) => void }
-    vm.page = 2
+    expect(api.listWorkOrders).toHaveBeenLastCalledWith({ page: 0, size: 10, status: undefined, keyword: undefined })
+    expect(w.find('.pager').text()).toContain('12')
+    type Vm = { status: string; keyword: string; page: number; total: number; goPage: (p: number) => Promise<void>; applyKeyword: () => Promise<void>; applyStatus: () => Promise<void> }
+    const vm = w.findComponent({ name: 'WorkOrderView' }).vm as unknown as Vm
+    await vm.goPage(2)
     await vi.waitFor(() => expect(w.findAll('.row').length).toBe(2))
+    expect(router.currentRoute.value.query).toEqual({ page: '2' })
+    expect(api.listWorkOrders).toHaveBeenLastCalledWith({ page: 1, size: 10, status: undefined, keyword: undefined })
+    // 改状态回到第 1 页
     vm.status = 'IN_PROGRESS'
-    await vi.waitFor(() => expect(vm.filtered.length).toBe(3))
+    await vm.applyStatus()
+    await vi.waitFor(() => expect(vm.total).toBe(3))
+    expect(router.currentRoute.value.query).toEqual({ status: 'IN_PROGRESS' })
     expect(vm.page).toBe(1)
-    vm.keyword = '齿轮'
-    await vi.waitFor(() => expect(vm.filtered.length).toBe(1))
+    // 关键字在提交时才生效，前后空白去掉
+    vm.keyword = ' 齿轮 '
+    await flushPromises()
+    expect(api.listWorkOrders).not.toHaveBeenLastCalledWith(expect.objectContaining({ keyword: '齿轮' }))
+    await vm.applyKeyword()
+    await vi.waitFor(() => expect(vm.total).toBe(1))
+    expect(router.currentRoute.value.query).toEqual({ status: 'IN_PROGRESS', keyword: '齿轮' })
+    expect(api.listWorkOrders).toHaveBeenLastCalledWith({ page: 0, size: 10, status: 'IN_PROGRESS', keyword: '齿轮' })
+    const before = api.listWorkOrders.mock.calls.length
     await w.find('.row').trigger('click')
     await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('workorder-detail'))
+    // 离开列表页不再请求列表
+    expect(api.listWorkOrders.mock.calls.length).toBe(before)
+  })
+  it('从 URL 还原筛选条件；非法页码与未知状态被忽略；越界页跳到最后一页', async () => {
+    const { w, router } = await mountAs('/workorders?page=2&status=CREATED&keyword=WO1', WRITE)
+    // CREATED 且含 WO1：WO10/WO11/WO12 → 共 3 条，只有 1 页，第 2 页越界跳回第 1 页
+    await vi.waitFor(() => expect(router.currentRoute.value.query).toEqual({ status: 'CREATED', keyword: 'WO1' }))
+    await vi.waitFor(() => expect(w.findAll('.row').length).toBe(3))
+    const vm = w.findComponent({ name: 'WorkOrderView' }).vm as unknown as { status: string; keyword: string }
+    expect(vm.status).toBe('CREATED')
+    expect(vm.keyword).toBe('WO1')
+    await router.replace('/workorders?page=abc&status=BOGUS')
+    await vi.waitFor(() => expect(api.listWorkOrders).toHaveBeenLastCalledWith({ page: 0, size: 10, status: undefined, keyword: undefined }))
+  })
+  it('快速翻页时只采用最后一次请求的结果', async () => {
+    let releaseFirst: (v: unknown) => void = () => {}
+    const { w, router } = await mountAs('/workorders', WRITE)
+    await vi.waitFor(() => expect(w.findAll('.row').length).toBe(10))
+    api.listWorkOrders.mockImplementationOnce(() => new Promise((r) => { releaseFirst = r }) as never)
+    router.replace('/workorders?page=2')
+    await vi.waitFor(() => expect(api.listWorkOrders).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1 })))
+    await router.replace('/workorders?status=IN_PROGRESS')
+    await vi.waitFor(() => expect(w.findAll('.row').length).toBe(3))
+    releaseFirst({ items: orders, page: 1, size: 10, total: 99 })
+    await flushPromises()
+    expect(w.findAll('.row').length).toBe(3)
+    expect(w.find('.pager').text()).not.toContain('99')
   })
   it('403 显示无权限页面而不跳登录；其他错误显示提示', async () => {
     api.listWorkOrders.mockRejectedValueOnce(problem(403, 'access-denied'))
@@ -89,7 +139,7 @@ describe('工单列表', () => {
     expect(router.currentRoute.value.name).toBe('workorders')
     expect(w.find('.btn-create').exists()).toBe(false)
     api.listWorkOrders.mockRejectedValueOnce(new Error('网络异常'))
-    await w.find('.toolbar .touch').trigger('click')
+    await router.replace('/workorders?page=2')
     await vi.waitFor(() => expect(w.text()).toContain('网络异常'))
   })
   it('新建工单：校验、幂等重试复用键、成功跳详情', async () => {
@@ -200,6 +250,82 @@ describe('工单详情', () => {
     const [k1, k2] = api.releaseWorkOrder.mock.calls.map((c) => c[1])
     expect(k1).not.toBe(k2)
   })
+  it('409 后刷新失败：仍显示原冲突原因', async () => {
+    const { w } = await mountAs('/workorders/WO1', WRITE)
+    await vi.waitFor(() => expect(w.find('.act-complete').exists()).toBe(true))
+    api.completeWorkOrder.mockRejectedValueOnce(problem(409, 'workorder-state-conflict', '状态已变化'))
+    api.getProgress.mockRejectedValueOnce(new Error('刷新失败'))
+    api.getRelease.mockRejectedValueOnce(new Error('刷新失败'))
+    prompt.mockResolvedValueOnce({ value: '短缺', action: 'confirm' } as never)
+    await click(w, '.act-complete')
+    await vi.waitFor(() => expect(w.find('.act-err').text()).toContain('工单当前状态不允许此操作（状态已变化）'))
+  })
+
+  it('撤回下达：仅 RELEASED 显示；带说明与幂等键；409 中文提示并换键；成功换键', async () => {
+    api.getProgress.mockResolvedValue(progress('RELEASED'))
+    const { w } = await mountAs('/workorders/WO1', WRITE)
+    await vi.waitFor(() => expect(w.find('.act-withdraw').exists()).toBe(true))
+    expect(w.find('.act-close').exists()).toBe(false)
+    const keys = () => api.withdrawRelease.mock.calls.map((c) => c[2])
+    // 取消确认不发请求
+    prompt.mockRejectedValueOnce('cancel')
+    await click(w, '.act-withdraw')
+    await flushPromises()
+    expect(api.withdrawRelease).not.toHaveBeenCalled()
+    api.withdrawRelease.mockRejectedValueOnce(problem(409, 'workorder-state-conflict', '已有报工'))
+    prompt.mockResolvedValueOnce({ value: ' 计划变更 ', action: 'confirm' } as never)
+    await click(w, '.act-withdraw')
+    await vi.waitFor(() => expect(w.find('.act-err').text()).toContain('工单当前状态不允许此操作（已有报工）'))
+    expect(api.withdrawRelease.mock.calls[0].slice(0, 2)).toEqual(['WO1', '计划变更'])
+    api.withdrawRelease.mockResolvedValueOnce({} as never)
+    prompt.mockResolvedValueOnce({ value: '', action: 'confirm' } as never)
+    await click(w, '.act-withdraw')
+    await vi.waitFor(() => expect(keys()).toHaveLength(2))
+    expect(api.withdrawRelease.mock.calls[1][1]).toBeUndefined()
+    expect(keys()[1]).not.toBe(keys()[0])
+    api.withdrawRelease.mockResolvedValueOnce({} as never)
+    prompt.mockResolvedValueOnce({ value: '', action: 'confirm' } as never)
+    await click(w, '.act-withdraw')
+    await vi.waitFor(() => expect(keys()).toHaveLength(3))
+    expect(keys()[2]).not.toBe(keys()[1])
+  })
+
+  it('关闭工单：仅 COMPLETED 且有 quality:read 时显示；503 明确提示并保留键；open-ncr-exists / workorder-closed 中文提示', async () => {
+    api.getProgress.mockResolvedValue(progress('COMPLETED'))
+    const noQ = await mountAs('/workorders/WO1', WRITE)
+    await vi.waitFor(() => expect(noQ.w.text()).toContain('已完工'))
+    expect(noQ.w.find('.act-close').exists()).toBe(false)
+    noQ.w.unmount()
+    const { w } = await mountAs('/workorders/WO1', [...WRITE, 'quality:read'])
+    await vi.waitFor(() => expect(w.find('.act-close').exists()).toBe(true))
+    expect(w.find('.act-withdraw').exists()).toBe(false)
+    const keys = () => api.closeWorkOrder.mock.calls.map((c) => c[2])
+    const close = async () => { prompt.mockResolvedValueOnce({ value: '质检完毕', action: 'confirm' } as never); await click(w, '.act-close') }
+    api.closeWorkOrder.mockRejectedValueOnce(problem(503, 'quality-service-unavailable', '质量服务不可用'))
+    await close()
+    await vi.waitFor(() => expect(w.find('.act-err').text()).toContain('质量服务暂不可用，无法确认不合格品是否结案，暂不能关闭工单'))
+    api.closeWorkOrder.mockRejectedValueOnce(problem(409, 'open-ncr-exists', '存在 2 条未结案 NCR'))
+    await close()
+    await vi.waitFor(() => expect(w.find('.act-err').text()).toContain('仍有未结案的不合格品'))
+    // 503 保留原键；409 后作废
+    expect(keys()[1]).toBe(keys()[0])
+    api.closeWorkOrder.mockRejectedValueOnce(problem(409, 'workorder-closed', '已关闭'))
+    await close()
+    await vi.waitFor(() => expect(w.find('.act-err').text()).toContain('工单已关闭'))
+    expect(keys()[2]).not.toBe(keys()[1])
+    api.closeWorkOrder.mockRejectedValueOnce(problem(409, 'workorder-cancelled', '已取消'))
+    await close()
+    await vi.waitFor(() => expect(w.find('.act-err').text()).toContain('工单已取消'))
+    api.closeWorkOrder.mockResolvedValueOnce({} as never)
+    await close()
+    await vi.waitFor(() => expect(keys()).toHaveLength(5))
+    expect(api.closeWorkOrder.mock.calls[4].slice(0, 2)).toEqual(['WO1', '质检完毕'])
+    prompt.mockRejectedValueOnce('cancel')
+    await click(w, '.act-close')
+    await flushPromises()
+    expect(api.closeWorkOrder).toHaveBeenCalledTimes(5)
+  })
+
   it('CREATED 可下达；ON_HOLD 显示解除原因；只读用户无按钮', async () => {
     api.getProgress.mockResolvedValue(progress('CREATED'))
     const a = await mountAs('/workorders/WO1', WRITE)
@@ -399,6 +525,23 @@ describe('派工面板（真实 HTTP 实现 + 后端替身）', () => {
     expect(new Set(keys).size).toBe(1)
   })
 
+  it('409 后刷新任务也失败：仍显示原冲突原因，且换新键', async () => {
+    const f = useFake()
+    f.tasks[0].stationCode = 'S1'
+    const { w } = await mountAs('/workorders/WO1', ['workorder:read', 'execution:report'])
+    await vi.waitFor(() => expect(w.find('.t-start').exists()).toBe(true))
+    f.failNext('start', 409, 'task-state-conflict')
+    // 冲突后的那次刷新失败
+    api.getProgress.mockRejectedValueOnce(new HttpError({ status: 0, message: '网络异常' }))
+    await click(w, '.t-start')
+    await vi.waitFor(() => expect(w.find('.task-err').text()).toContain('派工任务当前状态不允许此操作'))
+    expect(w.find('.task-err').text()).not.toContain('网络异常')
+    await click(w, '.t-start')
+    await vi.waitFor(() => expect(postsTo(f, 'start')).toHaveLength(2))
+    const [a, b] = postsTo(f, 'start').map(keyOf)
+    expect(a).not.toBe(b)
+  })
+
   it('任务加载失败时显示错误', async () => {
     useFake()
     api.getProgress.mockRejectedValue(problem(500, 'internal-error', '服务异常'))
@@ -508,7 +651,9 @@ describe('报工页', () => {
 
   it('无预选工单时只列出可报工的工单', async () => {
     const { w } = await mountAs('/reports', WRITE)
-    await vi.waitFor(() => expect(api.listWorkOrders).toHaveBeenCalled())
+    await vi.waitFor(() => expect(api.listWorkOrders).toHaveBeenCalledTimes(2))
+    // 服务端按状态过滤可报工的工单，每页取上限 100
+    expect(api.listWorkOrders.mock.calls.map((c) => c[0])).toEqual([{ status: 'IN_PROGRESS', size: 100 }, { status: 'RELEASED', size: 100 }])
     const vm = w.findComponent({ name: 'ReportView' }).vm as unknown as { woId: string; onWorkOrderChange: () => Promise<void> }
     vm.woId = 'WO2'
     await vm.onWorkOrderChange()

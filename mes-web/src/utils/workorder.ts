@@ -39,7 +39,10 @@ export function allowedActions(s: string) {
     release: s === 'CREATED',
     hold: s === 'RELEASED' || s === 'IN_PROGRESS',
     resume: s === 'ON_HOLD',
-    complete: s === 'IN_PROGRESS'
+    complete: s === 'IN_PROGRESS',
+    // #70：撤回下达仅 RELEASED（无报工、无开工任务由后端校验）；关闭仅 COMPLETED
+    withdraw: s === 'RELEASED',
+    close: s === 'COMPLETED'
   }
 }
 
@@ -81,7 +84,10 @@ const PROBLEM_HINTS: Record<string, string> = {
   'masterdata-in-use': '该主数据正在被引用，不能删除或停用',
   'task-not-dispatched': '工序尚未派工，请先派工再开工',
   'station-not-found': '工位不存在、已删除或不属于该工序的工作中心',
-  'concurrent-modification': '数据已被他人修改，请刷新后重试'
+  'concurrent-modification': '数据已被他人修改，请刷新后重试',
+  'workorder-cancelled': '工单已取消，不能再操作',
+  'open-ncr-exists': '该工单仍有未结案的不合格品（NCR），请先在质量模块处理后再关闭',
+  'quality-service-unavailable': '质量服务暂不可用，无法确认不合格品是否结案，暂不能关闭工单，请稍后重试'
 }
 
 /** 根据 problem type 的最后一段匹配中文说明。 */

@@ -173,7 +173,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { getProgress, listWorkOrders, newIdempotencyKey, reportOperation, type WorkOrder, type WorkOrderProgressView } from '@/api/workorders'
+import { getProgress, listWorkOrders, MAX_PAGE_SIZE, newIdempotencyKey, reportOperation, type WorkOrder, type WorkOrderProgressView } from '@/api/workorders'
 import { canReport, fmtQty, isValidHours, isValidQty, normalizeLotNo, statusLabel } from '@/utils/workorder'
 import { useProblem } from '@/composables/useProblem'
 import { useAuthStore } from '@/stores/auth'
@@ -273,7 +273,9 @@ async function submit() {
 
 onMounted(async () => {
   try {
-    workOrders.value = (await listWorkOrders()).filter((w) => canReport(w.status))
+    // 服务端按状态过滤：可报工的只有 RELEASED / IN_PROGRESS，各取一页（最多 MAX_PAGE_SIZE 条）
+    const pages = await Promise.all(['IN_PROGRESS', 'RELEASED'].map((status) => listWorkOrders({ status, size: MAX_PAGE_SIZE })))
+    workOrders.value = pages.flatMap((p) => p.items).filter((w) => canReport(w.status))
   } catch (e) {
     capture(e)
   }

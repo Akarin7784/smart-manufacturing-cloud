@@ -1,7 +1,8 @@
 <!--
   工单详情：GET /release（下达快照：工序任务=派工任务、预留、冻结原因）、/progress（报工进度）、/reports（报工流水）。
   未下达的工单可能没有快照，此时只展示进度区的错误提示，不影响其他区块。
-  下达 / 冻结 / 恢复 / 完工按钮仅在拥有 workorder:write 且状态允许时显示，最终以后端校验为准。
+  下达 / 冻结 / 恢复 / 完工 / 撤回下达按钮仅在拥有 workorder:write 且状态允许时显示；关闭另需 quality:read（#70 关闭前查询质量服务）。
+  最终以后端校验为准。
 -->
 <template>
   <el-result
@@ -70,6 +71,24 @@
           @click="doComplete"
         >
           完工
+        </el-button>
+        <el-button
+          v-if="actions.withdraw"
+          class="touch act-withdraw"
+          type="warning"
+          :loading="busy"
+          @click="doWithdraw"
+        >
+          撤回下达
+        </el-button>
+        <el-button
+          v-if="actions.close && canClose"
+          class="touch act-close"
+          type="info"
+          :loading="busy"
+          @click="doClose"
+        >
+          关闭工单
         </el-button>
       </template>
       <el-button
@@ -238,13 +257,13 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import {
-  completeWorkOrder, getProgress, getRelease, getReports, holdWorkOrder, newIdempotencyKey, releaseWorkOrder, resumeWorkOrder,
+  closeWorkOrder, completeWorkOrder, getProgress, getRelease, getReports, holdWorkOrder, newIdempotencyKey, releaseWorkOrder, resumeWorkOrder, withdrawRelease,
   type HoldReason, type OperationReportView, type WorkOrderProgressView, type WorkOrderReleaseView
 } from '@/api/workorders'
 import { allowedActions, canReport, fmtQty, HOLD_REASON_LABELS, percent, statusLabel, statusTag } from '@/utils/workorder'
 import { useProblem } from '@/composables/useProblem'
 import { useAuthStore } from '@/stores/auth'
-import { canReportWith, PERM_WORKORDER_WRITE } from '@/utils/permissions'
+import { canCloseWith, canReportWith, PERM_WORKORDER_WRITE } from '@/utils/permissions'
 import OperationTaskPanel from '@/components/OperationTaskPanel.vue'
 import { isBusinessRejection } from '@/api/http'
 
@@ -267,9 +286,12 @@ const forbidden = computed(() => prog.forbidden.value || rel.forbidden.value)
 // 同一次完工操作重试时复用幂等键，成功后才更换
 let completeKey = newIdempotencyKey()
 let releaseKey = newIdempotencyKey()
+let withdrawKey = newIdempotencyKey()
+let closeKey = newIdempotencyKey()
 
 const canWrite = computed(() => auth.can(PERM_WORKORDER_WRITE))
 const canExec = computed(() => canReportWith(auth.can))
+const canClose = computed(() => canCloseWith(auth.can))
 // 被冲销的原报工 id 集合：冲销记录通过 reversedReportId 指向原记录
 const reversedIds = computed(() => new Set(reports.value.map((r) => r.reversedReportId).filter((x): x is string => !!x)))
 /** 冲销记录与已被冲销的原记录分别加样式，避免车间误读数量。 */
@@ -309,7 +331,8 @@ async function run(fn: () => Promise<unknown>, renewKey?: () => void) {
   } catch (e) {
     if (isBusinessRejection(e)) {
       renewKey?.()
-      await load()
+      // 刷新失败不影响展示原冲突原因
+      await load().catch(() => {})
     }
     act.capture(e)
   } finally {
@@ -340,8 +363,26 @@ async function doComplete() {
   return run(() => completeWorkOrder(id.value, reason, completeKey), () => { completeKey = newIdempotencyKey() })
 }
 
+/** 撤回下达：二次确认并可填写说明；幂等键规则同其他动作（成功 / 409 / 422 换新键，网络错误与 503 复用）。 */
+async function doWithdraw() {
+  const note = await ElMessageBox.prompt('撤回后工单回到“已创建”，工序任务与派工将被清除，库存预留由后台释放。撤回说明（可选）', '撤回下达', {
+    confirmButtonText: '撤回', cancelButtonText: '取消'
+  }).then((r) => r.value ?? '', () => null)
+  if (note === null) return
+  return run(() => withdrawRelease(id.value, note.trim() || undefined, withdrawKey), () => { withdrawKey = newIdempotencyKey() })
+}
+
+/** 关闭工单：质量服务不可用（503）时后端拒绝，提示文案见 problemHint('quality-service-unavailable')；503 时保留幂等键便于重试。 */
+async function doClose() {
+  const note = await ElMessageBox.prompt('关闭后工单不能再报工或变更。关闭说明（可选）', '关闭工单', {
+    confirmButtonText: '关闭', cancelButtonText: '取消'
+  }).then((r) => r.value ?? '', () => null)
+  if (note === null) return
+  return run(() => closeWorkOrder(id.value, note.trim() || undefined, closeKey), () => { closeKey = newIdempotencyKey() })
+}
+
 onMounted(load)
-defineExpose({ doRelease, doHold, doResume, doComplete, load })
+defineExpose({ doRelease, doHold, doResume, doComplete, doWithdraw, doClose, load })
 </script>
 
 <style scoped>
