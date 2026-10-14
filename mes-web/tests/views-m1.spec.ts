@@ -322,13 +322,15 @@ describe('工单详情', () => {
     expect(keys()[2]).not.toBe(keys()[1])
   })
 
-  it('关闭工单：仅 COMPLETED 且有 quality:read 时显示；503 明确提示并保留键；open-ncr-exists / workorder-closed 中文提示', async () => {
+  it('关闭工单：仅 COMPLETED 且有 workorder:write 时显示（无需 quality:read）；503 明确提示并保留键；open-ncr-exists / workorder-closed 中文提示', async () => {
     api.getProgress.mockResolvedValue(progress('COMPLETED'))
-    const noQ = await mountAs('/workorders/WO1', WRITE)
-    await vi.waitFor(() => expect(noQ.w.text()).toContain('已完工'))
-    expect(noQ.w.find('.act-close').exists()).toBe(false)
-    noQ.w.unmount()
-    const { w } = await mountAs('/workorders/WO1', [...WRITE, 'quality:read'])
+    // 只读账号看不到关闭
+    const ro = await mountAs('/workorders/WO1', READ)
+    await vi.waitFor(() => expect(ro.w.text()).toContain('已完工'))
+    expect(ro.w.find('.act-close').exists()).toBe(false)
+    ro.w.unmount()
+    // 仅 workorder:write、没有 quality:read 的账号可见且可用
+    const { w } = await mountAs('/workorders/WO1', WRITE)
     await vi.waitFor(() => expect(w.find('.act-close').exists()).toBe(true))
     expect(w.find('.act-withdraw').exists()).toBe(false)
     const keys = () => api.closeWorkOrder.mock.calls.map((c) => c[2])
