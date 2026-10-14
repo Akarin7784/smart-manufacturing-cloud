@@ -51,6 +51,7 @@ class MasterdataSoftDeleteMySqlIT {
     /** 引用明细格式为 产品/版本；作废后不再计入，软删除生效；BOM 引用阻止物料停用。 */
     @Test void referencesAndRetireOnMySql() {
         when(workOrders.references(any(), any())).thenReturn(ApiResponse.ok(new WorkOrderReferenceView(0, List.of())));
+        when(workOrders.versionReferences(any(), any(), any())).thenReturn(ApiResponse.ok(new WorkOrderReferenceView(0, List.of())));
         workCenters.create(new CreateWorkCenter("WC-MY1", "中心", "W1", false));
         workCenters.addStation("WC-MY1", new CreateStation("ST-MY1-01", "工位"));
         materials.create(new CreateMaterial("MY-FG", "成品", MaterialType.FG, "件", TraceMode.LOT, MaterialSource.MAKE));
