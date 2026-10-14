@@ -119,10 +119,10 @@ class OperationReportingMySqlIT {
             .isEqualByComparingTo(new BigDecimal(e.get("plannedQty").asText()));
     }
 
-    /** 工单状态事件按 aggregateVersion 排序（消费端的排序依据；occurredAt 仅用于展示）。 */
+    /** 工单状态事件（只取 WorkOrder*，同 Topic 的 Operation* 任务事件按 taskVersion 排序，不参与本断言）按 aggregateVersion 排序。 */
     private List<JsonNode> stateEvents(String id) throws Exception {
         List<JsonNode> out = new ArrayList<>();
-        for (var row : jdbc.queryForList("select event_type, payload from outbox_event where aggregate_id = ? and topic = 'mes-workorder-event'", id)) {
+        for (var row : jdbc.queryForList("select event_type, payload from outbox_event where aggregate_id = ? and topic = 'mes-workorder-event' and event_type like 'WorkOrder%'", id)) {
             var n = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree((String) row.get("payload"));
             n.put("_type", (String) row.get("event_type"));
             out.add(n);
