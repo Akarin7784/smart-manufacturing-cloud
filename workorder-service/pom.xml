@@ -2,6 +2,8 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 <modelVersion>4.0.0</modelVersion>
 <parent><groupId>com.smartmanufacturing</groupId><artifactId>manufacturing-cloud</artifactId><version>1.0.0-SNAPSHOT</version></parent>
+  <!-- 覆盖率门禁按现状锁定（基于 18c8c12 单测实测 行48.67%/分支35.96%，向下取两位），只许升不许降；补测试后请上调。 -->
+  <properties><jacoco.line.minimum>0.48</jacoco.line.minimum><jacoco.branch.minimum>0.35</jacoco.branch.minimum></properties>
 <artifactId>workorder-service</artifactId><dependencies><dependency><groupId>com.smartmanufacturing</groupId><artifactId>cloud-api</artifactId></dependency>
 <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
 <dependency><groupId>com.alibaba.cloud</groupId><artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId></dependency>

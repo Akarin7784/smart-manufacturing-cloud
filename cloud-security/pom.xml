@@ -2,6 +2,8 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 <modelVersion>4.0.0</modelVersion>
 <parent><groupId>com.smartmanufacturing</groupId><artifactId>manufacturing-cloud</artifactId><version>1.0.0-SNAPSHOT</version></parent>
+  <!-- 覆盖率门禁按现状锁定（基于 18c8c12 单测实测 行81.25%/分支35.71%，向下取两位），只许升不许降；补测试后请上调。 -->
+  <properties><jacoco.line.minimum>0.81</jacoco.line.minimum><jacoco.branch.minimum>0.35</jacoco.branch.minimum></properties>
 <artifactId>cloud-security</artifactId>
 <dependencies>
 <dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-oauth2-resource-server</artifactId></dependency>
