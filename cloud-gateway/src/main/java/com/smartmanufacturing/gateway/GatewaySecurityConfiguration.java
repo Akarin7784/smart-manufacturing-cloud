@@ -67,12 +67,18 @@ public class GatewaySecurityConfiguration {
                 .pathMatchers(HttpMethod.POST, "/api/workorders/*/release", "/api/workorders/*/hold", "/api/workorders/*/resume").hasAuthority("workorder:write")
                 // 工序报工、冲销、手工完工与取消
                 .pathMatchers(HttpMethod.POST, "/api/workorders/*/complete", "/api/workorders/*/cancel").hasAuthority("workorder:write")
+                // PR2：关闭（令牌透传质量服务，还需 quality:read，由质量服务校验）与撤回下达
+                .pathMatchers(HttpMethod.POST, "/api/workorders/*/close", "/api/workorders/*/withdraw-release").hasAuthority("workorder:write")
                 // 主数据：发布单独授权，必须排在通用写规则之前；服务内 @PreAuthorize 再次校验同样的权限。
                 .pathMatchers(HttpMethod.GET, "/api/materials", "/api/materials/**", "/api/workcenters", "/api/workcenters/**",
                     "/api/boms", "/api/boms/**", "/api/routings", "/api/routings/**").hasAuthority("masterdata:read")
-                .pathMatchers(HttpMethod.POST, "/api/boms/*/*/release", "/api/routings/*/*/release").hasAuthority("masterdata:release")
+                .pathMatchers(HttpMethod.POST, "/api/boms/*/*/release", "/api/routings/*/*/release",
+                    "/api/boms/*/*/retire", "/api/routings/*/*/retire").hasAuthority("masterdata:release")
                 .pathMatchers(HttpMethod.POST, "/api/materials", "/api/workcenters", "/api/workcenters/*/stations", "/api/boms", "/api/routings").hasAuthority("masterdata:write")
-                .pathMatchers(HttpMethod.PUT, "/api/materials/*", "/api/boms/*/*", "/api/routings/*/*").hasAuthority("masterdata:write")
+                .pathMatchers(HttpMethod.PUT, "/api/materials/*", "/api/boms/*/*", "/api/routings/*/*",
+                    "/api/workcenters/*", "/api/workcenters/*/stations/*").hasAuthority("masterdata:write")
+                // PR2：软删除工作中心 / 工位、删除 BOM / 工艺路线草稿
+                .pathMatchers(HttpMethod.DELETE, "/api/workcenters/*", "/api/workcenters/*/stations/*", "/api/boms/*/*", "/api/routings/*/*").hasAuthority("masterdata:write")
                 // 库存：预留、QC-HOLD 等服务间内部接口已由 InternalPathDenyFilter 在认证前统一返回 404，不会到达这里。
                 .pathMatchers(HttpMethod.GET, "/api/inventory/**").hasAuthority("inventory:read")
                 .pathMatchers(HttpMethod.POST, "/api/inventory/locations", "/api/inventory/inbound", "/api/inventory/outbound").hasAuthority("inventory:write")

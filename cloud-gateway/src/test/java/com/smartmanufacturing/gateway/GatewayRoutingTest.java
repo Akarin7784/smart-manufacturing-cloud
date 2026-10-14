@@ -164,6 +164,36 @@ class GatewayRoutingTest {
         client().get().uri("/api/workorders/WO1/progress").headers(h -> h.setBearerAuth(reader)).exchange().expectStatus().isOk();
     }
 
+    /** PR2：关闭 / 撤回下达需要 workorder:write；分页列表只需 workorder:read。 */
+    @Test void closeAndWithdrawRequireWritePermission() {
+        String reader = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("workorder:read"));
+        String writer = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("workorder:read", "workorder:write"));
+        for (String uri : List.of("/api/workorders/WO1/close", "/api/workorders/WO1/withdraw-release")) {
+            client().post().uri(uri).headers(h -> h.setBearerAuth(reader)).exchange().expectStatus().isForbidden();
+            client().post().uri(uri).headers(h -> h.setBearerAuth(writer)).exchange().expectStatus().isOk();
+        }
+        client().get().uri("/api/workorders?page=0&size=20&status=RELEASED&keyword=GR").headers(h -> h.setBearerAuth(reader)).exchange().expectStatus().isOk();
+    }
+
+    /** PR2：工作中心 / 工位修改与删除、删除草稿需要 masterdata:write；作废需要 masterdata:release。 */
+    @Test void masterdataLifecyclePermissions() {
+        String reader = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("masterdata:read"));
+        String writer = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("masterdata:read", "masterdata:write"));
+        String releaser = token("http://localhost:8080", "manufacturing-api", Instant.now().plusSeconds(300), List.of("masterdata:release"));
+        for (String uri : List.of("/api/workcenters/WC-CNC", "/api/workcenters/WC-CNC/stations/ST-CNC-01")) {
+            client().put().uri(uri).headers(h -> h.setBearerAuth(reader)).exchange().expectStatus().isForbidden();
+            client().put().uri(uri).headers(h -> h.setBearerAuth(writer)).exchange().expectStatus().isOk();
+        }
+        for (String uri : List.of("/api/workcenters/WC-CNC", "/api/workcenters/WC-CNC/stations/ST-CNC-01", "/api/boms/FG-GR60-20/A09", "/api/routings/FG-GR60-20/R09")) {
+            client().delete().uri(uri).headers(h -> h.setBearerAuth(reader)).exchange().expectStatus().isForbidden();
+            client().delete().uri(uri).headers(h -> h.setBearerAuth(writer)).exchange().expectStatus().isOk();
+        }
+        for (String uri : List.of("/api/boms/FG-GR60-20/A01/retire", "/api/routings/FG-GR60-20/R01/retire")) {
+            client().post().uri(uri).headers(h -> h.setBearerAuth(writer)).exchange().expectStatus().isForbidden();
+            client().post().uri(uri).headers(h -> h.setBearerAuth(releaser)).exchange().expectStatus().isOk();
+        }
+    }
+
     /** 服务令牌端点无需 JWT 即可转发到认证服务（凭据由认证服务校验），但仅放行 POST，其他方法仍被拒绝。 */
     @Test void tokenEndpointIsPublicForPostOnly() {
         client().post().uri("/api/auth/oauth2/token").header("Content-Type", "application/x-www-form-urlencoded")

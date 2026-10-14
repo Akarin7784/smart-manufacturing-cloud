@@ -30,7 +30,9 @@ class WorkOrderJournal {
         "WorkOrderHeld", "workorder-held",
         "WorkOrderResumed", "workorder-resumed",
         "WorkOrderHoldReasonCleared", "workorder-hold-reason-cleared",
-        "WorkOrderCancelled", "workorder-cancelled");
+        "WorkOrderCancelled", "workorder-cancelled",
+        "WorkOrderClosed", "workorder-closed",
+        "WorkOrderReleaseWithdrawn", "workorder-release-withdrawn");
 
     /** 追加一条状态转换审计；requestId 取自当前请求的关联标识，便于与网关日志对照。 */
     void statusChanged(String orderId, String from, String to, String reason, String note, String operator) {

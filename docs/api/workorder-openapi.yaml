@@ -328,17 +328,159 @@ paths:
       operationId: listWorkOrders
       summary: 工单列表（已实现，补契约）
       description: |
-        返回已持久化的工单。需要 `workorder:read`。
+        分页查询工单，按工单号排序（PR2 起响应 data 由数组改为分页对象 items/page/size/total）。
+        `status` 精确过滤；`keyword` 对工单号与产品做包含匹配（`%`、`_` 按字面量处理）。参数非法 400 `validation-error`。需要 `workorder:read`。
+      parameters:
+        - {name: page, in: query, required: false, description: 页码，从 0 开始。, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: size, in: query, required: false, description: 每页条数。, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {name: status, in: query, required: false, description: 工单状态。, schema: {$ref: '#/components/schemas/WorkOrderStatus'}}
+        - {name: keyword, in: query, required: false, description: 关键字（工单号或产品包含匹配）。, schema: {type: string, maxLength: 128}}
       responses:
         '200':
-          description: 工单列表。
+          description: 工单分页。
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/WorkOrderListResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
         '401':
           $ref: '#/components/responses/Problem'
         '403':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/references:
+    get:
+      tags: [lifecycle]
+      operationId: getWorkOrderReferences
+      summary: 主数据引用检查（服务间调用，PR2）
+      description: |
+        主数据服务停用工作中心 / 工位前调用（直连，透传用户令牌，不经网关）：统计仍在执行中的工单（非 COMPLETED / CLOSED / CANCELLED）
+        中引用该工作中心或工位的数量。`workCenter` 与 `station` 必须且只能提供一个，否则 400。需要 `workorder:read` 或 `masterdata:write`。
+      parameters:
+        - {name: workCenter, in: query, required: false, description: 工作中心编码。, schema: {type: string}}
+        - {name: station, in: query, required: false, description: 工位编码。, schema: {type: string}}
+      responses:
+        '200':
+          description: 引用统计。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderReferenceResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/version-references:
+    get:
+      tags: [lifecycle]
+      operationId: getWorkOrderVersionReferences
+      summary: BOM / 工艺路线版本引用检查（服务间调用，PR2）
+      description: |
+        主数据服务删除 BOM / 工艺路线草稿前调用（直连，透传用户令牌）：统计曾引用该版本的工单，不区分工单状态——
+        当前下达快照（BOM 含展开快照中子件的来源版本）与已撤回下达的记录都计入。参数缺失或 `type` 非 BOM / ROUTING 时 400。
+        需要 `workorder:read` 或 `masterdata:write`。
+      parameters:
+        - {name: type, in: query, required: true, description: 版本类型。, schema: {type: string, enum: [BOM, ROUTING]}}
+        - {name: product, in: query, required: true, description: 产品（或子件）编码。, schema: {type: string}}
+        - {name: version, in: query, required: true, description: 版本号。, schema: {type: string}}
+      responses:
+        '200':
+          description: 引用统计。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderReferenceResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/{workOrderNo}/close:
+    post:
+      tags: [lifecycle]
+      operationId: closeWorkOrder
+      summary: 关闭工单（PR2）
+      description: |
+        COMPLETED → CLOSED，发布 WorkOrderClosed。关闭前（事务外）向质量服务查询该工单 OPEN / UNDER_REVIEW / DISPOSED 的 NCR：
+        存在则 409 `open-ncr-exists`（`data.openNcrCount`）；质量服务不可用（超时、5xx、网络错误）一律 503 `quality-service-unavailable`，不放行；
+        质量服务 403 返回 403 `access-denied`（调用者需同时具备 `quality:read`）。已关闭 409 `workorder-closed`，已取消 409 `workorder-cancelled`，
+        其他状态 409 `workorder-state-conflict`。同键重放直接返回首次结果。需要 `workorder:write`。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloseWorkOrderRequest'
+      responses:
+        '200':
+          description: '已关闭（重放时响应头 Idempotent-Replayed 为 true）。'
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderCloseResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
+          $ref: '#/components/responses/Problem'
+        '503':
+          $ref: '#/components/responses/Problem'
+  /api/workorders/{workOrderNo}/withdraw-release:
+    post:
+      tags: [lifecycle]
+      operationId: withdrawWorkOrderRelease
+      summary: 撤回下达（PR2）
+      description: |
+        RELEASED → CREATED，发布 WorkOrderReleaseWithdrawn。要求没有任何报工（含已冲销）且没有开工过的工序任务，否则 409 `workorder-state-conflict`。
+        删除下达快照（生命周期、冻结原因、BOM 快照、工序任务与进度），保留状态日志与任务日志；有效预留置 RELEASING 并登记释放任务
+        （`reason=CALLER_REQUEST`，库存 `Idempotency-Key: withdraw-{工单号}-{预留单号}`），由后台异步释放。
+        撤回后可用**新的** Idempotency-Key 重新下达；用被撤回的下达键再次下达返回 409 `workorder-state-conflict`。需要 `workorder:write`。
+      parameters:
+        - $ref: '#/components/parameters/WorkOrderNo'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WithdrawReleaseRequest'
+      responses:
+        '200':
+          description: '已撤回（重放时响应头 Idempotent-Replayed 为 true）。'
+          headers:
+            Idempotent-Replayed:
+              $ref: '#/components/headers/IdempotentReplayed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderWithdrawResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
+        '404':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        '422':
           $ref: '#/components/responses/Problem'
   /api/workorders/{workOrderNo}/release:
     post:
@@ -933,6 +1075,12 @@ components:
         version:
           type: integer
           description: 任务版本（改派时作为 expectedVersion）。
+        operationName:
+          type: [string, 'null']
+          description: 工序名称（下达时的工艺快照，PR2 新增）。
+        workCenterCode:
+          type: [string, 'null']
+          description: 工作中心编码（下达时的工艺快照，PR2 新增）。
     WorkOrderProgressView:
       type: object
       description: 工单报工进度。
@@ -1145,16 +1293,83 @@ components:
         - type: object
           properties:
             data: {$ref: '#/components/schemas/WorkOrder'}
+    WorkOrderStatus:
+      type: string
+      enum: [CREATED, RELEASED, IN_PROGRESS, ON_HOLD, COMPLETED, CLOSED, CANCELLED]
+      description: 工单状态。
     WorkOrderListResponse:
-      description: 工单列表响应。
+      description: 工单分页响应。
       allOf:
         - $ref: '#/components/schemas/Envelope'
         - type: object
           properties:
             data:
-              type: array
-              description: 工单。
-              items: {$ref: '#/components/schemas/WorkOrder'}
+              type: object
+              description: 工单分页。
+              required: [items, page, size, total]
+              properties:
+                items:
+                  type: array
+                  description: 当前页工单。
+                  items: {$ref: '#/components/schemas/WorkOrder'}
+                page: {type: integer, description: 页码，从 0 开始。}
+                size: {type: integer, description: 每页条数。}
+                total: {type: integer, description: 满足条件的总条数。}
+    WorkOrderReferenceResponse:
+      description: 主数据引用检查响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              description: 引用统计。
+              required: [count, workOrderNos]
+              properties:
+                count: {type: integer, description: 仍在执行中的引用工单数。}
+                workOrderNos: {type: array, description: 前 10 个工单号。, items: {type: string}}
+    CloseWorkOrderRequest:
+      type: object
+      description: 关闭请求（可省略）。
+      properties:
+        note: {type: string, maxLength: 256, description: 关闭说明，写入状态审计。}
+    WithdrawReleaseRequest:
+      type: object
+      description: 撤回下达请求（可省略）。
+      properties:
+        note: {type: string, maxLength: 256, description: 撤回说明，写入状态审计。}
+    WorkOrderCloseResponse:
+      description: 关闭响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              description: 关闭结果。
+              required: [workOrderNo, status, previousStatus, closedAt]
+              properties:
+                workOrderNo: {type: string, description: 工单号。}
+                status: {type: string, const: CLOSED, description: 关闭后状态。}
+                previousStatus: {type: string, const: COMPLETED, description: 关闭前状态。}
+                closedAt: {type: string, format: date-time, description: 关闭时间。}
+    WorkOrderWithdrawResponse:
+      description: 撤回下达响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              description: 撤回结果。
+              required: [workOrderNo, status, previousStatus, withdrawnAt]
+              properties:
+                workOrderNo: {type: string, description: 工单号。}
+                status: {type: string, const: CREATED, description: 撤回后状态。}
+                previousStatus: {type: string, const: RELEASED, description: 撤回前状态。}
+                reservationId: {type: [string, 'null'], description: 需要释放的库存预留单；无有效预留时为 null。}
+                releaseStatus: {type: [string, 'null'], enum: [PENDING, null], description: 释放任务状态。}
+                withdrawnAt: {type: string, format: date-time, description: 撤回时间。}
     HoldReason:
       type: string
       enum: [MANUAL, LOT_HELD, FAI_FAILED, EQUIPMENT_FAULT, MATERIAL_RESERVATION_EXPIRED]
@@ -1230,6 +1445,8 @@ components:
         | `task-state-conflict` | 409 | 工序任务状态冲突 | 动作不允许在当前任务状态下执行（RUNNING 时改派、PAUSED 时报工、重复派工等） |
         | `task-not-dispatched` | 409 | 工序未派工 | 未派工就开工 / 暂停 / 恢复 / 改派，或取消未派工任务（报工不要求派工） |
         | `station-not-found` | 422 | 工位不存在 | 工位不存在、已删除或不属于该工序的工作中心 |
+        | `open-ncr-exists` | 409 | 存在未结案不合格品 | 关闭工单时质量服务仍有该工单 OPEN / UNDER_REVIEW / DISPOSED 的 NCR |
+        | `quality-service-unavailable` | 503 | 质量服务不可用 | 关闭工单时无法查询质量服务，拒绝关闭 |
         | `validation-error` | 400 | 请求参数无效 | 请求参数校验失败（格式、必填、范围、小数位超过 6 位等） |
         | `idempotency-key-required` | 400 | 缺少幂等键 | 缺少或格式非法的 `Idempotency-Key` |
         | `idempotency-key-conflict` | 422 | 幂等键冲突 | 同一调用方的幂等键已用于不同请求 |
@@ -1261,6 +1478,8 @@ components:
         - task-state-conflict
         - task-not-dispatched
         - station-not-found
+        - open-ncr-exists
+        - quality-service-unavailable
         - validation-error
         - idempotency-key-required
         - idempotency-key-conflict

@@ -29,8 +29,8 @@ $order = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Ide
 if ($order.code -ne 'OK' -or $order.data.status -ne 'CREATED') { throw 'Create order failed.' }
 $replay = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=$key}) -Method Post -ContentType 'application/json; charset=utf-8' -Body '{"deviceId":"D001","product":"bearing","quantity":10}'
 if ($replay.data.id -ne $order.data.id) { throw 'Idempotent replay returned a different order.' }
-$list = Invoke-RestMethod "$BaseUrl/api/workorders" -Headers $headers
-if ($order.data.id -notin $list.data.id) { throw 'Created order not found in storage.' }
+$list = Invoke-RestMethod "$BaseUrl/api/workorders?keyword=$($order.data.id)" -Headers $headers
+if ($order.data.id -notin $list.data.items.id) { throw 'Created order not found in storage.' }
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/devices/missing" -Headers $headers } 404
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"missing","product":"bearing","quantity":10}' } 404
 Assert-HttpStatus { Invoke-RestMethod "$BaseUrl/api/workorders" -Headers ($headers + @{'Idempotency-Key'=[guid]::NewGuid().ToString()}) -Method Post -ContentType 'application/json' -Body '{"deviceId":"D002","product":"bearing","quantity":10}' } 409

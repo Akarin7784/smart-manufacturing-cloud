@@ -40,6 +40,9 @@ manufacturing:
       defect-reported: DefectReported
       defect-reversed: DefectReversed
       workorder-cancelled: WorkOrderCancelled
+      # PR2：关闭（COMPLETED → CLOSED）与撤回下达（RELEASED → CREATED）
+      workorder-closed: WorkOrderClosed
+      workorder-release-withdrawn: WorkOrderReleaseWithdrawn
       # M1 工序任务事件（topic workorder-event，messageKey=工单号；消费方按 taskVersion 判断先后）
       operation-dispatched: OperationDispatched
       operation-dispatch-cancelled: OperationDispatchCancelled

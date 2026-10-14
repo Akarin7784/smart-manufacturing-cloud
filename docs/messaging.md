@@ -41,7 +41,7 @@
 | 项 | 值 |
 | --- | --- |
 | Topic | `mes-workorder-event` |
-| Tag | `WorkOrderStarted`（首笔报工，状态转 `IN_PROGRESS`）、`WorkOrderCompleted`（状态转 `COMPLETED`）、`WorkOrderReopened`（冲销使 `COMPLETED` 退回 `IN_PROGRESS`）；生命周期 `WorkOrderReleased`、`WorkOrderHeld`、`WorkOrderResumed`、`WorkOrderHoldReasonCleared`、`WorkOrderCancelled` |
+| Tag | `WorkOrderStarted`（首笔报工，状态转 `IN_PROGRESS`）、`WorkOrderCompleted`（状态转 `COMPLETED`）、`WorkOrderReopened`（冲销使 `COMPLETED` 退回 `IN_PROGRESS`）；生命周期 `WorkOrderReleased`、`WorkOrderHeld`、`WorkOrderResumed`、`WorkOrderHoldReasonCleared`、`WorkOrderCancelled`、`WorkOrderClosed`、`WorkOrderReleaseWithdrawn`（PR2） |
 | 生产者 | workorder-service（业务数据与 outbox 同事务写入，由 outbox 中继投递，见下文“工单服务 outbox 中继”） |
 | 幂等 | 消费端按 `eventId` 去重，重复投递无副作用 |
 
@@ -60,6 +60,8 @@
 | `WorkOrderReopened` | `eventId`、`workOrderNo`、`occurredAt`、`reversedReportId`（被冲销的原报工）、`completedQty`（冲销后）、`uom`、`aggregateVersion` |
 | `WorkOrderReleased` / `WorkOrderHeld` / `WorkOrderResumed` / `WorkOrderHoldReasonCleared` | `eventId`、`orderId`（兼容 V2，同 `workOrderNo`）、`workOrderNo`、业务字段（下达：`productCode`、`quantity`、`bomVersion`、`routingVersion`、`reservationId`；冻结：`reason`、`resumeTarget`；恢复 / 解除原因：`reason`、`status`）、`occurredAt`、`aggregateVersion` |
 | `WorkOrderCancelled` | `eventId`、`orderId`、`workOrderNo`、`previousStatus`（取消前状态）、`reservationId`（取消时需释放的预留单，无则为 null）、`occurredAt`、`aggregateVersion` |
+| `WorkOrderClosed` | `eventId`、`orderId`、`workOrderNo`、`previousStatus`（恒为 `COMPLETED`）、`note`（可为 null）、`occurredAt`、`aggregateVersion` |
+| `WorkOrderReleaseWithdrawn` | `eventId`、`orderId`、`workOrderNo`、`previousStatus`（恒为 `RELEASED`）、`reservationId`（撤回时需释放的预留单，无则为 null；释放 reason=`CALLER_REQUEST`）、`note`、`occurredAt`、`aggregateVersion` |
 
 `WorkOrderHoldReasonCleared`（多个冻结原因中解除一个，工单仍为 ON_HOLD）不改变状态，携带的是当前版本，按版本去重的消费者会将其丢弃，这是预期行为。V3 之前写入、经回填补发的生命周期事件不含 `aggregateVersion`，消费端按版本 0 处理。
 

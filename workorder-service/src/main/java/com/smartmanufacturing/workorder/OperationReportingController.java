@@ -60,6 +60,28 @@ public class OperationReportingController {
         return respond(service.cancel(id, request, key(key), auth.getName()));
     }
 
+    /**
+     * 关闭工单：COMPLETED → CLOSED。先向质量服务确认没有未结案 NCR：有则 409 open-ncr-exists，质量服务不可用 503 quality-service-unavailable。
+     * 已关闭 409 workorder-closed；其他状态 409 workorder-state-conflict。请求体可省略。
+     */
+    @PreAuthorize("hasAuthority('workorder:write')")
+    @PostMapping("/close")
+    public ResponseEntity<String> close(@PathVariable String id, @Valid @RequestBody(required = false) CloseWorkOrderRequest request,
+                                        @RequestHeader(value = "Idempotency-Key", required = false) String key, Authentication auth) {
+        return respond(service.close(id, request, key(key), auth.getName()));
+    }
+
+    /**
+     * 撤回下达：RELEASED → CREATED，要求没有报工、没有开工任务；删除下达快照，有效预留由后台异步释放（reason=CALLER_REQUEST）。
+     * 撤回后可用新的 Idempotency-Key 重新下达。请求体可省略。
+     */
+    @PreAuthorize("hasAuthority('workorder:write')")
+    @PostMapping("/withdraw-release")
+    public ResponseEntity<String> withdrawRelease(@PathVariable String id, @Valid @RequestBody(required = false) WithdrawReleaseRequest request,
+                                                  @RequestHeader(value = "Idempotency-Key", required = false) String key, Authentication auth) {
+        return respond(service.withdrawRelease(id, request, key(key), auth.getName()));
+    }
+
     @GetMapping("/progress")
     public ApiResponse<WorkOrderProgressView> progress(@PathVariable String id) { return ApiResponse.ok(service.progressView(id)); }
 

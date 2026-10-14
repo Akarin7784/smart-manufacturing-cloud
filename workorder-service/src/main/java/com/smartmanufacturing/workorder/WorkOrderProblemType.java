@@ -42,6 +42,12 @@ public enum WorkOrderProblemType {
     /** 工位不存在、已删除，或不属于该工序的工作中心。 */
     STATION_NOT_FOUND("station-not-found", "工位不存在", "STATION_NOT_FOUND", HttpStatus.UNPROCESSABLE_ENTITY),
 
+    // ---- M1 工单关闭（PR2 新增）
+    /** 关闭工单时质量服务仍有该工单未结案的 NCR（OPEN / UNDER_REVIEW / DISPOSED）。 */
+    OPEN_NCR_EXISTS("open-ncr-exists", "存在未结案不合格品", "OPEN_NCR_EXISTS", HttpStatus.CONFLICT),
+    /** 质量服务不可用（超时、5xx、网络错误）：无法确认 NCR 状态，拒绝关闭。 */
+    QUALITY_SERVICE_UNAVAILABLE("quality-service-unavailable", "质量服务不可用", "QUALITY_SERVICE_UNAVAILABLE", HttpStatus.SERVICE_UNAVAILABLE),
+
     // ---- 既有业务码
     VALIDATION_ERROR("validation-error", "请求参数无效", "INVALID_ARGUMENT", HttpStatus.BAD_REQUEST),
     IDEMPOTENCY_KEY_REQUIRED("idempotency-key-required", "缺少幂等键", "IDEMPOTENCY_KEY_REQUIRED", HttpStatus.BAD_REQUEST),

@@ -133,7 +133,15 @@ docker run --rm -v "$PWD":/src -v <m2缓存>:/root/.m2 -w /src maven:3.9-eclipse
 
 ### 3.5 端到端场景（小型齿轮减速机演示工艺）
 
-使用运维 P1 计划提供的 `make demo`（**尚未实现**，见 `docs/deployment-ops-plan.md`；在其落地前 E2E 暂不进入 CI）启动完整环境，加载 demo 数据后通过网关以 REST Assured 执行：
+`make demo` **已实现**（`Makefile` → `scripts/demo.sh up`，Windows 用 `scripts/demo.ps1`）：生成 / 补全 `.env` → `docker compose --profile app up -d --build --wait` 等待全部容器 healthy（超时 `DEMO_WAIT_TIMEOUT`，默认 600 秒，失败时打印 `ps` 与最近日志）→ 执行 `scripts/smoke-test.sh` 冒烟。配套目标：`make demo-down`（停止，保留数据卷）、`make demo-reset`（删除数据卷与本项目本地镜像后重建）、`make smoke`（对已运行环境单独冒烟）。
+
+当前状态与差距（2026-10，M1 PR2 更新）：
+
+- 冒烟脚本覆盖登录、创建 / 幂等重放、工单分页列表（PR2 起 `GET /api/workorders` 返回 `data.items` 分页对象，脚本按 `keyword` 查询新工单）、设备 404/409/400、下达与重放、取消等主路径，但仍是 shell / PowerShell 断言，不是 REST Assured 套件。
+- `make demo` 依赖 Docker，**尚未进入 CI**（CI 只跑 unit + Testcontainers `*IT`）；下文 E2E 场景仍为目标，按场景逐步补到冒烟或独立 E2E 套件。
+- PR2 新增的关闭（需质量服务）、撤回下达、主数据软删除 / 作废等接口目前由 H2 接口测试覆盖，演示环境冒烟未覆盖。
+
+E2E 目标场景（在 `make demo` 环境上通过网关执行）：
 
 1. **登录**：ADMIN/OPERATOR/VIEWER 分别获取令牌；VIEWER 下单应返回 403。
 2. **下工单**：计划员为 FG-GR60-20 创建并下达工单（带 `Idempotency-Key`），CREATED→RELEASED 时冻结 BOM A01 / 工艺 R01 快照并生成 OperationTask；下达后修改 BOM 不影响该工单；重复提交同一幂等键只生成一条；并发下达只有一个成功、其余 409。

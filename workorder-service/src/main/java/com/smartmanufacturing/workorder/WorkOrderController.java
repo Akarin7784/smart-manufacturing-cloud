@@ -34,6 +34,29 @@ public class WorkOrderController {
             .header("Idempotent-Replayed", String.valueOf(result.replayed()))
             .body(ApiResponse.ok(result.order()));
     }
-    /** 查询已持久化工单，便于确认创建结果。 */
-    @GetMapping public ApiResponse<List<WorkOrder>> list() { return ApiResponse.ok(service.list()); }
+    /** 分页查询工单：page 从 0 开始，size 1–100（默认 20）；status 精确过滤，keyword 匹配工单号或产品。 */
+    @GetMapping public ApiResponse<PageView<WorkOrder>> list(@RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size,
+                                                             @RequestParam(required = false) String status, @RequestParam(required = false) String keyword) {
+        return ApiResponse.ok(service.list(page, size, status, keyword));
+    }
+
+    /**
+     * 主数据引用检查：主数据服务停用工作中心 / 工位前调用（令牌透传）。调用者具备 workorder:read 或 masterdata:write 即可，
+     * 只返回引用数量与前 10 个工单号，不暴露工单明细。
+     */
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyAuthority('workorder:read', 'masterdata:write')")
+    @GetMapping("/references")
+    public ApiResponse<com.smartmanufacturing.api.workorder.WorkOrderReferenceView> references(@RequestParam(required = false) String workCenter,
+                                                                                            @RequestParam(required = false) String station) {
+        return ApiResponse.ok(service.references(workCenter, station));
+    }
+
+    /** BOM / 工艺路线版本引用检查：主数据删除草稿前调用；曾被任何工单引用（含已撤回下达）即计数。 */
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyAuthority('workorder:read', 'masterdata:write')")
+    @GetMapping("/version-references")
+    public ApiResponse<com.smartmanufacturing.api.workorder.WorkOrderReferenceView> versionReferences(@RequestParam(required = false) String type,
+                                                                                                   @RequestParam(required = false) String product,
+                                                                                                   @RequestParam(required = false) String version) {
+        return ApiResponse.ok(service.versionReferences(type, product, version));
+    }
 }

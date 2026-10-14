@@ -15,10 +15,11 @@ public class RoutingService {
     private final VersionedHeaderDao headers;
     private final MaterialRepository materials;
     private final WorkCenterService workCenters;
+    private final MasterdataReferences references;
 
-    RoutingService(JdbcTemplate jdbc, MaterialRepository materials, WorkCenterService workCenters) {
+    RoutingService(JdbcTemplate jdbc, MaterialRepository materials, WorkCenterService workCenters, MasterdataReferences references) {
         this.jdbc = jdbc; this.headers = new VersionedHeaderDao(jdbc, "routing_header");
-        this.materials = materials; this.workCenters = workCenters;
+        this.materials = materials; this.workCenters = workCenters; this.references = references;
     }
 
     @Transactional(readOnly = true)
@@ -65,6 +66,31 @@ public class RoutingService {
         jdbc.update("delete from routing_operation where product_code = ? and version = ?", product, version);
         insertOperations(r);
         return get(product, version);
+    }
+
+    /**
+     * 作废已发布版本（PR2）：RELEASED → OBSOLETE，按产品行锁与发布串行。不恢复上一版本的生效区间（被截断的旧版本保持截断），
+     * 作废当前版本后该产品在作废日之后没有生效工艺路线，需要发布新版本。已下达工单使用的是下达时的快照，不受影响。
+     */
+    @Transactional
+    public Routing retire(String product, String version) {
+        if (!materials.lockForUpdate(product)) throw Errors.notFound("ROUTING_NOT_FOUND", "工艺路线不存在: " + product + "/" + version);
+        get(product, version);
+        if (headers.retire(product, version) == 0)
+            throw Errors.conflict("ROUTING_NOT_RELEASED", "只有已发布的工艺路线可以作废: " + product + "/" + version);
+        return get(product, version);
+    }
+
+    /** 删除草稿（PR2）：先删明细再删版本头；已发布 / 作废版本 409 ROUTING_NOT_DRAFT；曾被工单引用 409 MASTERDATA_IN_USE。 */
+    @Transactional
+    public void deleteDraft(String product, String version) {
+        Routing current = get(product, version);
+        if (current.status() != LifecycleStatus.DRAFT)
+            throw Errors.conflict("ROUTING_NOT_DRAFT", "只有草稿工艺路线可以删除: " + product + "/" + version);
+        references.requireVersionNeverReferenced("ROUTING", product, version);
+        jdbc.update("delete from routing_operation where product_code = ? and version = ?", product, version);
+        if (headers.deleteDraft(product, version) == 0)
+            throw Errors.conflict("ROUTING_NOT_DRAFT", "工艺路线已被并发发布: " + product + "/" + version);
     }
 
     /** 发布：工作中心必须存在；生效日须晚于最新已发布版本；发布后截断上一版本。 */

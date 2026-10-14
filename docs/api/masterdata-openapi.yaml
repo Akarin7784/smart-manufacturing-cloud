@@ -1,0 +1,726 @@
+# 主数据服务（masterdata-service）接口契约：物料、BOM、工艺路线与工厂模型（工作中心 / 工位）。
+# M1 PR2 新增本文件，覆盖既有接口与本次新增的修改 / 软删除 / 作废 / 删除草稿与引用检查。修改接口须先修改本文件并通过评审。
+openapi: 3.1.0
+info:
+  title: 主数据服务接口（masterdata-service）
+  version: 1.0.0
+  contact:
+    name: smart-manufacturing-cloud 维护者
+    url: https://github.com/Akarin7784/smart-manufacturing-cloud
+  summary: 物料、BOM、工艺路线与工作中心 / 工位的维护与查询。
+  description: |
+    ## 生命周期
+    BOM 与工艺路线按“产品 + 版本”管理，状态 DRAFT → RELEASED → OBSOLETE：
+    - 只有 DRAFT 可以修改（含工艺路线的工序）与删除（物理删除，明细一并删除）；已发布 / 已作废版本只读，修改或删除返回 409 `BOM_NOT_DRAFT` / `ROUTING_NOT_DRAFT`。
+    - 发布（`masterdata:release`）：生效日须晚于最新已发布版本，发布后截断上一版本，同一时刻至多一个版本生效。
+    - 作废（`masterdata:release`，PR2）：RELEASED → OBSOLETE，作废后不再参与生效查询；不恢复被截断的上一版本。已下达工单使用下达时的快照，不受影响。
+
+    ## 软删除（PR2）
+    工作中心与工位用 `deleted` 标志软删除：默认列表与单查不返回（单查 404），`includeDeleted=true` 时列表返回并带 `deleted: true`；
+    已删除的工作中心不能被新工艺路线发布、不能新增工位；编码不可复用。删除工作中心时其工位一并删除。
+    物料不软删除，沿用 `active` 停用。
+
+    ## 引用检查（PR2）
+    被引用的主数据不能停用 / 删除，返回 409，`code = MASTERDATA_IN_USE`，`data.type = masterdata-in-use`，`data.referenceType` 取值：
+    - `ROUTING`：工作中心被未作废（DRAFT / RELEASED）的工艺路线工序引用；
+    - `BOM`：物料作为成品或组件出现在未作废的 BOM 中（物料停用，即 `active` 由 true 改为 false 时检查）；
+    - `WORK_ORDER`：工作中心 / 工位被执行中（非 COMPLETED / CLOSED / CANCELLED）工单的工序任务引用。主数据服务透传用户令牌调用工单服务
+      `GET /workorders/references`；工单服务不可用时返回 503 `WORKORDER_SERVICE_UNAVAILABLE`，不放行。
+    - `WORK_ORDER`（删除草稿）：BOM / 工艺路线草稿只有**从未被任何工单引用**（含已完工、已关闭、已撤回下达的工单）时才能硬删除，
+      否则 409；通过 `GET /workorders/version-references` 检查，工单服务不可用同样 503 不放行。
+
+    ## 作废与生效版本（PR2，PM 决策）
+    作废（RELEASED → OBSOLETE）**不恢复**上一版本的生效区间（上一版本在新版本发布时已被截断）。若作废后该产品在某日期没有生效版本，
+    `GET /boms/{product}/effective`、`GET /routings/{product}/effective` 返回 404，工单下达因此返回 422 `RELEASE_MASTERDATA_INVALID`；
+    必须新建并发布新版本后才能继续下达工单。已下达工单使用下达时冻结的快照，不受作废影响。
+
+    ## 前端冲突识别
+    在主数据错误统一为 problem+json 之前（见待办 issue），前端以 `data.type === 'masterdata-in-use'` 识别引用冲突。
+
+    ## 错误
+    响应统一为 `{code, message, data}`；`code` 为业务码（如 `WORK_CENTER_NOT_FOUND`、`MASTERDATA_IN_USE`），参数校验失败为 400 `INVALID_ARGUMENT`，
+    无权限 403 `ACCESS_DENIED`。
+servers:
+  - url: http://localhost:8080
+    description: 本地经网关访问
+tags:
+  - name: material
+    description: 物料
+  - name: factory
+    description: 工作中心与工位
+  - name: bom
+    description: BOM 版本
+  - name: routing
+    description: 工艺路线版本
+security:
+  - userBearer: []
+
+paths:
+  /api/materials:
+    get:
+      tags: [material]
+      operationId: listMaterials
+      summary: 物料列表
+      description: 按类型过滤、分页查询物料。需要 `masterdata:read`。
+      parameters:
+        - {name: type, in: query, required: false, description: 物料类型。, schema: {$ref: '#/components/schemas/MaterialType'}}
+        - {name: page, in: query, required: false, description: 页码，从 0 开始。, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: size, in: query, required: false, description: 每页条数。, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+      responses:
+        '200': {description: 物料列表。, content: {application/json: {schema: {$ref: '#/components/schemas/MaterialListResponse'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [material]
+      operationId: createMaterial
+      summary: 新建物料
+      description: 编码重复 409 `MATERIAL_EXISTS`。需要 `masterdata:write`。
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CreateMaterial'}}}
+      responses:
+        '201': {description: 已创建。, content: {application/json: {schema: {$ref: '#/components/schemas/MaterialResponse'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/materials/{code}:
+    parameters:
+      - {name: code, in: path, required: true, description: 物料编码。, schema: {type: string}}
+    get:
+      tags: [material]
+      operationId: getMaterial
+      summary: 查询物料
+      description: 不存在 404 `MATERIAL_NOT_FOUND`。需要 `masterdata:read`。
+      responses:
+        '200': {description: 物料。, content: {application/json: {schema: {$ref: '#/components/schemas/MaterialResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    put:
+      tags: [material]
+      operationId: updateMaterial
+      summary: 修改 / 停用物料
+      description: |
+        按 `expectedVersion` 乐观锁更新，版本不符 409 `MATERIAL_VERSION_CONFLICT`。`active` 由 true 改为 false（停用）时检查引用：
+        仍被未作废的 BOM 引用 409 `MASTERDATA_IN_USE`（`data.referenceType = BOM`）。需要 `masterdata:write`。
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/UpdateMaterial'}}}
+      responses:
+        '200': {description: 已更新。, content: {application/json: {schema: {$ref: '#/components/schemas/MaterialResponse'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/InUse'}
+
+  /api/workcenters:
+    get:
+      tags: [factory]
+      operationId: listWorkCenters
+      summary: 工作中心列表
+      description: 返回工作中心及其工位；默认隐藏已删除的工作中心与工位，`includeDeleted=true` 时一并返回。需要 `masterdata:read`。
+      parameters:
+        - {name: includeDeleted, in: query, required: false, description: 是否包含已软删除的数据。, schema: {type: boolean, default: false}}
+      responses:
+        '200': {description: 工作中心列表。, content: {application/json: {schema: {$ref: '#/components/schemas/WorkCenterListResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [factory]
+      operationId: createWorkCenter
+      summary: 新建工作中心
+      description: 编码重复（含已删除的）409 `WORK_CENTER_EXISTS`。需要 `masterdata:write`。
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CreateWorkCenter'}}}
+      responses:
+        '201': {description: 已创建。, content: {application/json: {schema: {$ref: '#/components/schemas/WorkCenterResponse'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/workcenters/{code}:
+    parameters:
+      - $ref: '#/components/parameters/WorkCenterCode'
+    get:
+      tags: [factory]
+      operationId: getWorkCenter
+      summary: 查询工作中心
+      description: 返回未删除的工作中心及其未删除的工位；不存在或已删除 404 `WORK_CENTER_NOT_FOUND`。需要 `masterdata:read`。
+      responses:
+        '200': {description: 工作中心。, content: {application/json: {schema: {$ref: '#/components/schemas/WorkCenterResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    put:
+      tags: [factory]
+      operationId: updateWorkCenter
+      summary: 修改工作中心（PR2）
+      description: 修改名称、车间与委外标志（编码不可改）；不存在或已删除 404。需要 `masterdata:write`。
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/UpdateWorkCenter'}}}
+      responses:
+        '200': {description: 已更新。, content: {application/json: {schema: {$ref: '#/components/schemas/WorkCenterResponse'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [factory]
+      operationId: deleteWorkCenter
+      summary: 软删除工作中心（PR2）
+      description: |
+        连同其工位一起软删除。被未作废的工艺路线引用 409 `MASTERDATA_IN_USE`（ROUTING）；被执行中的工单引用 409（WORK_ORDER）；
+        工单服务不可用 503 `WORKORDER_SERVICE_UNAVAILABLE`。不存在或已删除 404。需要 `masterdata:write`。
+      responses:
+        '204': {description: 已删除。}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/InUse'}
+        '503': {$ref: '#/components/responses/Error'}
+  /api/workcenters/{code}/stations:
+    parameters:
+      - $ref: '#/components/parameters/WorkCenterCode'
+    post:
+      tags: [factory]
+      operationId: addStation
+      summary: 新增工位
+      description: 工作中心不存在或已删除 404；工位编码全局唯一（含已删除的），重复 409 `STATION_EXISTS`。需要 `masterdata:write`。
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CreateStation'}}}
+      responses:
+        '201': {description: 已新增，返回所属工作中心。, content: {application/json: {schema: {$ref: '#/components/schemas/WorkCenterResponse'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/workcenters/{code}/stations/{station}:
+    parameters:
+      - $ref: '#/components/parameters/WorkCenterCode'
+      - {name: station, in: path, required: true, description: 工位编码。, schema: {type: string}}
+    put:
+      tags: [factory]
+      operationId: updateStation
+      summary: 修改工位（PR2）
+      description: 修改工位名称；工位不存在、已删除或不属于该工作中心 404 `STATION_NOT_FOUND`。需要 `masterdata:write`。
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/UpdateStation'}}}
+      responses:
+        '200': {description: 已更新，返回所属工作中心。, content: {application/json: {schema: {$ref: '#/components/schemas/WorkCenterResponse'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [factory]
+      operationId: deleteStation
+      summary: 软删除工位（PR2）
+      description: 被执行中的工单引用 409 `MASTERDATA_IN_USE`（WORK_ORDER）；工单服务不可用 503。不存在或已删除 404。需要 `masterdata:write`。
+      responses:
+        '204': {description: 已删除。}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/InUse'}
+        '503': {$ref: '#/components/responses/Error'}
+
+  /api/boms:
+    post:
+      tags: [bom]
+      operationId: createBom
+      summary: 新建 BOM 草稿
+      description: 产品须为自制件；同产品版本重复 409。需要 `masterdata:write`。
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/SaveBom'}}}
+      responses:
+        '201': {description: 已创建。, content: {application/json: {schema: {$ref: '#/components/schemas/BomResponse'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/boms/{product}:
+    parameters:
+      - $ref: '#/components/parameters/Product'
+    get:
+      tags: [bom]
+      operationId: listBomVersions
+      summary: BOM 版本列表
+      description: 列出产品全部 BOM 版本（含草稿、已发布、作废），按生效日排序。需要 `masterdata:read`。
+      responses:
+        '200': {description: 版本列表。, content: {application/json: {schema: {$ref: '#/components/schemas/BomListResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/boms/{product}/effective:
+    parameters:
+      - $ref: '#/components/parameters/Product'
+    get:
+      tags: [bom]
+      operationId: getEffectiveBom
+      summary: 查询生效BOM
+      description: 指定日期（缺省为当天）生效的已发布版本；没有生效版本 404。作废版本不参与。需要 `masterdata:read`。
+      parameters:
+        - {name: date, in: query, required: false, description: 日期（ISO）。, schema: {type: string, format: date}}
+      responses:
+        '200': {description: 生效版本。, content: {application/json: {schema: {$ref: '#/components/schemas/BomResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/boms/{product}/explosion:
+    parameters:
+      - $ref: '#/components/parameters/Product'
+    get:
+      tags: [bom]
+      operationId: explodeBom
+      summary: 多层 BOM 展开
+      description: 按日期与数量多层展开已发布生效的 BOM（虚拟件展开到子件）。需要 `masterdata:read`。
+      parameters:
+        - {name: date, in: query, required: false, description: 日期（ISO），缺省当天。, schema: {type: string, format: date}}
+        - {name: quantity, in: query, required: false, description: 数量（0 < q ≤ 1000000）。, schema: {type: number, default: 1}}
+      responses:
+        '200': {description: 展开结果。, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/boms/{product}/{version}:
+    parameters:
+      - $ref: '#/components/parameters/Product'
+      - $ref: '#/components/parameters/Version'
+    get:
+      tags: [bom]
+      operationId: getBom
+      summary: 查询 BOM 版本
+      description: 不存在 404。需要 `masterdata:read`。
+      responses:
+        '200': {description: BOM。, content: {application/json: {schema: {$ref: '#/components/schemas/BomResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    put:
+      tags: [bom]
+      operationId: replaceBomDraft
+      summary: 替换 BOM 草稿
+      description: 整体替换草稿的生效日与行；非草稿 409 `BOM_NOT_DRAFT`。需要 `masterdata:write`。
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/SaveBom'}}}
+      responses:
+        '200': {description: 已替换。, content: {application/json: {schema: {$ref: '#/components/schemas/BomResponse'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [bom]
+      operationId: deleteBomDraft
+      summary: 删除 BOM 草稿（PR2）
+      description: 物理删除草稿及其行，仅限从未被任何工单引用的草稿：曾被引用 409 `MASTERDATA_IN_USE`（`data.type = masterdata-in-use`，`referenceType = WORK_ORDER`），工单服务不可用 503 `WORKORDER_SERVICE_UNAVAILABLE`；已发布 / 已作废 409 `BOM_NOT_DRAFT`；不存在 404。需要 `masterdata:write`。
+      responses:
+        '204': {description: 已删除。}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/boms/{product}/{version}/release:
+    parameters:
+      - $ref: '#/components/parameters/Product'
+      - $ref: '#/components/parameters/Version'
+    post:
+      tags: [bom]
+      operationId: releaseBom
+      summary: 发布 BOM
+      description: 执行跨聚合校验（工艺路线、循环、消耗工序）并截断上一已发布版本。需要 `masterdata:release`。
+      responses:
+        '200': {description: 已发布。, content: {application/json: {schema: {$ref: '#/components/schemas/BomResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/boms/{product}/{version}/retire:
+    parameters:
+      - $ref: '#/components/parameters/Product'
+      - $ref: '#/components/parameters/Version'
+    post:
+      tags: [bom]
+      operationId: retireBom
+      summary: 作废 BOM（PR2）
+      description: RELEASED → OBSOLETE，按产品行锁与发布串行；非已发布 409 `BOM_NOT_RELEASED`；不存在 404。不恢复上一版本的生效区间：无生效版本时工单不能下达（422），须发布新版本。需要 `masterdata:release`。
+      responses:
+        '200': {description: 已作废。, content: {application/json: {schema: {$ref: '#/components/schemas/BomResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+
+  /api/routings:
+    post:
+      tags: [routing]
+      operationId: createRouting
+      summary: 新建工艺路线草稿
+      description: 产品须为自制件；同产品版本重复 409。需要 `masterdata:write`。
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/SaveRouting'}}}
+      responses:
+        '201': {description: 已创建。, content: {application/json: {schema: {$ref: '#/components/schemas/RoutingResponse'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/routings/{product}:
+    parameters:
+      - $ref: '#/components/parameters/Product'
+    get:
+      tags: [routing]
+      operationId: listRoutingVersions
+      summary: 工艺路线版本列表
+      description: 列出产品全部工艺路线版本，按生效日排序。需要 `masterdata:read`。
+      responses:
+        '200': {description: 版本列表。, content: {application/json: {schema: {$ref: '#/components/schemas/RoutingListResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /api/routings/{product}/effective:
+    parameters:
+      - $ref: '#/components/parameters/Product'
+    get:
+      tags: [routing]
+      operationId: getEffectiveRouting
+      summary: 查询生效工艺路线
+      description: 指定日期（缺省为当天）生效的已发布版本；没有生效版本 404。作废版本不参与。需要 `masterdata:read`。
+      parameters:
+        - {name: date, in: query, required: false, description: 日期（ISO）。, schema: {type: string, format: date}}
+      responses:
+        '200': {description: 生效版本。, content: {application/json: {schema: {$ref: '#/components/schemas/RoutingResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /api/routings/{product}/{version}:
+    parameters:
+      - $ref: '#/components/parameters/Product'
+      - $ref: '#/components/parameters/Version'
+    get:
+      tags: [routing]
+      operationId: getRouting
+      summary: 查询工艺路线版本
+      description: 不存在 404。需要 `masterdata:read`。
+      responses:
+        '200': {description: 工艺路线。, content: {application/json: {schema: {$ref: '#/components/schemas/RoutingResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    put:
+      tags: [routing]
+      operationId: replaceRoutingDraft
+      summary: 替换工艺路线草稿（含工序）
+      description: 工序只在草稿中可编辑：整体替换生效日与工序；已发布 / 已作废 409 `ROUTING_NOT_DRAFT`。需要 `masterdata:write`。
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/SaveRouting'}}}
+      responses:
+        '200': {description: 已替换。, content: {application/json: {schema: {$ref: '#/components/schemas/RoutingResponse'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+    delete:
+      tags: [routing]
+      operationId: deleteRoutingDraft
+      summary: 删除工艺路线草稿（PR2）
+      description: 物理删除草稿及其工序，仅限从未被任何工单引用的草稿：曾被引用 409 `MASTERDATA_IN_USE`（`data.type = masterdata-in-use`，`referenceType = WORK_ORDER`），工单服务不可用 503 `WORKORDER_SERVICE_UNAVAILABLE`；已发布 / 已作废 409 `ROUTING_NOT_DRAFT`；不存在 404。需要 `masterdata:write`。
+      responses:
+        '204': {description: 已删除。}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+  /api/routings/{product}/{version}/release:
+    parameters:
+      - $ref: '#/components/parameters/Product'
+      - $ref: '#/components/parameters/Version'
+    post:
+      tags: [routing]
+      operationId: releaseRouting
+      summary: 发布工艺路线
+      description: 工序引用的工作中心必须存在且未删除（否则 422 `WORK_CENTER_NOT_FOUND`）；截断上一已发布版本。需要 `masterdata:release`。
+      responses:
+        '200': {description: 已发布。, content: {application/json: {schema: {$ref: '#/components/schemas/RoutingResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Error'}
+  /api/routings/{product}/{version}/retire:
+    parameters:
+      - $ref: '#/components/parameters/Product'
+      - $ref: '#/components/parameters/Version'
+    post:
+      tags: [routing]
+      operationId: retireRouting
+      summary: 作废工艺路线（PR2）
+      description: RELEASED → OBSOLETE；非已发布 409 `ROUTING_NOT_RELEASED`；不存在 404。作废后其工作中心不再计入 ROUTING 引用。不恢复上一版本的生效区间：无生效版本时工单不能下达（422），须发布新版本。需要 `masterdata:release`。
+      responses:
+        '200': {description: 已作废。, content: {application/json: {schema: {$ref: '#/components/schemas/RoutingResponse'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+
+components:
+  securitySchemes:
+    userBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 用户令牌（受众 manufacturing-api）：查询需 `masterdata:read`，维护需 `masterdata:write`，发布 / 作废需 `masterdata:release`。
+
+  parameters:
+    WorkCenterCode: {name: code, in: path, required: true, description: 工作中心编码。, schema: {type: string}}
+    Product: {name: product, in: path, required: true, description: 产品物料编码。, schema: {type: string}}
+    Version: {name: version, in: path, required: true, description: 版本号。, schema: {type: string, pattern: '^[A-Z0-9]{1,8}$'}}
+
+  responses:
+    Error:
+      description: 业务错误（`code` 为业务码）。
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    InUse:
+      description: 版本冲突或被引用（`MASTERDATA_IN_USE`，`data` 见 InUseData）。
+      content: {application/json: {schema: {$ref: '#/components/schemas/InUseResponse'}}}
+
+  schemas:
+    Envelope:
+      type: object
+      description: 统一响应包装。
+      required: [code, message]
+      properties:
+        code: {type: string, description: 成功为 OK，失败为业务码。}
+        message: {type: string, description: 说明。}
+    ErrorResponse:
+      description: 错误响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data: {description: 结构化明细（可为 null）。}
+    InUseData:
+      type: object
+      description: 引用检查失败明细。
+      required: [type, referenceType, references]
+      properties:
+        type: {type: string, const: masterdata-in-use, description: 固定类型标识。}
+        referenceType: {type: string, enum: [WORK_ORDER, BOM, ROUTING], description: 引用方类型。}
+        references: {type: array, description: 前 10 个引用方（工单号或 产品/版本）。, items: {type: string}}
+    InUseResponse:
+      description: 被引用错误响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/InUseData'}
+    MaterialType: {type: string, enum: [FG, SA, PART, RM, PURCHASED, STANDARD, AUX, PACK], description: 物料类型。}
+    TraceMode: {type: string, enum: [NONE, LOT, SERIAL], description: 追溯方式。}
+    MaterialSource: {type: string, enum: [MAKE, BUY], description: 自制 / 采购。}
+    LifecycleStatus: {type: string, enum: [DRAFT, RELEASED, OBSOLETE], description: 版本状态。}
+    Material:
+      type: object
+      description: 物料。
+      properties:
+        code: {type: string, description: 编码。}
+        name: {type: string, description: 名称。}
+        type: {$ref: '#/components/schemas/MaterialType'}
+        uom: {type: string, description: 计量单位。}
+        traceMode: {$ref: '#/components/schemas/TraceMode'}
+        source: {$ref: '#/components/schemas/MaterialSource'}
+        active: {type: boolean, description: 是否启用。}
+        version: {type: integer, description: 乐观锁版本。}
+    CreateMaterial:
+      type: object
+      description: 新建物料请求。
+      required: [code, name, type, uom, traceMode, source]
+      properties:
+        code: {type: string, pattern: '^[A-Z0-9][A-Z0-9-]{1,63}$', description: 编码。}
+        name: {type: string, maxLength: 128, description: 名称。}
+        type: {$ref: '#/components/schemas/MaterialType'}
+        uom: {type: string, maxLength: 16, description: 计量单位。}
+        traceMode: {$ref: '#/components/schemas/TraceMode'}
+        source: {$ref: '#/components/schemas/MaterialSource'}
+    UpdateMaterial:
+      type: object
+      description: 修改物料请求。
+      required: [name, uom, traceMode, expectedVersion]
+      properties:
+        name: {type: string, maxLength: 128, description: 名称。}
+        uom: {type: string, maxLength: 16, description: 计量单位。}
+        traceMode: {$ref: '#/components/schemas/TraceMode'}
+        active: {type: boolean, description: 是否启用；改为 false 时做 BOM 引用检查。}
+        expectedVersion: {type: integer, minimum: 0, description: 期望版本。}
+    MaterialResponse:
+      description: 物料响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - {type: object, properties: {data: {$ref: '#/components/schemas/Material'}}}
+    MaterialListResponse:
+      description: 物料列表响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - {type: object, properties: {data: {type: array, description: 物料。, items: {$ref: '#/components/schemas/Material'}}}}
+    Station:
+      type: object
+      description: 工位。
+      properties:
+        code: {type: string, description: 编码。}
+        name: {type: string, description: 名称。}
+        workCenterCode: {type: string, description: 所属工作中心。}
+        deleted: {type: boolean, description: 是否已软删除（仅 includeDeleted=true 时可能为 true）。}
+    WorkCenter:
+      type: object
+      description: 工作中心及其工位。
+      properties:
+        code: {type: string, description: 编码。}
+        name: {type: string, description: 名称。}
+        workshop: {type: string, description: 车间。}
+        outsourced: {type: boolean, description: 是否委外。}
+        stations: {type: array, description: 工位。, items: {$ref: '#/components/schemas/Station'}}
+        deleted: {type: boolean, description: 是否已软删除（仅 includeDeleted=true 时可能为 true）。}
+    CreateWorkCenter:
+      type: object
+      description: 新建工作中心请求。
+      required: [code, name, workshop]
+      properties:
+        code: {type: string, pattern: '^WC-[A-Z0-9-]{1,61}$', description: 编码。}
+        name: {type: string, maxLength: 128, description: 名称。}
+        workshop: {type: string, maxLength: 64, description: 车间。}
+        outsourced: {type: boolean, description: 是否委外。}
+    UpdateWorkCenter:
+      type: object
+      description: 修改工作中心请求（编码不可改）。
+      required: [name, workshop]
+      properties:
+        name: {type: string, maxLength: 128, description: 名称。}
+        workshop: {type: string, maxLength: 64, description: 车间。}
+        outsourced: {type: boolean, description: 是否委外。}
+    CreateStation:
+      type: object
+      description: 新增工位请求。
+      required: [code, name]
+      properties:
+        code: {type: string, pattern: '^ST-[A-Z0-9-]{1,61}$', description: 编码。}
+        name: {type: string, maxLength: 128, description: 名称。}
+    UpdateStation:
+      type: object
+      description: 修改工位请求。
+      required: [name]
+      properties:
+        name: {type: string, maxLength: 128, description: 名称。}
+    WorkCenterResponse:
+      description: 工作中心响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - {type: object, properties: {data: {$ref: '#/components/schemas/WorkCenter'}}}
+    WorkCenterListResponse:
+      description: 工作中心列表响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - {type: object, properties: {data: {type: array, description: 工作中心。, items: {$ref: '#/components/schemas/WorkCenter'}}}}
+    BomLine:
+      type: object
+      description: BOM 行。
+      required: [lineNo, componentCode, qtyPer, uom, scrapRate, issueMode]
+      properties:
+        lineNo: {type: integer, minimum: 1, maximum: 9999, description: 行号。}
+        componentCode: {type: string, description: 组件物料编码。}
+        qtyPer: {type: number, description: 单位用量。}
+        uom: {type: string, description: 计量单位。}
+        scrapRate: {type: number, minimum: 0, maximum: 0.9999, description: 损耗率。}
+        issueMode: {type: string, enum: [PICK, BACKFLUSH], description: 发料方式。}
+        consumeOpNo: {type: [string, 'null'], description: 消耗工序号。}
+        phantom: {type: boolean, description: 是否虚拟件。}
+    SaveBom:
+      type: object
+      description: 新建 / 替换 BOM 草稿请求。
+      required: [productCode, version, effectiveFrom, lines]
+      properties:
+        productCode: {type: string, description: 产品编码。}
+        version: {type: string, pattern: '^[A-Z0-9]{1,8}$', description: 版本号。}
+        effectiveFrom: {type: string, format: date, description: 生效日。}
+        lines: {type: array, minItems: 1, maxItems: 500, description: BOM 行。, items: {$ref: '#/components/schemas/BomLine'}}
+    Bom:
+      type: object
+      description: BOM 版本。
+      properties:
+        productCode: {type: string, description: 产品编码。}
+        version: {type: string, description: 版本号。}
+        status: {$ref: '#/components/schemas/LifecycleStatus'}
+        effectiveFrom: {type: string, format: date, description: 生效日。}
+        effectiveTo: {type: [string, 'null'], format: date, description: 失效日（不含）。}
+        lines: {type: array, description: BOM 行。, items: {$ref: '#/components/schemas/BomLine'}}
+    BomResponse:
+      description: BOM 响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - {type: object, properties: {data: {$ref: '#/components/schemas/Bom'}}}
+    BomListResponse:
+      description: BOM 版本列表响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - {type: object, properties: {data: {type: array, description: 版本。, items: {$ref: '#/components/schemas/Bom'}}}}
+    Operation:
+      type: object
+      description: 工序。
+      required: [opNo, name, workCenterCode, inspectionPointCodes]
+      properties:
+        opNo: {type: string, pattern: '^OP[0-9]{2,4}$', description: 工序号。}
+        name: {type: string, maxLength: 128, description: 名称。}
+        workCenterCode: {type: string, description: 工作中心编码。}
+        setupMinutes: {type: integer, minimum: 0, description: 准备时间（分钟）。}
+        runSecondsPerUnit: {type: integer, minimum: 0, description: 单件加工时间（秒）。}
+        reportPoint: {type: boolean, description: 是否报工点。}
+        firstArticleRequired: {type: boolean, description: 是否首件检验。}
+        inspectionPointCodes: {type: array, maxItems: 10, description: 检验点。, items: {type: string}}
+    SaveRouting:
+      type: object
+      description: 新建 / 替换工艺路线草稿请求。
+      required: [productCode, version, effectiveFrom, operations]
+      properties:
+        productCode: {type: string, description: 产品编码。}
+        version: {type: string, pattern: '^[A-Z0-9]{1,8}$', description: 版本号。}
+        effectiveFrom: {type: string, format: date, description: 生效日。}
+        operations: {type: array, minItems: 1, maxItems: 100, description: 工序。, items: {$ref: '#/components/schemas/Operation'}}
+    Routing:
+      type: object
+      description: 工艺路线版本。
+      properties:
+        productCode: {type: string, description: 产品编码。}
+        version: {type: string, description: 版本号。}
+        status: {$ref: '#/components/schemas/LifecycleStatus'}
+        effectiveFrom: {type: string, format: date, description: 生效日。}
+        effectiveTo: {type: [string, 'null'], format: date, description: 失效日（不含）。}
+        operations: {type: array, description: 工序（按工序号排序）。, items: {$ref: '#/components/schemas/Operation'}}
+    RoutingResponse:
+      description: 工艺路线响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - {type: object, properties: {data: {$ref: '#/components/schemas/Routing'}}}
+    RoutingListResponse:
+      description: 工艺路线版本列表响应。
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - {type: object, properties: {data: {type: array, description: 版本。, items: {$ref: '#/components/schemas/Routing'}}}}

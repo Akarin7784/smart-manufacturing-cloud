@@ -15,3 +15,5 @@ spring:
     driver-class-name: org.h2.Driver
     username: sa
     password: ""
+# PR2：停用工作中心 / 工位前向工单服务做引用检查（本地固定地址；云环境为空走服务发现）。
+clients.workorder.url: http://localhost:8082

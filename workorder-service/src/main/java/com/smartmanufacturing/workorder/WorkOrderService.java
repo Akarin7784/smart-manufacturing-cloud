@@ -1,5 +1,6 @@
 package com.smartmanufacturing.workorder;
 import com.smartmanufacturing.api.*;
+import com.smartmanufacturing.api.workorder.WorkOrderReferenceView;
 import com.smartmanufacturing.common.BusinessException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
@@ -118,9 +119,70 @@ public class WorkOrderService {
         }
     }
 
-    /** 从工单库读取数据，不直接访问其他服务数据库。 */
-    public List<WorkOrder> list() {
-        return jdbc.query("select id, device_id, product, quantity, status from work_order order by id",
-            (rs, row) -> new WorkOrder(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getString(5)));
+    /** 工单状态全集：列表按状态过滤时校验取值。 */
+    static final Set<String> STATUSES = Set.of("CREATED", "RELEASED", "IN_PROGRESS", "ON_HOLD", "COMPLETED", "CLOSED", "CANCELLED");
+    /** 单页上限。 */
+    static final int MAX_PAGE_SIZE = 100;
+
+    /**
+     * 分页查询工单（按工单号排序）：status 精确匹配；keyword 对工单号与产品做包含匹配（% 与 _ 按字面量处理；转义符用 !，避免 MySQL 反斜杠转义差异）。
+     * page 从 0 开始，size 1–100；参数非法返回 400 validation-error。
+     */
+    public PageView<WorkOrder> list(int page, int size, String status, String keyword) {
+        if (page < 0 || size < 1 || size > MAX_PAGE_SIZE)
+            throw WorkOrderProblemType.VALIDATION_ERROR.exception("page 必须 ≥ 0，size 必须在 1–" + MAX_PAGE_SIZE + " 之间");
+        StringBuilder where = new StringBuilder(" where 1 = 1");
+        List<Object> args = new ArrayList<>();
+        if (status != null && !status.isBlank()) {
+            if (!STATUSES.contains(status))
+                throw WorkOrderProblemType.VALIDATION_ERROR.exception("未知的工单状态：" + status);
+            where.append(" and status = ?");
+            args.add(status);
+        }
+        if (keyword != null && !keyword.isBlank()) {
+            String like = "%" + keyword.strip().replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%";
+            where.append(" and (id like ? escape '!' or product like ? escape '!')");
+            args.add(like);
+            args.add(like);
+        }
+        Long total = jdbc.queryForObject("select count(*) from work_order" + where, Long.class, args.toArray());
+        List<WorkOrder> items = jdbc.query("select id, device_id, product, quantity, status from work_order" + where
+                + " order by id limit " + size + " offset " + ((long) page * size),
+            (rs, row) -> new WorkOrder(rs.getString(1), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getString(5)), args.toArray());
+        return new PageView<>(items, page, size, total == null ? 0 : total);
+    }
+
+    /**
+     * 主数据引用检查（主数据停用工作中心 / 工位前调用）：统计仍在执行中的工单（未完工、未关闭、未取消）
+     * 中引用该工作中心或工位的工单数，最多返回前 10 个工单号。
+     */
+    public WorkOrderReferenceView references(String workCenter, String station) {
+        if ((workCenter == null || workCenter.isBlank()) == (station == null || station.isBlank()))
+            throw WorkOrderProblemType.VALIDATION_ERROR.exception("workCenter 与 station 必须且只能提供一个");
+        String column = station != null && !station.isBlank() ? "t.station_code" : "t.work_center_code";
+        String code = station != null && !station.isBlank() ? station : workCenter;
+        List<String> orders = jdbc.queryForList("select distinct t.order_id from operation_task t join work_order w on w.id = t.order_id"
+            + " where " + column + " = ? and w.status not in ('COMPLETED', 'CLOSED', 'CANCELLED') order by t.order_id", String.class, code);
+        return new WorkOrderReferenceView(orders.size(), orders.subList(0, Math.min(10, orders.size())));
+    }
+
+    /**
+     * BOM / 工艺路线版本引用检查（主数据删除草稿前调用）：统计曾引用该版本的工单，不区分工单状态——
+     * 当前下达快照（work_order_lifecycle；BOM 另查展开快照中子件的来源版本）以及已撤回下达的记录都算。
+     */
+    public WorkOrderReferenceView versionReferences(String type, String product, String version) {
+        if (product == null || product.isBlank() || version == null || version.isBlank())
+            throw WorkOrderProblemType.VALIDATION_ERROR.exception("product 与 version 必填");
+        String sql = switch (type == null ? "" : type) {
+            case "BOM" -> "select order_id from work_order_lifecycle where product_code = ? and bom_version = ?"
+                + " union select order_id from wo_bom_snapshot where parent_code = ? and source_bom_version = ?"
+                + " union select order_id from wo_release_withdrawal where product_code = ? and bom_version = ? order by 1";
+            case "ROUTING" -> "select order_id from work_order_lifecycle where product_code = ? and routing_version = ?"
+                + " union select order_id from wo_release_withdrawal where product_code = ? and routing_version = ? order by 1";
+            default -> throw WorkOrderProblemType.VALIDATION_ERROR.exception("type 必须为 BOM 或 ROUTING");
+        };
+        Object[] args = "BOM".equals(type) ? new Object[] {product, version, product, version, product, version} : new Object[] {product, version, product, version};
+        List<String> orders = jdbc.queryForList(sql, String.class, args);
+        return new WorkOrderReferenceView(orders.size(), orders.subList(0, Math.min(10, orders.size())));
     }
 }
