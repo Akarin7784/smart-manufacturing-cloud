@@ -32,6 +32,8 @@ class InventoryMySqlIT {
     @Autowired LocationService locations;
 
     private IdempotencyService.StoredResponse inbound(String key, Movement m) {
+        // 与控制器一致：主事务前预建现存量行。
+        stock.prepareRows(List.of(new StockService.RowKey(m.materialCode(), m.locationCode(), m.lotNo())));
         return LockRetry.run(() -> idempotency.execute("it", key, "inbound", m, 201, () -> stock.inbound("it", m)));
     }
     private IdempotencyService.StoredResponse outbound(String key, Movement m) {
@@ -55,6 +57,7 @@ class InventoryMySqlIT {
     @Test void v2SeedsQcHoldAndQuarantineIsNotAvailable() {
         assertThat(jdbc.queryForObject("select count(*) from flyway_schema_history where version = '2' and success = 1", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select system_location from warehouse_location where code = 'QC-HOLD'", Boolean.class)).isTrue();
+        stock.prepareRows(List.of(new StockService.RowKey("IT-QH", StockService.QC_HOLD, "B1")));
         idempotency.execute("quality-service", "qc:IT-QH:hold", "qc-hold.receipt", "IT-QH", 201,
             () -> stock.qcHoldIn("quality-service", "IT-QH", "pcs", "B1", new BigDecimal("2.5"), "NCR-20261012-0001"));
         idempotency.execute("quality-service", "qc:IT-QH:scrap", "qc-hold.scrap", "IT-QH", 201,

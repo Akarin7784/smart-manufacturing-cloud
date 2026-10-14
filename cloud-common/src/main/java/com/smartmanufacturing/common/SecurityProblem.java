@@ -34,6 +34,8 @@ public enum SecurityProblem {
     }
     public String type() { return type; }
     public HttpStatus status() { return status; }
+    /** 固定中文 title；各服务 Problem 枚举的 401/403 文案以此为准（工单服务测试据此断言一致）。 */
+    public String title() { return title; }
 
     /** 固定字段 type/title/status/detail，外加 instance：只取请求路径（getRequestURI 不含查询串），避免回显令牌等查询参数。 */
     public Map<String, Object> body(HttpServletRequest request) {

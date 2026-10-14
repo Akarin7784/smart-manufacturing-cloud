@@ -58,4 +58,51 @@ class WorkOrderProblemTypeTest {
         for (WorkOrderProblemType p : WorkOrderProblemType.values())
             assertThat(row).as("observability.md 应列出 result=%s", ReportingMetrics.resultOf(p)).contains("`" + ReportingMetrics.resultOf(p) + "`");
     }
+
+    /** 解析 docs/authentication.md 工单服务表（type -> title）。 */
+    private static Map<String, String> documentedTitles() throws Exception {
+        String doc = Files.readString(Path.of("../docs/authentication.md"));
+        int start = doc.indexOf("### 工单服务 Problem 标题");
+        assertThat(start).as("authentication.md 应有工单服务 Problem 标题表").isGreaterThanOrEqualTo(0);
+        int end = doc.indexOf("\n## ", start);
+        Map<String, String> table = new LinkedHashMap<>();
+        var m = Pattern.compile("(?m)^\\| `([a-z-]+)` \\| ([^|]+?) \\|$").matcher(doc.substring(start, end < 0 ? doc.length() : end));
+        while (m.find()) assertThat(table.put(m.group(1), m.group(2))).as("type %s 在表中重复", m.group(1)).isNull();
+        return table;
+    }
+
+    /** 枚举登记的 title 必须与文档表逐项完全一致（双向：不多不少、文案相同）。 */
+    @Test void titlesExactlyMatchDocumentedTable() throws Exception {
+        Map<String, String> code = new LinkedHashMap<>();
+        for (WorkOrderProblemType p : WorkOrderProblemType.values()) code.put(p.type(), p.title());
+        assertThat(documentedTitles()).containsExactlyInAnyOrderEntriesOf(code);
+    }
+
+    /** title 为固定中文短语，不得退回枚举常量名；401/403 与 cloud-common SecurityProblem 同文案。 */
+    @Test void titlesAreChineseAndSecurityTitlesShared() {
+        for (WorkOrderProblemType p : WorkOrderProblemType.values()) {
+            assertThat(p.title()).as("%s 的 title", p).isNotBlank().isNotEqualTo(p.name()).isNotEqualTo(p.code())
+                .matches(".*[\\u4e00-\\u9fa5].*").doesNotContainPattern("[A-Z_]{3,}");
+        }
+        assertThat(WorkOrderProblemType.AUTHENTICATION_REQUIRED.title()).isEqualTo(com.smartmanufacturing.common.SecurityProblem.AUTHENTICATION_REQUIRED.title()).isEqualTo("需要认证");
+        assertThat(WorkOrderProblemType.ACCESS_DENIED.title()).isEqualTo(com.smartmanufacturing.common.SecurityProblem.ACCESS_DENIED.title()).isEqualTo("没有访问权限");
+        assertThat(WorkOrderProblemType.AUTHENTICATION_REQUIRED.type()).isEqualTo(com.smartmanufacturing.common.SecurityProblem.AUTHENTICATION_REQUIRED.type());
+    }
+
+    /** 处理器输出的 title 就是枚举登记值，同一 type 恒为同一 title，与 detail 无关。 */
+    @Test void handlerEmitsFixedTitlePerType() {
+        for (WorkOrderProblemType p : WorkOrderProblemType.values()) {
+            var a = WorkOrderProblemHandler.problem(p, "原因甲", null).getBody();
+            var b = WorkOrderProblemHandler.problem(p, "原因乙", null).getBody();
+            assertThat(a.getTitle()).isEqualTo(p.title()).isEqualTo(b.getTitle());
+            assertThat(a.getType().toString()).isEqualTo(p.type());
+        }
+    }
+
+    /** 契约 ProblemType 表的 title 列与枚举一致。 */
+    @Test void contractTableListsTitles() throws Exception {
+        String yaml = Files.readString(Path.of("../docs/api/workorder-openapi.yaml"));
+        for (WorkOrderProblemType p : WorkOrderProblemType.values())
+            assertThat(yaml).as("契约表格应列出 %s 的 title", p.type()).contains("| `" + p.type() + "` | " + p.status().value() + " | " + p.title() + " |");
+    }
 }
