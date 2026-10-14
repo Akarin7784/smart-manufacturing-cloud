@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -19,7 +20,7 @@ import java.util.UUID;
 /**
  * 工单关闭与撤回下达（M1 PR2）。事务内逻辑由 {@link OperationReportingService} 在已锁定工单行、已检查幂等记录的事务中调用。
  * <ul>
- *   <li>关闭：COMPLETED → CLOSED。事务前先向质量服务确认该工单没有未结案 NCR（OPEN / UNDER_REVIEW / DISPOSED），
+ *   <li>关闭：COMPLETED → CLOSED，同一事务内为剩余 ACTIVE 预留登记释放任务（reason=WORK_ORDER_CLOSED，#72）。事务前先向质量服务确认该工单没有未结案 NCR（OPEN / UNDER_REVIEW / DISPOSED），
  *       有则 409 open-ncr-exists；质量服务不可用一律 503 quality-service-unavailable，<b>不放行</b>。</li>
  *   <li>撤回下达：RELEASED → CREATED。要求没有任何报工、没有开工过的任务；删除下达快照（生命周期、冻结原因、BOM 快照、工序任务与进度），
  *       保留审计（状态日志、任务日志），有效预留置 RELEASING 并登记释放任务（reason=CALLER_REQUEST）。</li>
@@ -42,6 +43,9 @@ class WorkOrderClosure {
                      org.springframework.beans.factory.ObjectProvider<QualityServiceToken> serviceToken) {
         this.jdbc = jdbc; this.journal = journal; this.clock = clock; this.quality = quality; this.serviceToken = serviceToken.getIfAvailable();
     }
+
+    /** 关闭释放的库存幂等键（#72）。 */
+    static String closeKey(String orderId, String reservationId) { return "close-" + orderId + "-" + reservationId; }
 
     /** 撤回释放的库存幂等键。 */
     static String withdrawKey(String orderId, String reservationId) { return "withdraw-" + orderId + "-" + reservationId; }
@@ -91,10 +95,25 @@ class WorkOrderClosure {
         Instant now = clock.instant();
         if (jdbc.update("update work_order set status = 'CLOSED', version = version + 1 where id = ? and status = ?", orderId, status) != 1)
             throw WorkOrderProblemType.CONCURRENT_MODIFICATION.exception("工单状态已变化，请重试");
+        // #72：同一事务内把剩余 ACTIVE 预留置 RELEASING 并登记释放任务，由 ReservationReleaseWorker 异步调用库存释放（Q1 不等结果）。
+        // 只挑 ACTIVE：CONSUMED（完工已吃光）/ RELEASING / RELEASED / EXPIRED 不登记（Q4）；多张逐一登记（Q3）。
+        // 工单行已在外层事务加锁，同一工单的关闭 / 取消串行，无需再对预留行 FOR UPDATE。
+        List<String> active = jdbc.queryForList(
+            "select reservation_id from wo_material_reservation where order_id = ? and status = 'ACTIVE' order by reservation_id", String.class, orderId);
+        List<String> releasing = new ArrayList<>();
+        for (String reservationId : active) {
+            if (jdbc.update("update wo_material_reservation set status = 'RELEASING' where reservation_id = ? and status = 'ACTIVE'", reservationId) != 1) continue;
+            CompensationReleaseTasks.insertInCurrentTx(jdbc, orderId, reservationId,
+                MaterialReservationPort.ReleaseReason.WORK_ORDER_CLOSED, closeKey(orderId, reservationId), now);
+            releasing.add(reservationId);
+        }
         journal.statusChanged(orderId, status, "CLOSED", "CLOSE", note, operator);
         var payload = new LinkedHashMap<String, Object>();
         payload.put("previousStatus", status);
         payload.put("note", note);
+        // Q6：转入 RELEASING 的预留单号（可为空数组）与是否有释放在途；释放结果仍以库存 ReservationReleased 为准
+        payload.put("reservationIds", releasing);
+        payload.put("releaseEnqueued", !releasing.isEmpty());
         journal.event(orderId, "WorkOrderClosed", payload);
         return new WorkOrderCloseView(orderId, "CLOSED", status, now);
     }

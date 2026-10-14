@@ -1,8 +1,8 @@
-# 工单关闭释放剩余预留设计稿（M2 / #72，待评审）
+# 工单关闭释放剩余预留设计稿（M2 / #72，已评审）
 
 > 范围：COMPLETED → CLOSED 时释放仍为 ACTIVE 的物料预留；线边已领未耗与 ERP 退料只定边界，本 PR 不落地。
 > 依据：#72、#70 关闭实现、`WorkOrderCancellation` / `WorkOrderClosure.withdrawInTx` 释放任务、库存 `POST …/release`（整单释放未扣减量）。
-> 作者：蓝色大肥鱼；状态：待 Eva 拍板后落仓并开实现 PR。
+> 作者：蓝色大肥鱼；状态：已评审，Q1–Q8 均按 §3 默认，M2-A 在 #72 实现 PR 中落地。
 
 ## 1. 现状
 

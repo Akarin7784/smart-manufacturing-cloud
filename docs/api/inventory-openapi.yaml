@@ -1197,12 +1197,13 @@ components:
 
     ReleaseReason:
       type: string
-      enum: [CALLER_REQUEST, WORK_ORDER_CANCELLED, COMPENSATION]
+      enum: [CALLER_REQUEST, WORK_ORDER_CANCELLED, COMPENSATION, WORK_ORDER_CLOSED]
       description: |
         释放原因：
         - `CALLER_REQUEST`：调用方主动释放（缺省）。
         - `WORK_ORDER_CANCELLED`：工单取消。
         - `COMPENSATION`：下达失败或创建超时后的补偿释放。
+        - `WORK_ORDER_CLOSED`：工单关闭时释放剩余 ACTIVE 预留（#72）。
 
     ReleaseReservationRequest:
       type: object
@@ -1475,7 +1476,7 @@ components:
                 $ref: '#/components/schemas/ReservationLine'
 
     ReservationReleasedEvent:
-      description: 预留释放事件（tag `ReservationReleased`）。
+      description: 预留释放事件（tag `ReservationReleased`）。`reason` 原样带出释放请求的原因（含 `WORK_ORDER_CLOSED`）。
       allOf:
         - $ref: '#/components/schemas/ReservationEventBase'
         - type: object

@@ -409,6 +409,8 @@ paths:
         状态通过后（事务外）以**工单服务的服务身份**（client_credentials，scope `quality:read`，不透传用户令牌）向质量服务查询该工单
         OPEN / UNDER_REVIEW / DISPOSED 的 NCR：存在则 409 `open-ncr-exists`（`data.openNcrCount`）；质量服务不可用（超时、5xx、网络错误）
         或拒绝服务身份（401 / 403）一律 503 `quality-service-unavailable`，不放行。事务内加锁后再次复核状态。同键重放直接返回首次结果。
+        关闭事务内为每张 ACTIVE 库存预留登记释放任务（#72，`reason=WORK_ORDER_CLOSED`，库存 `Idempotency-Key: close-{工单号}-{预留单号}`），
+        由后台异步释放，不等待库存结果；已 CONSUMED / RELEASED / EXPIRED 的预留不登记。`WorkOrderClosed` 事件带 `reservationIds`、`releaseEnqueued`。
         只需要 `workorder:write`（调用者无需 `quality:read`）。
       parameters:
         - $ref: '#/components/parameters/WorkOrderNo'

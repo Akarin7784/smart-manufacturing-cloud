@@ -22,7 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * M1 PR2 在真实 MySQL 8.4 上的 SQL 语义（需要 Docker，只在 CI 运行）：列表关键字的 LIKE 转义（escape '!'，与 MySQL 反斜杠转义无关）、
- * 主数据引用查询、撤回下达后重新下达（预留序号顺延），以及撤回下达与冻结并发时不死锁（锁序：生命周期行 → 工单行）。
+ * 主数据引用查询、撤回下达后重新下达（预留序号顺延）、关闭登记释放任务（#72），以及撤回下达与冻结并发时不死锁（锁序：生命周期行 → 工单行）。
  */
 @Testcontainers
 @SpringBootTest
@@ -103,5 +103,33 @@ class WorkOrderCloseWithdrawMySqlIT {
                 else assertThat(hr).isEqualTo("HELD");
             } finally { pool.shutdownNow(); }
         }
+    }
+
+    /** #72：MySQL 上关闭只为 ACTIVE 预留登记 WORK_ORDER_CLOSED 任务（CONSUMED 跳过），created_at 截断到毫秒；换键再次关闭 409 且不二次登记。 */
+    @Test void closeEnqueuesReleaseForActiveOnlyOnMySql() {
+        String id = released();
+        String active = jdbc.queryForObject("select reservation_id from wo_material_reservation where order_id = ? and status = 'ACTIVE'", String.class, id);
+        String consumed = active + "-C";
+        jdbc.update("insert into wo_material_reservation (reservation_id, order_id, seq, status, expires_at) select ?, order_id, seq + 1, 'CONSUMED', expires_at from wo_material_reservation where reservation_id = ?",
+            consumed, active);
+        // 直接置为 COMPLETED（报工完工路径由其他用例覆盖），NCR 查询返回 0
+        jdbc.update("update work_order set status = 'COMPLETED' where id = ?", id);
+        org.mockito.Mockito.when(quality.ncrs(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(new QualityClient.NcrPage(List.of(), 0, 1, 0));
+
+        reporting.close(id, null, "cl-" + id, "planner");
+        assertThat(jdbc.queryForObject("select status from work_order where id = ?", String.class, id)).isEqualTo("CLOSED");
+        assertThat(jdbc.queryForObject("select status from wo_material_reservation where reservation_id = ?", String.class, active)).isEqualTo("RELEASING");
+        assertThat(jdbc.queryForObject("select status from wo_material_reservation where reservation_id = ?", String.class, consumed)).isEqualTo("CONSUMED");
+        List<Map<String, Object>> tasks = jdbc.queryForList("select reservation_id, reason, idempotency_key, status, created_at from wo_reservation_release_task where order_id = ?", id);
+        assertThat(tasks).hasSize(1);
+        assertThat(tasks.get(0)).containsEntry("reservation_id", active).containsEntry("reason", "WORK_ORDER_CLOSED")
+            .containsEntry("idempotency_key", "close-" + id + "-" + active).containsEntry("status", "PENDING");
+        assertThat(((java.sql.Timestamp) tasks.get(0).get("created_at")).getNanos() % 1_000_000).isZero();
+
+        // 同键重放返回首次结果；换键再关闭 409 workorder-closed；任务仍只有一条
+        reporting.close(id, null, "cl-" + id, "planner");
+        try { reporting.close(id, null, "cl2-" + id, "planner"); } catch (BusinessException e) { assertThat(e.code()).isNotNull(); }
+        assertThat(jdbc.queryForObject("select count(*) from wo_reservation_release_task where order_id = ?", Integer.class, id)).isEqualTo(1);
     }
 }

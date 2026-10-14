@@ -195,6 +195,47 @@ class ReservationContractTest {
             .forEach(t -> assertThat(t.getKey()).isIn("application", "result", "to", "kind", "uom"));
     }
 
+    /**
+     * #72：reason=WORK_ORDER_CLOSED 的释放。
+     * <ul>
+     *   <li>被接受（200 RELEASED），reservation.release_reason（VARCHAR(32)）与 ReservationReleased 事件原样带出该原因；</li>
+     *   <li>同一 close-{工单}-{预留} 幂等键重放：200、只发一次事件、占用只归还一次（可用量恰好回到入库量）；</li>
+     *   <li>已 RELEASED / EXPIRED 再以其它原因、新键释放：仍 200 返回当前状态，不 409，原因不被覆盖。</li>
+     * </ul>
+     */
+    @Test void releaseAcceptsWorkOrderClosedReasonAndIsIdempotent() throws Exception {
+        inbound("CT-C", "kg", "LC", "10");
+        JsonNode r = call(postJson(svc(BASE), key(), createBody("WO-CT-CL", line("CT-C", "4", "kg", "WO-CT-CL:10"))), BASE, "post", 201);
+        String id = r.get("reservationId").asText();
+        String closeKey = "close-WO-CT-CL-" + id;
+        String body = "{\"reason\":\"WORK_ORDER_CLOSED\"}";
+        JsonNode released = call(postJson(svc(BASE) + "/" + id + "/release", closeKey, body), ONE + "/release", "post", 200);
+        assertThat(released.get("status").asText()).isEqualTo("RELEASED");
+        JsonNode replay = call(postJson(svc(BASE) + "/" + id + "/release", closeKey, body), ONE + "/release", "post", 200);
+        assertThat(replay.get("status").asText()).isEqualTo("RELEASED");
+        assertThat(jdbc.queryForObject("select release_reason from reservation where id = ?", String.class, id)).isEqualTo("WORK_ORDER_CLOSED");
+        List<String> events = jdbc.queryForList("select payload from outbox_event where aggregate_id = ? and event_type = 'ReservationReleased'", String.class, id);
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0)).contains("\"reason\":\"WORK_ORDER_CLOSED\"");
+        // 占用只归还一次：可整额预留 10，再多 1 即缺料（若重复归还会出现可用量 > 10）
+        call(postJson(svc(BASE), key(), createBody("WO-CT-CL2", line("CT-C", "10", "kg", "WO-CT-CL2:10"))), BASE, "post", 201);
+        call(postJson(svc(BASE), key(), createBody("WO-CT-CL3", line("CT-C", "1", "kg", "WO-CT-CL3:10"))), BASE, "post", 409);
+
+        // 已 RELEASED：换原因、换键再释放 → 200 RELEASED，原因保持首次的 WORK_ORDER_CLOSED
+        JsonNode again = call(postJson(svc(BASE) + "/" + id + "/release", key(), "{\"reason\":\"CALLER_REQUEST\"}"), ONE + "/release", "post", 200);
+        assertThat(again.get("status").asText()).isEqualTo("RELEASED");
+        assertThat(jdbc.queryForObject("select release_reason from reservation where id = ?", String.class, id)).isEqualTo("WORK_ORDER_CLOSED");
+
+        // 已 EXPIRED：以 WORK_ORDER_CLOSED 释放 → 200 EXPIRED（关闭时预留已过期的场景）
+        inbound("CT-D", "kg", "LD", "5");
+        JsonNode e = call(postJson(svc(BASE), key(), createBody("WO-CT-EX", line("CT-D", "1", "kg", "WO-CT-EX:10"))), BASE, "post", 201);
+        String eid = e.get("reservationId").asText();
+        jdbc.update("update reservation set expires_at = ? where id = ?", Timestamp.from(Instant.now().minusSeconds(1)), eid);
+        expiry.expireDue();
+        JsonNode exp = call(postJson(svc(BASE) + "/" + eid + "/release", "close-WO-CT-EX-" + eid, body), ONE + "/release", "post", 200);
+        assertThat(exp.get("status").asText()).isEqualTo("EXPIRED");
+    }
+
     /** 用户令牌（aud=manufacturing-api，即使带 inventory 权限）调用预留接口：403，响应符合契约。 */
     @Test void userTokenIsForbiddenOnReservations() throws Exception {
         MvcResult r = mvc.perform(postJson(svc(BASE), key(), createBody("WO-SEC-1", line("CT-A", "1", "kg", "WO-SEC-1:10")))
