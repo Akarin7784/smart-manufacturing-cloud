@@ -50,4 +50,13 @@ public class WorkOrderController {
                                                                                             @RequestParam(required = false) String station) {
         return ApiResponse.ok(service.references(workCenter, station));
     }
+
+    /** BOM / 工艺路线版本引用检查：主数据删除草稿前调用；曾被任何工单引用（含已撤回下达）即计数。 */
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyAuthority('workorder:read', 'masterdata:write')")
+    @GetMapping("/version-references")
+    public ApiResponse<com.smartmanufacturing.api.workorder.WorkOrderReferenceView> versionReferences(@RequestParam(required = false) String type,
+                                                                                                   @RequestParam(required = false) String product,
+                                                                                                   @RequestParam(required = false) String version) {
+        return ApiResponse.ok(service.versionReferences(type, product, version));
+    }
 }

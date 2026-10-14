@@ -165,4 +165,24 @@ public class WorkOrderService {
             + " where " + column + " = ? and w.status not in ('COMPLETED', 'CLOSED', 'CANCELLED') order by t.order_id", String.class, code);
         return new WorkOrderReferenceView(orders.size(), orders.subList(0, Math.min(10, orders.size())));
     }
+
+    /**
+     * BOM / 工艺路线版本引用检查（主数据删除草稿前调用）：统计曾引用该版本的工单，不区分工单状态——
+     * 当前下达快照（work_order_lifecycle；BOM 另查展开快照中子件的来源版本）以及已撤回下达的记录都算。
+     */
+    public WorkOrderReferenceView versionReferences(String type, String product, String version) {
+        if (product == null || product.isBlank() || version == null || version.isBlank())
+            throw WorkOrderProblemType.VALIDATION_ERROR.exception("product 与 version 必填");
+        String sql = switch (type == null ? "" : type) {
+            case "BOM" -> "select order_id from work_order_lifecycle where product_code = ? and bom_version = ?"
+                + " union select order_id from wo_bom_snapshot where parent_code = ? and source_bom_version = ?"
+                + " union select order_id from wo_release_withdrawal where product_code = ? and bom_version = ? order by 1";
+            case "ROUTING" -> "select order_id from work_order_lifecycle where product_code = ? and routing_version = ?"
+                + " union select order_id from wo_release_withdrawal where product_code = ? and routing_version = ? order by 1";
+            default -> throw WorkOrderProblemType.VALIDATION_ERROR.exception("type 必须为 BOM 或 ROUTING");
+        };
+        Object[] args = "BOM".equals(type) ? new Object[] {product, version, product, version, product, version} : new Object[] {product, version, product, version};
+        List<String> orders = jdbc.queryForList(sql, String.class, args);
+        return new WorkOrderReferenceView(orders.size(), orders.subList(0, Math.min(10, orders.size())));
+    }
 }

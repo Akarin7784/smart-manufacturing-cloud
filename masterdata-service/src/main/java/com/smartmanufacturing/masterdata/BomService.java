@@ -19,12 +19,13 @@ public class BomService {
     private final VersionedHeaderDao headers;
     private final MaterialRepository materials;
     private final RoutingService routings;
+    private final MasterdataReferences references;
     private final int maxDepth;
 
-    BomService(JdbcTemplate jdbc, MaterialRepository materials, RoutingService routings,
+    BomService(JdbcTemplate jdbc, MaterialRepository materials, RoutingService routings, MasterdataReferences references,
                @Value("${manufacturing.masterdata.explosion-max-depth:20}") int maxDepth) {
         this.jdbc = jdbc; this.headers = new VersionedHeaderDao(jdbc, "bom_header");
-        this.materials = materials; this.routings = routings; this.maxDepth = maxDepth;
+        this.materials = materials; this.routings = routings; this.references = references; this.maxDepth = maxDepth;
     }
 
     @Transactional(readOnly = true)
@@ -120,12 +121,13 @@ public class BomService {
         return get(product, version);
     }
 
-    /** 删除草稿（PR2）：先删明细再删版本头；已发布 / 作废版本 409 BOM_NOT_DRAFT。 */
+    /** 删除草稿（PR2）：先删明细再删版本头；已发布 / 作废版本 409 BOM_NOT_DRAFT；曾被工单引用 409 MASTERDATA_IN_USE。 */
     @Transactional
     public void deleteDraft(String product, String version) {
         Bom current = get(product, version);
         if (current.status() != LifecycleStatus.DRAFT)
             throw Errors.conflict("BOM_NOT_DRAFT", "只有草稿BOM可以删除: " + product + "/" + version);
+        references.requireVersionNeverReferenced("BOM", product, version);
         jdbc.update("delete from bom_line where product_code = ? and version = ?", product, version);
         if (headers.deleteDraft(product, version) == 0)
             throw Errors.conflict("BOM_NOT_DRAFT", "BOM已被并发发布: " + product + "/" + version);

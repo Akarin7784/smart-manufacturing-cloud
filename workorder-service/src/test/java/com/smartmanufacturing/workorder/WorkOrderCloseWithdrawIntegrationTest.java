@@ -309,6 +309,34 @@ class WorkOrderCloseWithdrawIntegrationTest {
         assertOk(mvc.perform(get("/workorders/references").param("station", "A").with(user("x", "masterdata:read"))).andReturn(), 403);
     }
 
+    /** 版本引用检查：当前下达快照（含子件来源版本）与已撤回下达都算；未引用为 0；参数校验与权限。 */
+    @Test void versionReferencesForMasterdata() throws Exception {
+        RequestPostProcessor engineer = user("eng-1", "masterdata:read", "masterdata:write");
+        String p = ReleaseFixtures.PRODUCT;
+        assertThat(versionRefs(engineer, "BOM", p, "A01").get("count").asInt()).isZero();
+        String a = released(2);
+        assertThat(versionRefs(engineer, "BOM", p, "A01").at("/workOrderNos/0").asText()).isEqualTo(a);
+        assertThat(versionRefs(reader(), "BOM", "SA-HOUSING", "A01").get("count").asInt()).isEqualTo(1);
+        assertThat(versionRefs(reader(), "ROUTING", p, "R01").get("count").asInt()).isEqualTo(1);
+        assertThat(versionRefs(reader(), "ROUTING", p, "R02").get("count").asInt()).isZero();
+        assertOk(call(writer(), "/workorders/" + a + "/withdraw-release", "{}", "wd-v-" + a), 200);
+        assertThat(jdbc.queryForObject("select count(*) from work_order_lifecycle where order_id = ?", Integer.class, a)).isZero();
+        assertThat(versionRefs(reader(), "BOM", p, "A01").get("count").asInt()).isEqualTo(1);
+        assertThat(versionRefs(reader(), "ROUTING", p, "R01").at("/workOrderNos/0").asText()).isEqualTo(a);
+
+        assertProblem(mvc.perform(get("/workorders/version-references").param("type", "BOM").param("product", p).with(reader())).andReturn(), 400, "validation-error");
+        assertProblem(mvc.perform(get("/workorders/version-references").param("type", "X").param("product", p).param("version", "A01").with(reader())).andReturn(), 400, "validation-error");
+        assertProblem(mvc.perform(get("/workorders/version-references").param("product", " ").param("version", "A01").with(reader())).andReturn(), 400, "validation-error");
+        assertOk(mvc.perform(get("/workorders/version-references").param("type", "BOM").param("product", p).param("version", "A01")
+            .with(user("x", "masterdata:read"))).andReturn(), 403);
+    }
+
+    private JsonNode versionRefs(RequestPostProcessor who, String type, String product, String version) throws Exception {
+        MvcResult r = mvc.perform(get("/workorders/version-references").param("type", type).param("product", product).param("version", version).with(who)).andReturn();
+        assertOk(r, 200);
+        return json(r).get("data");
+    }
+
     /** 进度附带工序名称与工作中心（取自下达时的工艺快照）。 */
     @Test void progressIncludesOperationNameAndWorkCenter() throws Exception {
         String id = released(5);

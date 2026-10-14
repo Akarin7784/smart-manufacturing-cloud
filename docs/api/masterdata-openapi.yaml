@@ -26,6 +26,16 @@ info:
     - `BOM`：物料作为成品或组件出现在未作废的 BOM 中（物料停用，即 `active` 由 true 改为 false 时检查）；
     - `WORK_ORDER`：工作中心 / 工位被执行中（非 COMPLETED / CLOSED / CANCELLED）工单的工序任务引用。主数据服务透传用户令牌调用工单服务
       `GET /workorders/references`；工单服务不可用时返回 503 `WORKORDER_SERVICE_UNAVAILABLE`，不放行。
+    - `WORK_ORDER`（删除草稿）：BOM / 工艺路线草稿只有**从未被任何工单引用**（含已完工、已关闭、已撤回下达的工单）时才能硬删除，
+      否则 409；通过 `GET /workorders/version-references` 检查，工单服务不可用同样 503 不放行。
+
+    ## 作废与生效版本（PR2，PM 决策）
+    作废（RELEASED → OBSOLETE）**不恢复**上一版本的生效区间（上一版本在新版本发布时已被截断）。若作废后该产品在某日期没有生效版本，
+    `GET /boms/{product}/effective`、`GET /routings/{product}/effective` 返回 404，工单下达因此返回 422 `RELEASE_MASTERDATA_INVALID`；
+    必须新建并发布新版本后才能继续下达工单。已下达工单使用下达时冻结的快照，不受作废影响。
+
+    ## 前端冲突识别
+    在主数据错误统一为 problem+json 之前（见待办 issue），前端以 `data.type === 'masterdata-in-use'` 识别引用冲突。
 
     ## 错误
     响应统一为 `{code, message, data}`；`code` 为业务码（如 `WORK_CENTER_NOT_FOUND`、`MASTERDATA_IN_USE`），参数校验失败为 400 `INVALID_ARGUMENT`，
@@ -318,7 +328,7 @@ paths:
       tags: [bom]
       operationId: deleteBomDraft
       summary: 删除 BOM 草稿（PR2）
-      description: 物理删除草稿及其行；已发布 / 已作废 409 `BOM_NOT_DRAFT`；不存在 404。需要 `masterdata:write`。
+      description: 物理删除草稿及其行，仅限从未被任何工单引用的草稿：曾被引用 409 `MASTERDATA_IN_USE`（`data.type = masterdata-in-use`，`referenceType = WORK_ORDER`），工单服务不可用 503 `WORKORDER_SERVICE_UNAVAILABLE`；已发布 / 已作废 409 `BOM_NOT_DRAFT`；不存在 404。需要 `masterdata:write`。
       responses:
         '204': {description: 已删除。}
         '401': {$ref: '#/components/responses/Error'}
@@ -349,7 +359,7 @@ paths:
       tags: [bom]
       operationId: retireBom
       summary: 作废 BOM（PR2）
-      description: RELEASED → OBSOLETE，按产品行锁与发布串行；非已发布 409 `BOM_NOT_RELEASED`；不存在 404。需要 `masterdata:release`。
+      description: RELEASED → OBSOLETE，按产品行锁与发布串行；非已发布 409 `BOM_NOT_RELEASED`；不存在 404。不恢复上一版本的生效区间：无生效版本时工单不能下达（422），须发布新版本。需要 `masterdata:release`。
       responses:
         '200': {description: 已作废。, content: {application/json: {schema: {$ref: '#/components/schemas/BomResponse'}}}}
         '401': {$ref: '#/components/responses/Error'}
@@ -435,7 +445,7 @@ paths:
       tags: [routing]
       operationId: deleteRoutingDraft
       summary: 删除工艺路线草稿（PR2）
-      description: 物理删除草稿及其工序；已发布 / 已作废 409 `ROUTING_NOT_DRAFT`；不存在 404。需要 `masterdata:write`。
+      description: 物理删除草稿及其工序，仅限从未被任何工单引用的草稿：曾被引用 409 `MASTERDATA_IN_USE`（`data.type = masterdata-in-use`，`referenceType = WORK_ORDER`），工单服务不可用 503 `WORKORDER_SERVICE_UNAVAILABLE`；已发布 / 已作废 409 `ROUTING_NOT_DRAFT`；不存在 404。需要 `masterdata:write`。
       responses:
         '204': {description: 已删除。}
         '401': {$ref: '#/components/responses/Error'}
@@ -466,7 +476,7 @@ paths:
       tags: [routing]
       operationId: retireRouting
       summary: 作废工艺路线（PR2）
-      description: RELEASED → OBSOLETE；非已发布 409 `ROUTING_NOT_RELEASED`；不存在 404。作废后其工作中心不再计入 ROUTING 引用。需要 `masterdata:release`。
+      description: RELEASED → OBSOLETE；非已发布 409 `ROUTING_NOT_RELEASED`；不存在 404。作废后其工作中心不再计入 ROUTING 引用。不恢复上一版本的生效区间：无生效版本时工单不能下达（422），须发布新版本。需要 `masterdata:release`。
       responses:
         '200': {description: 已作废。, content: {application/json: {schema: {$ref: '#/components/schemas/RoutingResponse'}}}}
         '401': {$ref: '#/components/responses/Error'}

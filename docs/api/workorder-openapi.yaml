@@ -372,6 +372,32 @@ paths:
           $ref: '#/components/responses/Problem'
         '403':
           $ref: '#/components/responses/Problem'
+  /api/workorders/version-references:
+    get:
+      tags: [lifecycle]
+      operationId: getWorkOrderVersionReferences
+      summary: BOM / 工艺路线版本引用检查（服务间调用，PR2）
+      description: |
+        主数据服务删除 BOM / 工艺路线草稿前调用（直连，透传用户令牌）：统计曾引用该版本的工单，不区分工单状态——
+        当前下达快照（BOM 含展开快照中子件的来源版本）与已撤回下达的记录都计入。参数缺失或 `type` 非 BOM / ROUTING 时 400。
+        需要 `workorder:read` 或 `masterdata:write`。
+      parameters:
+        - {name: type, in: query, required: true, description: 版本类型。, schema: {type: string, enum: [BOM, ROUTING]}}
+        - {name: product, in: query, required: true, description: 产品（或子件）编码。, schema: {type: string}}
+        - {name: version, in: query, required: true, description: 版本号。, schema: {type: string}}
+      responses:
+        '200':
+          description: 引用统计。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkOrderReferenceResponse'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '401':
+          $ref: '#/components/responses/Problem'
+        '403':
+          $ref: '#/components/responses/Problem'
   /api/workorders/{workOrderNo}/close:
     post:
       tags: [lifecycle]

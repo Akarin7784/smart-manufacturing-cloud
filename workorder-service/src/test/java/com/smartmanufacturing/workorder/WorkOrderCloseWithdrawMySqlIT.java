@@ -69,6 +69,15 @@ class WorkOrderCloseWithdrawMySqlIT {
         assertThat(orders.references("WC-CNC", null).count()).isZero();
     }
 
+    /** 版本引用（UNION 查询）在 MySQL 上可用，撤回后仍计数。 */
+    @Test void versionReferencesOnMySql() {
+        String id = released();
+        assertThat(orders.versionReferences("BOM", ReleaseFixtures.PRODUCT, "A01").count()).isEqualTo(1);
+        reporting.withdrawRelease(id, new WithdrawReleaseRequest(null), "wdv-" + id, "planner");
+        assertThat(orders.versionReferences("ROUTING", ReleaseFixtures.PRODUCT, "R01").workOrderNos()).containsExactly(id);
+        assertThat(orders.versionReferences("ROUTING", ReleaseFixtures.PRODUCT, "R09").count()).isZero();
+    }
+
     /** 撤回后换键重新下达：生命周期主键可再次插入，预留序号顺延为 2。 */
     @Test void withdrawThenReReleaseOnMySql() {
         String id = released();

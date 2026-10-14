@@ -15,10 +15,11 @@ public class RoutingService {
     private final VersionedHeaderDao headers;
     private final MaterialRepository materials;
     private final WorkCenterService workCenters;
+    private final MasterdataReferences references;
 
-    RoutingService(JdbcTemplate jdbc, MaterialRepository materials, WorkCenterService workCenters) {
+    RoutingService(JdbcTemplate jdbc, MaterialRepository materials, WorkCenterService workCenters, MasterdataReferences references) {
         this.jdbc = jdbc; this.headers = new VersionedHeaderDao(jdbc, "routing_header");
-        this.materials = materials; this.workCenters = workCenters;
+        this.materials = materials; this.workCenters = workCenters; this.references = references;
     }
 
     @Transactional(readOnly = true)
@@ -80,12 +81,13 @@ public class RoutingService {
         return get(product, version);
     }
 
-    /** 删除草稿（PR2）：先删明细再删版本头；已发布 / 作废版本 409 ROUTING_NOT_DRAFT。 */
+    /** 删除草稿（PR2）：先删明细再删版本头；已发布 / 作废版本 409 ROUTING_NOT_DRAFT；曾被工单引用 409 MASTERDATA_IN_USE。 */
     @Transactional
     public void deleteDraft(String product, String version) {
         Routing current = get(product, version);
         if (current.status() != LifecycleStatus.DRAFT)
             throw Errors.conflict("ROUTING_NOT_DRAFT", "只有草稿工艺路线可以删除: " + product + "/" + version);
+        references.requireVersionNeverReferenced("ROUTING", product, version);
         jdbc.update("delete from routing_operation where product_code = ? and version = ?", product, version);
         if (headers.deleteDraft(product, version) == 0)
             throw Errors.conflict("ROUTING_NOT_DRAFT", "工艺路线已被并发发布: " + product + "/" + version);

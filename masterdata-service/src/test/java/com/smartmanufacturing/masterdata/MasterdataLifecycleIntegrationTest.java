@@ -41,6 +41,7 @@ class MasterdataLifecycleIntegrationTest {
 
     @BeforeEach void noWorkOrders() {
         when(workOrders.references(any(), any())).thenReturn(ApiResponse.ok(new WorkOrderReferenceView(0, List.of())));
+        when(workOrders.versionReferences(any(), any(), any())).thenReturn(ApiResponse.ok(new WorkOrderReferenceView(0, List.of())));
     }
 
     private static RequestPostProcessor admin() {
@@ -227,6 +228,49 @@ class MasterdataLifecycleIntegrationTest {
         mvc.perform(get("/boms/L6-FG/A03").with(viewer())).andExpect(status().isNotFound());
         del("/boms/L6-FG/A03", writer()).andExpect(status().isNotFound());
         post("/boms", bomBody("L6-FG", "A03", "2026-12-01", "L6-RM"), admin()).andExpect(status().isCreated());
+        verify(workOrders).versionReferences("BOM", "L6-FG", "A03");
+    }
+
+    /** 草稿只有从未被任何工单引用时才能硬删除：曾被引用 409 masterdata-in-use（WORK_ORDER），工单服务不可用 503，草稿保留。 */
+    @Test void draftReferencedByWorkOrderCannotBeDeleted() throws Exception {
+        workCenter("WC-L8");
+        material("L8-FG", "FG", "MAKE");
+        material("L8-RM", "RM", "BUY");
+        post("/routings", routingBody("L8-FG", "R01", "2026-10-01", "WC-L8", "装配"), admin()).andExpect(status().isCreated());
+        post("/boms", bomBody("L8-FG", "A01", "2026-10-01", "L8-RM"), admin()).andExpect(status().isCreated());
+        when(workOrders.versionReferences("BOM", "L8-FG", "A01")).thenReturn(ApiResponse.ok(new WorkOrderReferenceView(1, List.of("WO-9"))));
+        when(workOrders.versionReferences("ROUTING", "L8-FG", "R01")).thenReturn(ApiResponse.ok(new WorkOrderReferenceView(2, List.of("WO-9", "WO-10"))));
+        del("/boms/L8-FG/A01", writer()).andExpect(status().isConflict())
+            .andExpect(jsonPath("$.code").value("MASTERDATA_IN_USE"))
+            .andExpect(jsonPath("$.data.type").value("masterdata-in-use"))
+            .andExpect(jsonPath("$.data.referenceType").value("WORK_ORDER"))
+            .andExpect(jsonPath("$.data.references[0]").value("WO-9"));
+        del("/routings/L8-FG/R01", writer()).andExpect(status().isConflict())
+            .andExpect(jsonPath("$.data.type").value("masterdata-in-use"))
+            .andExpect(jsonPath("$.data.references[1]").value("WO-10"));
+        when(workOrders.versionReferences("BOM", "L8-FG", "A01")).thenThrow(new IllegalStateException("connection refused"));
+        del("/boms/L8-FG/A01", writer()).andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.code").value("WORKORDER_SERVICE_UNAVAILABLE"));
+        mvc.perform(get("/boms/L8-FG/A01").with(viewer())).andExpect(status().isOk());
+        mvc.perform(get("/routings/L8-FG/R01").with(viewer())).andExpect(status().isOk());
+        org.assertj.core.api.Assertions.assertThat(jdbc.queryForObject("select count(*) from bom_line where product_code = 'L8-FG' and version = 'A01'", Integer.class)).isEqualTo(1);
+    }
+
+    /** 作废唯一生效版本后不恢复上一版本：effective 查询 404，工单下达因此 422（新发布版本后恢复）。 */
+    @Test void retiringOnlyEffectiveVersionLeavesNoEffectiveVersion() throws Exception {
+        workCenter("WC-L9");
+        material("L9-FG", "FG", "MAKE");
+        material("L9-RM", "RM", "BUY");
+        post("/routings", routingBody("L9-FG", "R01", "2026-09-01", "WC-L9", "装配"), admin()).andExpect(status().isCreated());
+        post("/routings/L9-FG/R01/release", "", admin()).andExpect(status().isOk());
+        post("/routings", routingBody("L9-FG", "R02", "2026-10-01", "WC-L9", "装配"), admin()).andExpect(status().isCreated());
+        post("/routings/L9-FG/R02/release", "", admin()).andExpect(status().isOk());
+        post("/routings/L9-FG/R02/retire", "", admin()).andExpect(status().isOk());
+        // R01 已在 R02 发布时被截断，作废 R02 不恢复 R01 的生效区间
+        mvc.perform(get("/routings/L9-FG/effective").param("date", "2026-10-15").with(viewer())).andExpect(status().isNotFound());
+        post("/routings", routingBody("L9-FG", "R03", "2026-10-02", "WC-L9", "装配"), admin()).andExpect(status().isCreated());
+        post("/routings/L9-FG/R03/release", "", admin()).andExpect(status().isOk());
+        mvc.perform(get("/routings/L9-FG/effective").param("date", "2026-10-15").with(viewer()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.version").value("R03"));
     }
 
     /** 工艺路线：工序只在草稿中可改（已发布 / 已作废 409 ROUTING_NOT_DRAFT）；作废、删除草稿。 */

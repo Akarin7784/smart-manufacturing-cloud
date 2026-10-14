@@ -15,4 +15,9 @@ public interface WorkOrderReferenceClient {
     @GetMapping("/workorders/references")
     ApiResponse<WorkOrderReferenceView> references(@RequestParam(value = "workCenter", required = false) String workCenter,
                                                    @RequestParam(value = "station", required = false) String station);
+
+    /** BOM / 工艺路线版本是否被任何工单（含已完工、已关闭、已撤回下达）引用过；删除草稿前调用。type 为 BOM 或 ROUTING。 */
+    @GetMapping("/workorders/version-references")
+    ApiResponse<WorkOrderReferenceView> versionReferences(@RequestParam("type") String type, @RequestParam("product") String product,
+                                                          @RequestParam("version") String version);
 }

@@ -100,8 +100,9 @@ class WorkOrderClosure {
         if (jdbc.queryForObject("select count(*) from operation_task where order_id = ? and (started_at is not null or status in ('RUNNING', 'PAUSED', 'DONE'))",
                 Integer.class, orderId) > 0)
             throw WorkOrderProblemType.WORK_ORDER_STATE_CONFLICT.exception("工单已有工序开工，不能撤回下达");
-        String releaseKey = jdbc.queryForList("select release_key from work_order_lifecycle where order_id = ?", String.class, orderId)
+        Map<String, Object> frozen = jdbc.queryForList("select release_key, product_code, bom_version, routing_version from work_order_lifecycle where order_id = ?", orderId)
             .stream().findFirst().orElse(null);
+        String releaseKey = frozen == null ? null : (String) frozen.get("release_key");
         Instant now = clock.instant();
         if (jdbc.update("update work_order set status = 'CREATED', version = version + 1 where id = ? and status = ?", orderId, status) != 1)
             throw WorkOrderProblemType.CONCURRENT_MODIFICATION.exception("工单状态已变化，请重试");
@@ -122,8 +123,8 @@ class WorkOrderClosure {
         jdbc.update("delete from work_order_lifecycle where order_id = ?", orderId);
         // 记录被撤回的下达键：同键重新下达返回 409（否则会重放到已释放的同一张预留）
         if (releaseKey != null)
-            jdbc.update("insert into wo_release_withdrawal (order_id, release_key, reservation_id, withdrawn_by, withdrawn_at) values (?, ?, ?, ?, ?)",
-                orderId, releaseKey, reservationId, operator, DbTimes.ts(now));
+            jdbc.update("insert into wo_release_withdrawal (order_id, release_key, reservation_id, withdrawn_by, withdrawn_at, product_code, bom_version, routing_version) values (?, ?, ?, ?, ?, ?, ?, ?)",
+                orderId, releaseKey, reservationId, operator, DbTimes.ts(now), frozen.get("product_code"), frozen.get("bom_version"), frozen.get("routing_version"));
         journal.statusChanged(orderId, status, "CREATED", "WITHDRAW_RELEASE", note, operator);
         var payload = new LinkedHashMap<String, Object>();
         payload.put("previousStatus", status);

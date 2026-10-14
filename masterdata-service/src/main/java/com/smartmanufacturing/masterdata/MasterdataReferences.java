@@ -15,7 +15,7 @@ import java.util.List;
  * <ul>
  *   <li>ROUTING：工作中心被未作废（DRAFT / RELEASED）的工艺路线工序引用；</li>
  *   <li>BOM：物料作为成品或组件出现在未作废的 BOM 中；</li>
- *   <li>WORK_ORDER：工作中心 / 工位被执行中的工单任务引用（调用工单服务；不可用时 503，不放行）。</li>
+ *   <li>WORK_ORDER：工作中心 / 工位被执行中的工单任务引用；BOM / 工艺路线草稿曾被任何工单引用（调用工单服务；不可用时 503，不放行）。</li>
  * </ul>
  */
 @Component
@@ -46,20 +46,33 @@ class MasterdataReferences {
             throw Errors.inUse("BOM", "物料 " + code + " 仍被 " + boms.size() + " 个未作废的 BOM 引用", head(boms));
     }
 
+    /**
+     * 删除 BOM / 工艺路线草稿前确认从未被任何工单引用（PM 决策：只有从未被引用的草稿可以硬删除），
+     * 被引用 409 MASTERDATA_IN_USE（referenceType = WORK_ORDER），工单服务不可用 503，不放行。
+     */
+    void requireVersionNeverReferenced(String type, String product, String version) {
+        String what = ("BOM".equals(type) ? "BOM " : "工艺路线 ") + product + "/" + version;
+        requireNoWorkOrder(() -> workOrders.versionReferences(type, product, version), what, "删除", "曾被 ");
+    }
+
     private void requireNoWorkOrder(String workCenter, String station, String what) {
+        requireNoWorkOrder(() -> workOrders.references(workCenter, station), what, "停用", "仍被 ");
+    }
+
+    private void requireNoWorkOrder(java.util.function.Supplier<ApiResponse<WorkOrderReferenceView>> call, String what, String action, String verb) {
         WorkOrderReferenceView view;
         try {
-            ApiResponse<WorkOrderReferenceView> r = workOrders.references(workCenter, station);
+            ApiResponse<WorkOrderReferenceView> r = call.get();
             view = r == null ? null : r.data();
         } catch (FeignException.Forbidden e) {
             throw new com.smartmanufacturing.common.BusinessException("ACCESS_DENIED", "工单服务拒绝引用检查（权限不足）", org.springframework.http.HttpStatus.FORBIDDEN);
         } catch (RuntimeException e) {
-            LOG.warn("工单服务引用检查失败，拒绝停用 {}", what, e);
-            throw Errors.workOrderUnavailable("工单服务暂时不可用，无法确认" + what + "是否被工单引用，未停用");
+            LOG.warn("工单服务引用检查失败，拒绝{} {}", action, what, e);
+            throw Errors.workOrderUnavailable("工单服务暂时不可用，无法确认" + what + "是否被工单引用，未" + action);
         }
-        if (view == null) throw Errors.workOrderUnavailable("工单服务返回空结果，无法确认" + what + "是否被工单引用，未停用");
+        if (view == null) throw Errors.workOrderUnavailable("工单服务返回空结果，无法确认" + what + "是否被工单引用，未" + action);
         if (view.count() > 0)
-            throw Errors.inUse("WORK_ORDER", what + " 仍被 " + view.count() + " 个执行中的工单引用", view.workOrderNos());
+            throw Errors.inUse("WORK_ORDER", what + " " + verb + view.count() + " 个" + ("仍被 ".equals(verb) ? "执行中的" : "") + "工单引用", view.workOrderNos());
     }
 
     private static List<String> head(List<String> all) { return all.subList(0, Math.min(SHOW, all.size())); }
